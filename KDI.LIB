@@ -1,0 +1,646 @@
+/* START LIBRARY DESCRIPTION *********************************************
+KDI.LIB
+	Copyright (c) 1997, Z-World.
+
+DESCRIPTION: Keypad/Display Interface Specific Stuff Here
+
+END DESCRIPTION **********************************************************/
+
+/*****************************************************************************
+
+Keypad/Display Interface Specific Stuff Here
+
+*****************************************************************************/
+
+/*** BeginHeader */
+
+#ifndef _KDI_LIB
+#define _KDI_LIB
+#use lp.lib
+
+/*** endHeader */
+
+/*** BeginHeader kdiSScrCtrl, curKdiState */
+
+#define KDI_SCR_CTRL		0x01
+#define KDI_LCDCS_KPWR	0x02
+#define KDI_KPRD			0x02
+#define KDI_THRU			0x00
+
+struct _kdiState {
+	char scrCtrl;
+	char lcdCSKpWr;
+};
+
+extern struct _kdiState curKdiState;
+//extern char kdiSScrCtrl;
+//extern char kdiLcdCSKpWr;
+
+void _kdiInit();
+
+/*** EndHeader */
+
+struct _kdiState curKdiState;
+
+void _kdiInit() {
+	curKdiState.scrCtrl = 0;
+	curKdiState.lcdCSKpWr = 0;
+	lpInit();
+}
+
+/*** BeginHeader kdiRead */
+
+#define kdiRead lpReadCmd
+
+/*** EndHeader */
+
+/*** BeginHeader kdiLCDCsKpWr */
+
+void kdiLCDCsKpWr(int value);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+kdiLCDCsKpWr
+
+SYNTAX: void kdiLCDCsKpWr(int value)
+
+KEYWORDS: keypad display interface
+
+DESCRIPTION:
+This function updates the LCDCsKpWr latch on the KDI to bits 0-7 of
+"value". (The LCDCsKpWr latch controls D/I, CS1, CS2, /RST, H1-4).
+
+PARAMETER1: Bit 0-7 of this parameter is sent to the LCDCsKpWr latch.
+
+RETURN VALUE:  None.
+
+END DESCRIPTION **********************************************************/
+
+#asm
+kdiLCDCsKpWr::
+	ld		h,KDI_LCDCS_KPWR
+	jp		lpOutCmdOutData
+;	call	lpOutCmdOutData
+;	ret
+#endasm
+
+/*** BeginHeader kdiKpRd */
+
+int kdiKpRd();
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+kdiKpRd				<kdi.lib>
+
+SYNTAX: int kdiKpRd()
+
+KEYWORDS: keypad display interface
+
+DESCRIPTION:
+This function reads back the status from the keypad.
+
+RETURN VALUE:  The status of the keypad.
+
+END DESCRIPTION **********************************************************/
+
+#asm
+kdiKpRd::
+	ld		h,KDI_KPRD
+	jp		lpOutCmdInData
+;	call	lpOutCmdInData
+;	ret
+#endasm
+
+/*** BeginHeader kdiScrCtrl */
+
+void kdiScrCtrl(int value);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+kdiScrCtrl
+
+SYNTAX: void kdiScrCtrl(int value)
+
+KEYWORDS: keypad display interface
+
+DESCRIPTION:
+This function updates the ScrCtrl latch on the KDI to bits 0-7 of
+"value". (The ScrCtrl latch controls the contrast and EL-backlight).
+
+PARAMETER1: Bit 0-7 of this parameter is sent to the LCDCsKpWr latch.
+
+RETURN VALUE:  None.
+
+END DESCRIPTION **********************************************************/
+
+#asm
+kdiScrCtrl::
+	ld		h,KDI_SCR_CTRL
+	jp		lpOutCmdOutData
+;	call	lpOutCmdOutData
+;	ret
+#endasm
+
+///*** Beginheader kdiBlindRead */
+//
+//#define kdiBlindRead lpInData
+//
+///*** EndHeader */
+//
+///*** BeginHeader kdiBlindWrite */
+//
+//#define kdiBlindWrite lpOutData
+//
+///*** EndHeader */
+//
+///*** BeginHeader kdiSetThru */
+//
+//void kdiSetThru();
+//
+///*** EndHeader */
+//
+//#asm
+//kdiSetThru::
+//	ld		l,KDI_THRU
+//	call	lpOutCmd
+//	ret
+//#endasm
+
+/*** BeginHeader kdiSetCSn12 */
+
+void kdiSetCSn12(int n12);
+
+/*** EndHeader */
+
+//	n12=0, set none
+//	n12=1, set CS1
+//	n12=2, set CS2
+
+/* START FUNCTION DESCRIPTION ********************************************
+kdiSetCSn12
+
+SYNTAX: void kdiSetCSn12(int value)
+
+KEYWORDS: keypad display interface
+
+DESCRIPTION:
+This function sets the chip select lines on the LCDCsKpWr.
+
+PARAMETER1: 0: reset both chip select, 1: set CS1, 2: set CS2.
+
+RETURN VALUE:  None.
+
+END DESCRIPTION **********************************************************/
+
+#asm
+kdiSetCSn12::
+	push	hl
+	ld		a,(curKdiState+_kdiState+lcdCSKpWr)
+	and	10011111b
+	ld		b,a
+	pop	hl
+	ld		a,l
+	and	00000011b
+	add	a,a
+	add	a,a
+	add	a,a
+	add	a,a
+	add	a,a
+	or		b
+	ld		(curKdiState+_kdiState+lcdCSKpWr),a
+	ld		l,a
+	ld		h,KDI_LCDCS_KPWR
+	jp		lpOutCmdOutData
+;	call	lpOutCmdOutData
+;	ret
+#endasm
+
+/*** BeginHeader kdiELSw */
+
+void kdiELSw(int onOff);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+kdiELSw
+
+SYNTAX: void kdiELSw(int value)
+
+KEYWORDS: keypad display interface
+
+DESCRIPTION:
+This function switchs the EL backlight of the LCD.
+
+PARAMETER1: 1 to turn the backlight on, 0 to turn the backlight off.
+
+RETURN VALUE:  None.
+
+END DESCRIPTION **********************************************************/
+
+ASM_NOIX void kdiELSw(int onOff) {
+	kdiScrCtrl(curKdiState.scrCtrl=((curKdiState.scrCtrl & '\B11111110') | (onOff?0:1)));
+}
+
+/*** BeginHeader kdiBuzSw */
+
+void kdiBuzSw(int onOff);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+kdiBuzSw
+
+SYNTAX: void kdiBuzSw(int value)
+
+KEYWORDS: keypad display interface
+
+DESCRIPTION:
+This function switchs the buzzer of the LCD.
+
+PARAMETER1: 1 to turn the buzzer on, 0 to turn the buzzer off.
+
+RETURN VALUE:  None.
+
+END DESCRIPTION **********************************************************/
+
+ASM_NOIX void kdiBuzSw(int onOff) {
+	kdiScrCtrl(curKdiState.scrCtrl=((curKdiState.scrCtrl & '\B11111101') | (onOff?2:0)));
+}
+
+/*** BeginHeader kdiSetDnI */
+
+void kdiSetDnI(int DnI);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+kdiSetDnI
+
+SYNTAX: void kdiSetDnI(int value)
+
+KEYWORDS: keypad display interface
+
+DESCRIPTION:
+This function controls the D/I line on the LCDCsKpWr latch.
+
+PARAMETER1: 1 to set D/I high (data), 0 to set D/I low (instruction).
+
+RETURN VALUE:  None.
+
+END DESCRIPTION **********************************************************/
+
+#asm
+kdiSetDnI::
+	ld		a,(curKdiState+_kdiState+lcdCSKpWr)
+	bit	0,l
+	jr		z,resetBit7
+	set	7,a
+	jr		doneSetting
+resetBit7:
+	res	7,a
+doneSetting:
+	ld		(curKdiState+_kdiState+lcdCSKpWr),a
+	ld		l,a
+	ld		h,KDI_LCDCS_KPWR
+	jp		lpOutCmdOutData
+;	call	lpOutCmdOutData
+;	ret
+#endasm
+
+/*** BeginHeader kdiSetDThruRd */
+
+int kdiSetDThruRd();
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+kdiSetDThruRd
+
+SYNTAX: int kdiSetDThruRd()
+
+KEYWORDS: keypad display interface
+
+DESCRIPTION:
+This function sets the kdi to data mode, then read back the data
+from the LCD.
+
+RETURN VALUE:  Data (bitmap) from the LCD after it is set to data
+mode.
+
+END DESCRIPTION **********************************************************/
+
+#asm
+kdiSetDThruRd::
+	ld		a,(curKdiState+_kdiState+lcdCSKpWr)
+	set	7,a
+	ld		(curKdiState+_kdiState+lcdCSKpWr),a
+	ld		l,a
+	ld		h,KDI_LCDCS_KPWR
+	call	lpOutCmdOutData
+	ld		h,KDI_THRU
+	jp		lpOutCmdInData
+;	call	lpOutCmdInData
+;	ret
+#endasm
+
+///*** BeginHeader kdiSetIThru */
+//
+//void kdiSetIThru();
+//
+///*** Endheader */
+//
+//#asm
+//kdiSetIThru::
+//	ld		hl,curKdiState+_kdiState+lcdCSKpWr
+//	res	7,(hl)
+//	ld		l,(hl)
+//	ld		h,KDI_LCDCS_KPWR
+//	call	lpOutCmdOutData
+//	ld		l,KDI_THRU
+//	call	lpOutCmd
+//	ret
+//#endasm
+
+/*** BeginHeader kdiSetIThruRd */
+
+int kdiSetIThruRd();
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+kdiSetIThruRd
+
+SYNTAX: int kdiSetIThruRd()
+
+KEYWORDS: keypad display interface
+
+DESCRIPTION:
+This function sets the kdi to instruction mode, then read back the data
+from the LCD.
+
+RETURN VALUE:  Data (status) from the LCD after it is set to instruction
+mode.
+
+END DESCRIPTION **********************************************************/
+
+#asm
+kdiSetIThruRd::
+	ld		hl,curKdiState+_kdiState+lcdCSKpWr
+	res	7,(hl)
+	ld		l,(hl)
+	ld		h,KDI_LCDCS_KPWR
+	call	lpOutCmdOutData
+	ld		h,KDI_THRU
+	jp		lpOutCmdInData
+;	call	lpOutCmdInData
+;	ret
+#endasm
+
+/*** BeginHeader kdiSetDThruWr */
+
+void kdiSetDThruWr(int i);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+kdiSetDThruWr
+
+SYNTAX: void kdiSetDThruWr(int content)
+
+KEYWORDS: keypad display interface
+
+DESCRIPTION:
+This function sets the kdi to data mode, then write bits 0-7 of
+"content" to the LCD as a bitmap.
+
+PARAMETER1: bits 0-7 will be sent to the LCD (as bitmap) after it is
+set to data mode.
+
+RETURN VALUE: None
+
+END DESCRIPTION **********************************************************/
+
+#asm
+kdiSetDThruWr::
+	push	hl
+	ld		hl,curKdiState+_kdiState+lcdCSKpWr
+	set	7,(hl)
+	ld		l,(hl)
+	ld		h,KDI_LCDCS_KPWR
+	call	lpOutCmdOutData
+	pop	hl
+	ld		h,KDI_THRU
+	jp		lpOutCmdOutData
+;	call	lpOutCmdOutData
+;	ret
+#endasm
+
+/*** BeginHeader kdiSetIThruWr */
+
+void kdiSetIThruWr(int x);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+kdiSetIThruWr
+
+SYNTAX: void kdiSetIThruWr(int content)
+
+KEYWORDS: keypad display interface
+
+DESCRIPTION:
+This function sets the kdi to instruction mode, then write bits 0-7 of
+"content" to the LCD as a command.
+
+PARAMETER1: bits 0-7 will be sent to the LCD (as a command) after it is
+set to instruction mode.
+
+RETURN VALUE: None
+
+END DESCRIPTION **********************************************************/
+
+#asm
+kdiSetIThruWr::
+	push	hl
+	ld		hl,curKdiState+_kdiState+lcdCSKpWr
+	res	7,(hl)
+	ld		l,(hl)
+	ld		h,KDI_LCDCS_KPWR
+	call	lpOutCmdOutData
+	pop	hl
+	ld		h,KDI_THRU
+	jp		lpOutCmdOutData
+;	call	lpOutCmdOutData
+;	ret
+#endasm
+
+/*** BeginHeader kdiSetContrast */
+
+void kdiSetContrast(unsigned setting);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+kdiSetContrast
+
+SYNTAX: void kdiSetContrast(unsigned content)
+
+KEYWORDS: keypad display interface
+
+DESCRIPTION:
+This function sets the contrast control to "content".
+
+PARAMETER1: This parameter specifies the contrast (the higher the value,
+the higher the contrast).
+
+RETURN VALUE: None
+
+END DESCRIPTION **********************************************************/
+
+ASM_NOIX void kdiSetContrast(unsigned setting) {
+	kdiScrCtrl(curKdiState.scrCtrl =
+		((curKdiState.scrCtrl & '\B00000011') | ((setting & 0x7e) << 1)));
+}
+
+/*** BeginHeader kdiReset */
+
+void kdiReset();
+
+/*** Endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+kdiReset
+
+SYNTAX: void kdiReset()
+
+KEYWORDS: keypad display interface
+
+DESCRIPTION:
+This function toggles the /RST line.
+
+RETURN VALUE: None
+
+END DESCRIPTION **********************************************************/
+
+ASM_NOIX void kdiReset() {
+	kdiLCDCsKpWr(curKdiState.lcdCSKpWr & '\B11101111');
+	kdiLCDCsKpWr(curKdiState.lcdCSKpWr |= '\B00010000');
+}
+
+/*** BeginHeader kdiKpSetPull */
+
+void kdiKpSetPull(int mask);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+kdiKpSetPull
+
+SYNTAX: void kdiKpSetPull(int mask)
+
+KEYWORDS: keypad display interface
+
+DESCRIPTION:
+This function sets H1 to H4 according to the least significant 4 bits of
+"mask".
+
+PARAMETER1: bits 0-3 will be sent to the pull ups H1-4.
+
+RETURN VALUE: None
+
+END DESCRIPTION **********************************************************/
+
+ASM_NOIX void kdiKpSetPull(int mask) {
+	kdiLCDCsKpWr(curKdiState.lcdCSKpWr = ((curKdiState.lcdCSKpWr & 0xf0) | (mask & 0xf)));
+}
+
+///*** Beginheader kdiReadThru */
+//
+//int kdiReadThru();
+//
+///*** EndHeader */
+//
+//#asm
+//kdiReadThru::
+//	ld		h,KDI_THRU
+//	call	lpOutCmdInData
+//	ret
+//#endasm
+//
+///*** BeginHeader kdiWriteThru */
+//
+//void kdiWriteThru(char data);
+//
+///*** endHeader */
+//
+//#asm
+//kdiWriteThru::
+//	ld			h,KDI_THRU
+//	call		lpOutCmdOutData
+//	ret
+//#endasm
+
+/*** BeginHeader kdiSaveState */
+
+void kdiSaveState(struct _kdiState *toWhere);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+kdiSaveState
+
+SYNTAX: void kdiSaveState(struct _kdiState *toWhere)
+
+KEYWORDS: keypad display interface
+
+DESCRIPTION:
+This function saves the current state of the kdi to a structure of type
+"struct _kdiState" pointed to by "toWhere".
+
+PARAMETER1: Pointer to where the state of the kdi should be stored.
+
+RETURN VALUE: None
+
+END DESCRIPTION **********************************************************/
+
+void kdiSaveState(struct _kdiState *toWhere) {
+	*toWhere = curKdiState;
+}
+
+/*** BeginHeader kdiRestoreState */
+
+void kdiRestoreState(struct _kdiState *fromWhere);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+kdiRestoreState
+
+SYNTAX: void kdiRestoreState(struct _kdiState *fromWhere)
+
+KEYWORDS: keypad display interface
+
+DESCRIPTION:
+This function restores the current state of the kdi from a structure of
+type "struct _kdiState" pointed to by "fromWhere".
+
+PARAMETER1: Address from which the state of the kdi should be restored.
+
+RETURN VALUE: None
+
+END DESCRIPTION **********************************************************/
+
+void kdiRestoreState(struct _kdiState *fromWhere) {
+	curKdiState = *fromWhere;
+	kdiLCDCsKpWr(curKdiState.lcdCSKpWr);
+	kdiScrCtrl(curKdiState.scrCtrl);
+}
+
+/*** BeginHeader */
+
+#endif
+
+/*** EndHeader */

@@ -1,0 +1,548 @@
+/* START LIBRARY DESCRIPTION *********************************************
+5KEYEXTD.LIB
+    Copyright (c) 1994, Z-World.
+
+DESCRIPTION: Support for modifying and/or monitoring the Rugged Giant
+(formerly the CPLC) IO's.
+
+SUPPORT LIB'S: sys.lib, cplc.lib, rtk.lib
+END DESCRIPTION **********************************************************/
+
+/*** BeginHeader */
+#if ((BOARD_TYPE!=CPLC_BOARD) && (BOARD_TYPE!=L_STAR))
+#error "Rugged Giant or Little Star only."
+#endif
+/*** EndHeader */
+
+/*** Beginheader _5key_12out */
+
+int _5key_12out(void);
+
+/*** Endheader */
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+_5key_12out                  <5KEYEXTD.LIB>
+
+SYNTAX: int _5key_12out(void);
+
+DESCRIPTION: Modifies and monitors digital output states.  Use the UP and 
+DOWN keys to turn on/off an output.  Use the FIELD key to select output 
+channel.
+
+RETURN VALUE: Returns the MENU or ITEM key when pressed.
+END DESCRIPTION **********************************************************/
+extern char OUT1, OUT2, OUT3, OUT4, OUT5, OUT6;
+extern char OUT7, OUT8, OUT9, OUT10, RELAY1, RELAY2;
+nodebug int _5key_12out(void)
+{
+    char old_menu_buf[21];
+    char xcursor;
+    int  k;
+    char *my_help[] =
+     {
+         "output for 12",
+         "digital chans,",
+         "use field, up &",
+         "down key to chng"
+     };
+    
+    help_line = sizeof(my_help) / sizeof(char *);
+    for (k = 0; k < help_line; k++) 
+        active_help[k] = my_help[k];
+
+    xcursor = 4;
+    sprintf(menu_buf, "Out %d%d%d%d%d%d%d%d%d%d%d%d",
+    OUT1, OUT2, OUT3, OUT4, OUT5, OUT6, OUT7, OUT8, OUT9, OUT10,
+    RELAY1, RELAY2);
+    lcd_server(2, 0x01001100L | xcursor, menu_buf);
+    k = check_5key(1, 10);   // refresh data on LCD screen
+                             // after every suspend(10)
+    if (k == MENU || k == ITEM) 
+        return k;
+    do
+    {
+        switch (k)
+        {
+            case UP:
+                *(&OUT1 + xcursor - 4) = 1;
+                break;
+            case DOWN:
+                *(&OUT1 + xcursor - 4) = 0;
+                break;
+            case FIELD:
+                xcursor++;
+                if (xcursor == 16) 
+                    xcursor = 4;
+                break;
+            case MENU:
+            case ITEM:
+                up_beep(SHORT_BEEP);
+                return k;
+            default:
+                break;
+        }
+        sprintf(menu_buf, "Out %d%d%d%d%d%d%d%d%d%d%d%d",
+            OUT1, OUT2, OUT3, OUT4, OUT5, OUT6, OUT7, OUT8, OUT9, OUT10,
+            RELAY1, RELAY2);
+        if (k != -1 || strcmp(old_menu_buf, menu_buf) != 0)
+        {
+            lcd_server(2, 0x01001100L | xcursor, menu_buf);
+            strcpy(old_menu_buf, menu_buf);
+        }
+        k = check_5key(1, 10); // refresh data on LCD screen
+                               // after every suspend(10)
+    } while (1);
+}
+
+/*** Beginheader _5key_dacout */
+
+int _5key_dacout(void);
+
+/*** Endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+_5key_dacout                 <5KEYEXTD.LIB>
+
+SYNTAX: int _5key_dacout(void);
+
+DESCRIPTION: Modifies the state of the DAC outputs. Use the FIELD, UP and 
+DOWN keys to change the DAC output.
+
+RETURN VALUE: Returns the MENU or ITEM key when pressed.
+END DESCRIPTION **********************************************************/
+nodebug int _5key_dacout(void)
+{
+    char  old_menu_buf[21];
+    char  xcursor;
+    int   k;
+    float change;
+    float dac_shadow;
+    char *my_help[] =
+     {
+         "output for dac",
+         "chans,use field,",
+         "up and down key",
+         "to change"
+     };
+
+#GLOBAL_INIT
+    {
+        dac_shadow = 0.0;
+        up_dacout(0);        // make sure dac outputs are zero
+        up_expout(0);
+    }
+    help_line = sizeof(my_help) / sizeof(char *);
+    for (k = 0; k < help_line; k++) 
+        active_help[k] = my_help[k];
+
+    xcursor = 8;
+    change = 1.00;
+    sprintf(menu_buf, "DACOUT %6.3f v", dac_shadow);
+    lcd_server(2, 0x01001100L | xcursor, menu_buf);
+    k = check_5key(0, 10);   // No refresh, so suspend(10) to release task
+    if (k == MENU || k == ITEM) 
+        return k;
+    do
+    {
+        switch (k)
+        {
+            case UP:
+                if ((dac_shadow = dac_shadow + change) > 10.00) 
+                    dac_shadow = 10.00;
+                break;
+            case DOWN:
+                if ((dac_shadow = dac_shadow - change) < 0.0) 
+                    dac_shadow = 0.0;
+                break;
+            case FIELD:
+                xcursor++;
+                if (xcursor == 9) 
+                    xcursor = 10;
+                else if (xcursor == 13) 
+                    xcursor = 7;
+                switch (xcursor)
+                {
+                    case 7:
+                        change = 10.000;
+                        break;
+                    case 8:
+                        change = 1.000;
+                        break;
+                    case 10:
+                        change = 0.100;
+                        break;
+                    case 11:
+                        change = 0.010;
+                        break;
+                    case 12:
+                        change = 0.001;
+                        break;
+                }
+                break;
+            case MENU:
+            case ITEM:
+                up_beep(SHORT_BEEP);
+                return k;
+            default:
+                break;
+        }
+        if (k != -1)
+        {
+            up_daccal( (int)(1000 * dac_shadow) );
+            sprintf(menu_buf, "DACOUT %6.3f v", dac_shadow);
+            lcd_server(2, 0x01001100L | xcursor, menu_buf);
+        }
+        k = check_5key(0, 10); // No refresh, so suspend(10) to release task
+    } while (1);
+}
+
+/*** Beginheader _5key_uinput */
+
+int _5key_uinput(void);
+
+/*** Endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+_5key_uinput                 <5KEYEXTD.LIB>
+
+SYNTAX: int _5key_uinput(void);
+
+DESCRIPTION: Monitor the universal inputs analog levels.  Use the UP and 
+DOWN keys to select the channel to monitor.
+
+RETURN VALUE: Return the MENU or ITEM key when pressed.
+END DESCRIPTION **********************************************************/
+nodebug int _5key_uinput(void)
+{
+    char *my_help[] =
+     {
+         "read 7 universal",
+         "input chans,use",
+         "up and down key",
+         "to select chan"
+     };
+    char  u_chan;
+    char  old_u_chan;
+    int   old_adcal;
+    float atest;
+    char  old_menu_buf[21];
+    int   k;
+    
+    help_line = sizeof(my_help) / sizeof(char *);
+    for (k = 0; k < help_line; k++) 
+        active_help[k] = my_help[k];
+
+    u_chan = 1;
+    atest = 0.001 * up_adcal(u_chan);
+    sprintf(menu_buf, "Uchan %d %7.3f v", u_chan, atest);
+    lcd_server(2, 0x01001106L, menu_buf);
+    k = check_5key(1, 10);
+    if (k == MENU || k == ITEM) 
+        return k;
+    do
+    {
+        switch (k)
+        {
+            case UP: 
+                if (++u_chan > 7) 
+                    u_chan = 1;
+                break;
+            case DOWN: 
+                if (--u_chan < 1) 
+                    u_chan = 7;
+                break;
+            case FIELD:
+                break;
+            case MENU:
+            case ITEM:
+                up_beep(SHORT_BEEP);
+                return k;
+            default:
+                break;
+        }
+
+        if ((k != -1) || (u_chan != old_u_chan) || 
+           (up_adcal(u_chan) != old_adcal))
+        {
+            atest = 0.001 * up_adcal(u_chan);
+            sprintf(menu_buf, "Uchan %d %7.3f v", u_chan, atest);
+            lcd_server(2, 0x01001106L, menu_buf);
+            old_u_chan = u_chan;
+            old_adcal  = up_adcal(u_chan);
+        }
+        k = check_5key(1, 10); // Refresh screen after every suspend(10)
+    } while (1);
+}
+
+/*** Beginheader  _5key_diginput */
+
+int _5key_diginput(void);
+
+/*** Endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+_5key_diginput               <5KEYEXTD.LIB>
+
+SYNTAX: int _5key_diginput(void);
+
+DESCRIPTION: Monitors digital input states.
+
+RETURN VALUE: Return the MENU or ITEM key when pressed.
+END DESCRIPTION **********************************************************/
+extern char DIGIN1, DIGIN2, DIGIN3, DIGIN4, DIGIN5, DIGIN6, DIGIN7;
+nodebug int _5key_diginput(void)
+{
+    int  k;
+    char old_menu_buf[21];
+    char *my_help[] =
+     {
+         "read 7 digital",
+         "input chans"
+     };
+
+    help_line = sizeof(my_help) / sizeof(char *);
+    for (k = 0; k < help_line; k++) 
+        active_help[k] = my_help[k];
+
+    sprintf(menu_buf, "DigIn   %d%d%d%d%d%d%d", 
+    DIGIN1, DIGIN2, DIGIN3, DIGIN4, DIGIN5, DIGIN6, DIGIN7);
+    lcd_server(2, 0x01000000L, menu_buf);
+    k = check_5key(1, 10);   // refresh lcd after every suspend(10)
+    if (k == MENU || k == ITEM) 
+        return k;
+    do
+    {
+        switch (k)
+        {
+            case UP:
+            case DOWN:
+            case FIELD:
+                break;
+            case MENU:
+            case ITEM:
+                up_beep(SHORT_BEEP);
+                return k;
+            default:
+                break;
+        }
+        sprintf(menu_buf, "DigIn   %d%d%d%d%d%d%d", 
+        DIGIN1, DIGIN2, DIGIN3, DIGIN4, DIGIN5, DIGIN6, DIGIN7);
+        if (k != -1 || strcmp(menu_buf, old_menu_buf) != 0)
+        {
+            strcpy(old_menu_buf, menu_buf);
+            lcd_server(2, 0x01000000L, menu_buf);
+        }
+        k = check_5key(1, 10); // refresh lcd after every suspend(10)
+    } while (1);
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+_5key_bank1dig               <5KEYEXTD.LIB>
+
+SYNTAX: int _5key_bank1dig(void);
+
+DESCRIPTION: Monitor the state of the Bank1 Digital Inputs (1-8) of 
+the Little Star.
+
+RETURN VALUE: Return the MENU or ITEM key when pressed.
+END DESCRIPTION **********************************************************/
+
+/*** Beginheader  _5key_bank1dig */
+
+int _5key_bank1dig(void);
+
+/*** Endheader */
+extern char DIGIN1, DIGIN2, DIGIN3, DIGIN4, DIGIN5, DIGIN6, DIGIN7, DIGIN8;
+nodebug int _5key_bank1dig(void)
+{
+    int  k;
+    char old_menu_buf[21];
+    char *my_help[] =
+     {
+         "read bank1 digital",
+         "input chans."
+     };
+    
+    help_line = sizeof(my_help) / sizeof(char *);
+    for (k = 0; k < help_line; k++) 
+        active_help[k] = my_help[k];
+
+    sprintf(menu_buf, "BK1DG  %d%d%d%d%d%d%d%d", 
+    DIGIN1, DIGIN2, DIGIN3, DIGIN4, DIGIN5, DIGIN6, DIGIN7, DIGIN8);
+    lcd_server(2, 0x01000000L, menu_buf);
+    k = check_5key(1, 10);   // refresh lcd after every suspend(10)
+    if (k == MENU || k == ITEM) 
+        return k;
+    do
+    {
+        switch (k)
+        {
+            case UP:
+            case DOWN:
+            case FIELD:
+                break;
+            case MENU:
+            case ITEM:
+                up_beep(SHORT_BEEP);
+                return k;
+            default:
+                break;
+        }
+        sprintf(menu_buf, "BK1DG  %d%d%d%d%d%d%d%d", 
+        DIGIN1, DIGIN2, DIGIN3, DIGIN4, DIGIN5, DIGIN6, DIGIN7, DIGIN8);
+        if (k != -1 || strcmp(menu_buf, old_menu_buf) != 0)
+        {
+            strcpy(old_menu_buf, menu_buf);
+            lcd_server(2, 0x01000000L, menu_buf);
+        }
+        k = check_5key(1, 10); // refresh lcd after every suspend(10)
+    } while (1);
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+_5key_bank2dig               <5KEYEXTD.LIB>
+
+SYNTAX: int _5key_bank2dig(void);
+
+DESCRIPTION: Monitor the state of the Bank2 Digital Inputs (9-16) of 
+the Little Star.
+
+RETURN VALUE: Return the MENU or ITEM key when pressed.
+END DESCRIPTION **********************************************************/
+
+/*** Beginheader  _5key_bank2dig */
+
+int _5key_bank2dig(void);
+
+/*** Endheader */
+extern char DIGIN9, DIGIN10, DIGIN11, DIGIN12;
+extern char DIGIN13, DIGIN14, DIGIN15, DIGIN16;
+nodebug int _5key_bank2dig(void)
+{
+    int  k;
+    char old_menu_buf[21];
+    char *my_help[] =
+     {
+         "read bank2 digital",
+         "input chans."
+     };
+    
+    help_line = sizeof(my_help) / sizeof(char *);
+    for (k = 0; k < help_line; k++) 
+        active_help[k] = my_help[k];
+
+    sprintf(menu_buf, "BK2DG  %d%d%d%d%d%d%d%d", 
+    DIGIN9, DIGIN10, DIGIN11, DIGIN12, DIGIN13, DIGIN14, DIGIN15, DIGIN16);
+    lcd_server(2, 0x01000000L, menu_buf);
+    k = check_5key(1, 10);   // refresh lcd after every suspend(10)
+    if (k == MENU || k == ITEM) 
+        return k;
+    do
+    {
+        switch (k)
+        {
+            case UP:
+            case DOWN:
+            case FIELD:
+                break;
+            case MENU:
+            case ITEM:
+                up_beep(SHORT_BEEP);
+                return k;
+            default:
+                break;
+        }
+        sprintf(menu_buf, "BK2DG  %d%d%d%d%d%d%d%d", 
+        DIGIN9,DIGIN10,DIGIN11,DIGIN12,DIGIN13,DIGIN14,DIGIN15,DIGIN16);
+        if (k != -1 || strcmp(menu_buf, old_menu_buf) != 0)
+        {
+            strcpy(old_menu_buf, menu_buf);
+            lcd_server(2, 0x01000000L, menu_buf);
+        }
+        k = check_5key(1, 10); // refresh lcd after every suspend(10)
+    } while (1);
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+_5key_14out                  <5KEYEXTD.LIB>
+
+SYNTAX: int _5key_14out(void);
+
+DESCRIPTION: Modify and monitor the state of the 14 Digital outputs of 
+the Little Star. Use the UP and DOWN keys to turn on/off an output.
+Use the FIELD key to select output channel.
+
+RETURN VALUE: Returns the MENU or ITEM key when pressed.
+END DESCRIPTION **********************************************************/
+
+/*** Beginheader _5key_14out */
+
+int _5key_14out(void);
+
+/*** Endheader */
+
+nodebug int _5key_14out(void)
+{
+    char old_menu_buf[21];
+    char xcursor;
+    int  k;
+    char *my_help[] =
+     {
+         "output for 14",
+         "digital chans,",
+         "use field, up &",
+         "down key to chng"
+     };
+    
+    help_line = sizeof(my_help) / sizeof(char *);
+    for (k = 0; k < help_line; k++) 
+        active_help[k] = my_help[k];
+
+    xcursor = 4;
+    
+    sprintf(menu_buf, "Out %d%d%d%d%d%d%d%d%d%d%d%d%d%d",
+    OUT1, OUT2, OUT3, OUT4, OUT5, OUT6, OUT7, OUT8, OUT9, OUT10,
+    OUT11, OUT12, OUT13, OUT14);
+
+    lcd_server(2, 0x01001100L | xcursor, menu_buf);
+    k = check_5key(1, 10);   // refresh data on LCD screen
+                             // after every suspend(10)
+    if (k == MENU || k == ITEM) 
+        return k;
+    do
+    {
+        switch (k)
+        {
+            case UP:
+                *(&OUT1 + xcursor - 4) = 1;
+                break;
+            case DOWN:
+                *(&OUT1 + xcursor - 4) = 0;
+                break;
+            case FIELD:
+                xcursor++;
+                if (xcursor == 18) 
+                    xcursor = 4;
+                break;
+            case MENU:
+            case ITEM:
+                up_beep(SHORT_BEEP);
+                return k;
+            default:
+                break;
+        }
+        sprintf(menu_buf, "Out %d%d%d%d%d%d%d%d%d%d%d%d%d%d",
+        OUT1, OUT2, OUT3, OUT4, OUT5, OUT6, OUT7, OUT8, OUT9, OUT10,
+        OUT11, OUT12, OUT13, OUT14);
+        
+        if (k != -1 || strcmp(old_menu_buf, menu_buf) != 0)
+        {
+            lcd_server(2, 0x01001100L | xcursor, menu_buf);
+            strcpy(old_menu_buf, menu_buf);
+        }
+        k = check_5key(1, 10); // Refresh data on LCD screen
+                               // after every suspend(10).
+    } while (1);
+}
+

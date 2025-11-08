@@ -1,0 +1,31 @@
+/*** BeginHeader */
+
+#ifndef __KP_KDI_LIB
+#define __KP_KDI_LIB
+
+#use kdi.lib
+
+typedef struct _kdiState kpStateType;
+#define kpSaveState kdiSaveState
+#define kpRestoreState kdiRestoreState
+#define kpSetPull kdiKpSetPull
+
+/*** endHeader */
+
+/*** BeginHeader kpReadStatus */
+
+#define kpReadStatus kdiKpRd
+
+//int kpReadStatus();
+
+/*** EndHeader */
+
+//int kpReadStatus() {
+//	return kdiKpRd();
+//}
+
+/*** beginHeader */
+
+#endif
+
+/*** EndHeader */

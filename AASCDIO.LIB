@@ -1,0 +1,144 @@
+/*** BeginHeader */
+#define RUN_KERNEL
+#use vdriver.lib
+#use srtk.lib
+#use aasc.lib
+#define USE_STDIO 1
+/*** EndHeader */
+
+/*** BeginHeader dioInit, dioChan, _dioError, _dioSwitch */
+
+void dioInit(unsigned long Param, char CRTS, struct _Channel *Channel,int reopen);
+extern struct _Channel *dioChan;
+extern long _dioError;
+extern char _dioSwitch;
+#asm
+dum: equ dioInit
+#endasm
+
+/*** EndHeader */
+
+struct  _Channel *dioChan;
+long _dioError;
+char _dioSwitch;
+
+void dioInit(unsigned long Param, char CRTS, struct _Channel *Channel,int reopen) {
+	segchain _aascInitDF {
+		DevFunc[DEV_STDIO].DevOpen = dioInit;
+		DevFunc[DEV_STDIO].DevClose = dioClose;
+		DevFunc[DEV_STDIO].TxSwitch = dioTxSwitch;
+		DevFunc[DEV_STDIO].RxSwitch = dioRxSwitch;
+		DevFunc[DEV_STDIO].DevGetError = dioGetErr;
+		DevFunc[DEV_STDIO].DevClrError = dioClrErr;
+	}
+
+	dioChan = Channel;
+	_dioServer;
+	_dioError = 0;
+	_dioSwitch = 0;
+}
+
+/*** BeginHeader dioClose */
+
+void dioClose(struct _Channel *Channel);
+
+/*** EndHeader */
+
+void dioClose(struct _Channel *Channel) {
+	dioChan = NULL;
+	_dioError = 0;
+	_dioSwitch = 0;
+}
+
+#funcchain _GLOBAL_INIT dioClose
+
+/*** BeginHeader dioTxSwitch */
+
+void dioTxSwitch(int OnOff, struct _Channel *Channel);
+
+/*** EndHeader */
+
+void dioTxSwitch(int OnOff, struct _Channel *Channel) {
+	if (OnOff) _dioSwitch |= TX_MASK;
+	else _dioSwitch &= ~TX_MASK;
+}
+
+/*** BeginHeader dioRxSwitch */
+
+void dioRxSwitch(int OnOff, struct _Channel *Channel);
+
+/*** EndHeader */
+
+void dioRxSwitch(int OnOff, struct _Channel *Channel) {
+	if (OnOff) _dioSwitch |= RX_MASK;
+	else _dioSwitch &= ~RX_MASK;
+}
+
+/*** BeginHeader _dioServer */
+
+void _dioServer();
+
+/*** EndHeader */
+
+void _dioServer() {
+	static char tmp[120];
+	static unsigned cnt;
+	static char gotten;
+	//	this function should be called periodically to provide
+	//	polling trigger for the driver
+
+	if (_dioSwitch & RX_MASK) {
+		costate {
+			if (kbhit()) {
+			//	a key is in the buffer
+				gotten = getchar();
+				if (!circbufPutByte(dioChan->InBuf,gotten))
+					_dioError |= 0x100;
+			}
+		}
+	}
+	if (_dioSwitch & TX_MASK) {
+		costate {
+			cnt = circbufChkTerm(dioChan->OutBuf,0);
+			if ((cnt+1) >= sizeof(tmp) || (!cnt && dioChan->OutBuf->Used)) {
+				if (dioChan->OutBuf->Used) {
+					cnt = circbufGet(dioChan->OutBuf,tmp,sizeof(tmp)-1,0);
+					tmp[cnt] = '\0';
+					waitfor(LockTestAndSet(&_comattn,1));
+					_rst8(tmp);
+				}
+			} else if (cnt) {
+				circbufGet(dioChan->OutBuf,tmp,cnt,0);
+				waitfor(LockTestAndSet(&_comattn,1));
+				_rst8(tmp);
+			}
+		}
+	}
+}
+
+#funcchain _aascPollChain _dioServer
+
+#ifdef EASYSTRT
+#funcchain _srtk_hightask _aascPollChain
+#endif
+
+/*** BeginHeader dioGetErr */
+
+long dioGetErr(struct _Channel *pChan);
+
+/*** EndHeader */
+
+long dioGetErr(struct _Channel *pChan) {
+	return pChan->Error;
+}
+
+
+/*** BeginHeader dioClrErr */
+
+void dioClrErr(struct _Channel *pChan);
+
+/*** EndHeader */
+
+void dioClrErr(struct _Channel *pChan) {
+	pChan->Error = 0;
+}

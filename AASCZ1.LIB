@@ -1,0 +1,373 @@
+/*
+aascz1.lib
+*/
+
+/*** BeginHeader z1Init,z1Close */
+
+#use aasc.lib
+
+// This is the number of zeros that must be received
+// for the interrupt to decide that a break request was issued
+// This may need to be bumped for some modem setups
+#define USE_Z1 1
+
+#ifndef ASCI_PARAM_TIE
+
+#define N_ZEROS_FOR_BREQ 25
+
+#define ASCI_PARAM_TIE 0x01
+#define ASCI_PARAM_RIE 0x08
+#define ASCI_PARAM_CRTS 0x100000
+#define ASCI_PARAM_TE 0x200000
+#define ASCI_PARAM_RE 0x400000
+#define ASCI_PARAM_MPE 0x800000
+#define ASCI_PARAM_EFR 0x080000
+#define ASCI_PARAM_8D 0x040000
+#define ASCI_PARAM_7D 0x000000
+#define ASCI_PARAM_EPARITY 0x020000
+#define ASCI_PARAM_OPARITY 0x120000
+#define ASCI_PARAM_NOPARITY 0x000000
+#define ASCI_PARAM_1STOP 0x000000
+#define ASCI_PARAM_2STOP 0x010000
+#define ASCI_PARAM_MPBT 0x80000000
+#define ASCI_PARAM_MP 0x40000000
+#define ASCI_PARAM_CTSPS 0x20000000
+#define ASCI_PARAM_PEO 0x10000000
+#define ASCI_PARAM_DR64 0x08000000
+#define ASCI_PARAM_1200 0x0100
+#define ASCI_PARAM_8N1 0x040000
+
+#endif
+
+void z1Init(long Param, char CRTS, struct _Channel * Channel,void(*brqfnc)(),int reopen);
+void z1Close(struct _Channel *pChan);
+void z1TxSwitch(char OnOff, struct _Channel *pChan);
+void z1RxSwitch(char OnOff, struct _Channel *pChan);
+void _z1Int();
+extern long z1Error;
+extern int z1BrCount;
+unsigned z1BRFnc;
+#asm
+dum: equ z1Init
+#endasm
+
+/*** EndHeader */
+
+#define ASCI_TE '\B00100000'
+#define ASCI_RE '\B01000000'
+#define ASCI_9TH '\B10000000'
+#define ASCI_CRTS '\B00010000'
+#define ASCI_MPBT '\B10000000'
+#define ASCI_RDRF '\B10000000'
+#define ASCI_OVRN '\B01000000'
+#define ASCI_PE '\B00100000'
+#define ASCI_FE '\B00010000'
+#define ASCI_TDRE '\B00000010'
+#define ASCI_TIE '\B00000001'
+#define ASCI_RIE '\B00001000'
+#define ASCI_EFR '\B00001000'
+
+#define ASCI_ERROR_INOVR 0x0100
+
+struct _CircBuffer *pZ1InBuf, *pZ1OutBuf;
+long z1Error;
+int z1BrCount;
+//char z1CRTS;
+
+/* START FUNCTION DESCRIPTION ********************************************
+z1Init                       <AASCZ1.LIB>
+
+SYNTAX:	void z1Init(long Param, char CRTS, struct _Channel * Channel);
+
+DESCRIPTION:        Initializes the z1 device.  The z1 device is the ASCI
+built-in on the Z180.  Param is a long integer specifying the initialization
+attributes of the device, and Channel is the assigned channel for the device.
+The device needs a logical channel to operate.
+
+RETURN VALUE:       None.
+
+END DESCRIPTION **********************************************************/
+
+root void z1Init(long Param, char CRTS,
+		struct _Channel * Channel,void(*brqfnc)(),int reopen) {
+	auto char stat, baud, cntla0, cntlb1;
+	segchain _aascInitDF {
+		DevFunc[DEV_Z1].DevOpen = z1Init;
+		DevFunc[DEV_Z1].DevClose = z1Close;
+		DevFunc[DEV_Z1].TxSwitch = z1TxSwitch;
+		DevFunc[DEV_Z1].RxSwitch = z1RxSwitch;
+		DevFunc[DEV_Z1].DevGetError = z1GetErr;
+		DevFunc[DEV_Z1].DevClrError = z1ClrErr;
+	}
+	segchain _aascInitDF_DLP {
+	  	xmem2root( aascGetDLMChan(),&DevFunc[DEV_Z1],12);
+	}
+	z1BrCount = 0;
+	Param &= ~ASCI_PARAM_CRTS;
+
+	if(!reopen)z1BRFnc = (unsigned)brqfnc;	
+	stat = *((char*)&Param);
+	baud = *((char*)&Param+1);
+	cntla0 = *((char*)&Param+2);
+	cntlb1 = *((char*)&Param+3);
+	
+    outport(STAT1, 0);       // reset port
+    outport(CNTLB1, (z180baud(sysclock(), baud) | cntlb1));
+    outport(CNTLA1, (cntla0 | 0x60) & 
+    	(~(ASCI_TE | ASCI_RE)));	//	turn off transmitter and receiver
+    inport(RDR1);
+    inport(RDR1);
+    outport(STAT1, stat&(~(ASCI_TIE|ASCI_RIE)));
+    	//	turn off transmitter and receiver interrupt
+    pZ1InBuf = Channel->InBuf;
+    pZ1OutBuf = Channel->OutBuf;
+    z1Error = 0;
+//    z1CRTS = (Param & ASCI_PARAM_CRTS) ? ASCI_CRTS : 0;
+		         // set baud rate, odd or even parity
+//#if ROM==0
+//	if(!reopen)reload_vec(SER0_VEC,_z1Int);
+//#endif
+	}
+
+/* START FUNCTION DESCRIPTION ********************************************
+z1Close                      <AASCZ1.LIB>
+
+SYNTAX:                       void z1Close()
+
+DESCRIPTION:        Closes down the Z1 device.
+
+RETURN VALUE:       None.
+		
+END DESCRIPTION **********************************************************/
+
+root void z1Close(struct _Channel *pChan) {
+	z1TxSwitch(0,pChan);
+	z1RxSwitch(0,pChan);
+    pZ1InBuf = NULL;
+    pZ1OutBuf = NULL;
+    z1Error = 0;
+	}
+
+/* START FUNCTION DESCRIPTION ********************************************
+z1TxSwitch                   <AASCZ1.LIB>
+
+SYNTAX:                       void z1TxSwitch(char OnOff);
+
+DESCRIPTION:        Turns the transmitter on and off.  Also turns on and turn
+off the transmit interrupt on and off.
+
+RETURN VALUE:
+
+END DESCRIPTION **********************************************************/
+
+root void z1TxSwitch(char OnOff, struct _Channel *pChan) {
+	outport(CNTLA1,OnOff?
+							(inport(CNTLA1)|ASCI_TE):
+							(inport(CNTLA1)&(~ASCI_TE)));           //        transmit enable
+	outport(STAT1,OnOff?
+							(inport(STAT1)|ASCI_TIE):
+							(inport(STAT1)&(~ASCI_TIE))); //        transmit int enable
+//        if (OnOff) EI();
+	}
+
+/* START FUNCTION DESCRIPTION ********************************************
+z1RxSwitch                   <AASCZ1.LIB>
+
+SYNTAX:		void z1RxSwitch(char OnOff, struct _Channel * pChan)
+
+DESCRIPTION:        Turns the receiver On and off.  Also turns on/off the
+receiver interrupt.  If C/RTS is specified when the device is opened,
+turning off the receiver also turns on CTS (therefore turning off the
+remote transmitter).  If CRTS is non-zero, turning off the receiver
+also disables the remote transmitter, turning on the receiver reenables
+the remote transmitter.
+
+RETURN VALUE:       None.
+
+END DESCRIPTION **********************************************************/
+
+root void z1RxSwitch(char OnOff, struct _Channel *pChan) {
+	outport(CNTLA1, OnOff ?
+							(inport(CNTLA1)|ASCI_RE):
+							(inport(CNTLA1)&(~ASCI_RE)));    //        receive enable
+	outport(STAT1,OnOff?
+							(inport(STAT1)|ASCI_RIE):
+							(inport(STAT1)&(~ASCI_RIE)));           //        transmit enable
+	if (OnOff) EI();
+	}
+
+char _z1IntChar;
+	
+/* START FUNCTION DESCRIPTION ********************************************
+_z1Int                       <AASCZ1.LIB>
+
+SYNTAX:                       void _z1Int();
+
+DESCRIPTION:        This is the interrupt handler of the device.  Can handle
+57600bps with a 9MHz Z180.
+
+RETURN VALUE:       None.
+
+END DESCRIPTION **********************************************************/
+
+//#if ROM != 0
+#INT_VEC  SER1_VEC _z1Int
+//#endif
+
+#asm fast
+_z1Int::
+	push      ix
+	push      iy
+	push      af
+	push      bc
+	push      de
+	push      hl        ;         save registers to be used
+	
+	in0       b,(STAT1) ;         b is STAT1
+	bit       7,b
+	jr        z,z1Int0100
+
+	; 	byte ready for reading
+	push      bc       ;         saves b on the stack
+	ld        d,0
+	in0       e,(RDR1)
+	push      de
+	ld        hl,(pZ1InBuf)
+	push      hl
+	call      circbufPutByte
+	pop       de
+	pop       de
+	pop       bc                 ;         restores b from the stack
+	ld        a,h
+	or        l
+	jr        nz,z1Int0050
+	ld        hl,z1Error+1
+	set       0,(hl)
+	jr        z1Int0100           ;         continue to handle other cases
+z1Int0050:
+;the following lines are blocked because z1 has no CTS/RTS
+#if 0
+	ld        a,(z1CRTS)
+	or        a
+	jr        z,z1Int0100
+	ld        hl,(pZ1InBuf)
+	ld        de,1+_CircBuffer+Free
+	add       hl,de
+	ld        a,(hl)
+	or        a
+	jr        nz,z1Int0100
+	dec       hl
+	ld        a,(hl)
+	cp        16
+	jr        nc,z1Int0100
+	;      						   z1CRTS != 0 and no more space
+	;                   			time to turn on CTS
+	in0       a,(CNTLA1)
+	set       4,a
+	out0      (CNTLA1),a
+;         ld                  hl,z1Error+1
+;         set       1,(hl)
+;         ld                  a,b
+;         res       3,a
+;         out       (STAT1),a      ;         turn of read interrupt
+#endif
+z1Int0100:
+	bit       1,b
+	jr                  z,z1Int0200
+	;                   ready to write another byte
+
+
+	push      bc
+	ld        hl,_z1IntChar
+	push      hl
+	ld        hl,(pZ1OutBuf)
+	push      hl
+	call      circbufGetByte
+	pop       de
+	pop       de
+	pop       bc
+	ld        a,h
+	or        l
+	jr        nz,z1Int0150
+	;                   nothing to transmit, turn off TIE
+	res       0,b
+	out0      (STAT1),b
+	jr        z1Int0200
+z1Int0150:
+	ld        a,(_z1IntChar)
+	out0      (TDR1),a
+z1Int0200:
+	ld        a,b
+	and       070h
+	jr        z,z1Int0300
+	;      				   some error occured
+	ld        hl,z1Error
+	or        (hl)
+	ld        (hl),a
+
+	; check for break request
+	;     (framing error with N_ZEROS_FOR_BREQ 0's received)
+	and       16			; framing error ?
+	jr			 z,z1Int0240
+	in0       e,(RDR1)
+	xor		 a
+	or			 e		 			; 0 received ?
+	jr			 nz,z1Int0240
+	ld        hl,z1BrCount
+	inc		 (hl)
+	ld 		 a,N_ZEROS_FOR_BREQ			
+	cp 		 (hl)				; 0 recieved repeatedly ?
+	jr			 nz,z1Int0250
+	ld 		 hl,(z1BRFnc) 
+	ld 		 a,l
+	or 		 h					; callback fnc. for Break Req defined ?
+	jr			 z,z1Int0250
+	di
+	ld			 de,z1Int0240 	; push return address on stack
+	push      de
+	ld        hl,z1BrCount  ; zero out br count
+	xor		 (hl)
+	ld 		 hl,(z1BRFnc)
+	jp 		 (hl)				; jump to callback
+z1Int0240:
+	ld        hl,z1BrCount  ; zero out br count
+	xor		 (hl)
+z1Int0250:
+
+	in0       c,(CNTLA1)
+	res       3,c
+	out0      (CNTLA1),c
+z1Int0300:
+	pop       hl
+	pop       de
+	pop       bc
+	pop       af
+	pop       iy
+	pop       ix
+	ei
+	ret
+#endasm
+
+void _z1DfaultBRQFnc(){
+
+}
+
+/*** BeginHeader z1GetErr */
+
+long z1GetErr(struct _Channel *pChan);
+
+/*** EndHeader */
+
+long z1GetErr(struct _Channel *pChan) {
+	return z1Error;
+} 
+
+/*** BeginHeader z1ClrErr */
+
+void z1ClrErr(struct _Channel *pChan);
+
+/*** EndHeader */
+
+void z1ClrErr(struct _Channel *pChan) {
+	z1Error = 0;
+}

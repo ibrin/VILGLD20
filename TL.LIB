@@ -1,0 +1,333 @@
+/*** BeginHeader */
+
+#ifndef __TL_LIB
+#define __TL_LIB
+
+struct _lcdstate {
+	char blink;
+} lcdState;
+
+/*** EndHeader */
+
+/*** BeginHeader lcdDelay */
+
+extern char lcdDelay;
+
+/*** EndHeader */
+
+char lcdDelay;
+
+/*** BeginHeader lcdEnCur */
+
+void lcdEnCur();
+
+/*** endHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+lcdEnCur
+
+SYNTAX:		void lcdEnCur();
+
+KEYWORDS:	LCD Driver
+
+DESCRIPTION:	Enables cursor.
+
+RETURN VALUE:	N/A
+
+END DESCRIPTION **********************************************************/
+
+void lcdEnCur();
+
+#asm
+lcdEnCur::
+	ld			a,(lcdState+blink)
+	or			0xe
+	ld			l,a
+	ld			h,0
+	call		lcdCtrl
+	ret
+#endasm
+
+/*** BeginHeader lcdDisCur */
+
+void lcdDisCur();
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+lcdDisCur
+
+SYNTAX:		void lcdDisCur();
+
+KEYWORDS:	LCD Driver
+
+DESCRIPTION:	disables the cursor
+
+RETURN VALUE:	N/A
+
+END DESCRIPTION **********************************************************/
+
+void lcdDisCur();
+
+#asm
+lcdDisCur::
+	ld			hl,0xc
+	call		lcdCtrl
+	ret
+#endasm
+
+/*** BeginHeader lcdEnBlink */
+
+void lcdEnBlink();
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+lcdEnBlink
+
+SYNTAX:	void lcdEnBlink();
+
+KEYWORDS:	LCD Driver
+
+DESCRIPTION:	Enables the LCD cursor to blink.
+
+RETURN VALUE:	N/A
+
+END DESCRIPTION **********************************************************/
+
+void lcdEnBlink();
+
+#asm
+lcdEnBlink::
+	ld			a,1
+	ld			(lcdState+blink),a
+	call		lcdEnCur
+	ret
+#endasm
+
+/*** BeginHeader lcdDisBlink */
+
+void lcdDisBlink();
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+lcdDisBlink
+
+SYNTAX:	void lcdDisBlink()
+
+KEYWORDS:	LCD Driver
+
+DESCRIPTION:	Disables the blinking of the LCD cursor.
+
+RETURN VALUE:	N/A
+
+END DESCRIPTION **********************************************************/
+
+void lcdDisBlink();
+
+#asm
+lcdDisBlink::
+	ld			a,0
+	ld			(lcdState+blink),a
+	call		lcdEnCur
+	ret
+#endasm
+
+/*** BeginHeader lcdPos */
+
+void lcdPos(char row, char col);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+lcdPos
+
+SYNTAX:	void lcdPos(char row, char col);
+
+KEYWORDS:	LCD driver
+
+DESCRIPTION:	Positions the cursor on the LCD.
+
+PARAMETER1:	The row of the cursor (starts with 0).
+
+PARAMETER2: The col of the cursor (starts with 0).
+
+RETURN VALUE:	N/A
+
+END DESCRIPTION **********************************************************/
+
+nodebug void lcdPos(char row, char col) {
+	auto int n;
+
+	n = (row & 1) * 0x40 + col;
+	if (row < 2)
+		lcdCtrl(0x80 + n);
+	else
+		lcdCtrl(0x94 + n); // 4 x 20 display
+}
+
+/*** BeginHeader lcdVPrintf */
+
+int lcdVPrintf(char *fmt, void *firstArg);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+lcdVPrintf
+
+SYNTAX:	int lcdVPrintf(char *fmt, void *firstArg);
+
+KEYWORDS:	LCD Driver
+
+DESCRIPTION:	Equivalent to vprintf, but prints to the current cursor
+					position on the LCD.
+
+PARAMETER1:	The format string. Note that tabs, linefeeds, returns and
+				other special characters will not be interpreted by the LCD.
+
+PARAMETER2:	The address to the first argument.
+
+RETURN VALUE:	0 if the string is sent successfully. -1 if the LCD
+					times out.
+
+END DESCRIPTION **********************************************************/
+
+nodebug int lcdVPrintf(char *fmt, void *firstArg) {
+	doprnt(lcdPutc, fmt, firstArg, NULL );
+	return lcdWait();
+}
+
+/*** BeginHEader lcdPrintf */
+
+int lcdPrintf(char *fmt, ...);
+
+/*** endHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+lcdPrintf
+
+SYNTAX:	int lcdPrintf(char *fmt, ...);
+
+KEYWORDS:	LCD Driver
+
+DESCRIPTION:	Equivalent to printf, but prints to the current cursor
+					position on the LCD.
+
+PARAMETER1:	The format string. Note that tabs, linefeeds, returns and
+				other special characters will not be interpreted by the LCD.
+
+RETURN VALUE:	0 if the string is sent successfully. -1 if the LCD
+					times out.
+
+END DESCRIPTION **********************************************************/
+
+nodebug int lcdPrintf(char *fmt,...) {
+	return lcdVPrintf(fmt,&fmt+1);
+}
+
+/*** BeginHEader lcdLongWait */
+
+int lcdLongWait();
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+lcdLongWait
+
+SYNTAX:	int lcdLongWait();
+
+KEYWORDS:	LCD driver
+
+DESCRIPTION:	Similar to lcdWait, but waits for 4 times as long for the
+					longest operation on the LCD.
+
+RETURN VALUE:	0 if the LCD is free, -1 if the LCD times out.
+
+END DESCRIPTION **********************************************************/
+
+int lcdLongWait();
+
+#asm nodebug
+lcdLongWait::
+	ld		b,41
+pollAgain:
+	push	bc
+	call	lcdWait
+	pop	bc
+	bit	7,l
+	jr		z,doneNow
+	djnz	pollAgain
+	ld		hl,-1
+	ret
+doneNow:
+	ld		hl,0
+	ret
+#endasm
+
+/*** beginHeader lcdInit */
+
+int lcdInit();
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+lcdInit
+
+SYNTAX:	int lcdInit();
+
+KEYWORDS:	LCD Driver
+
+DESCRIPTION:	Initializes the LCD hardware and library. Blanks the screen
+					and set cursor to blink on the first row at the first column.
+
+RETURN VALUE:	0 if the initialization is successful, -1 if the LCD times
+					out.
+
+END DESCRIPTION **********************************************************/
+
+nodebug int lcdInit() {
+	auto char delay;
+
+	switch(sysclock())     // 4-10-95, delay for all clockspeed
+	{
+		case 0x1400:
+			lcdDelay = 4;
+			break;
+		case 0x1e00:
+			lcdDelay = 6;
+			break;
+		case 0x2800:
+			lcdDelay = 8;
+			break;
+		case 0x3c00:
+			lcdDelay = 12;
+			break;
+		case 0x5000:   
+			lcdDelay = 16;
+			break;
+		default:    
+			lcdDelay = 16;
+			break;
+	}
+	
+	if (lcdCtrl(0x38)) return -1;
+	lcdState.blink = 1;
+	lcdCtrl(0x38);		//	8-bit interface, 2-line, 5x7 dots
+	lcdCtrl(0x38);
+	lcdCtrl(0x38);
+	lcdCtrl(0x06);		//	cursor moves inc, display not shifted
+	lcdCtrl(0x0e);		//	display on, cursor on, no blink
+	lcdCtrl(0x01);		//	clear display
+	lcdLongWait();
+	lcdCtrl(0x02);		//	move to first position
+	lcdLongWait();
+	lcdPos(0,0);
+	return lcdWait();
+}
+
+/*** BeginHeader */
+
+#endif
+
+/*** EndHeader */

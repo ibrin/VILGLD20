@@ -1,0 +1,55 @@
+/*** BeginHeader */
+
+#ifndef __KP_LP31_LIB
+#define __KP_LP31_LIB
+
+typedef char kpStateType;
+
+/*** endHeader */
+
+/*** BeginHeader kpReadStatus */
+
+int kpReadStatus();
+
+/*** EndHeader */
+
+int kpReadStatus() {
+	return inport(0x4040) & 0xf;
+}
+
+/*** BeginHeader kpSaveState */
+
+void kpSaveState(kpStateType *x);
+
+/*** EndHeader */
+
+void kpSaveState(kpStateType *x) {
+	*x = *((char*)&DOShadow+1);
+}
+
+/*** BeginHeader kpRestoreState */
+
+void kpRestoreState(kpStateType *x);
+
+/*** EndHeader */
+
+void kpRestoreState(kpStateType *x) {
+	*((char*)&DOShadow+1) = *x;
+}
+
+/*** BeginHeader kpSetPull */
+
+void kpSetPull(char ch);
+
+/*** EndHeader */
+
+void kpSetPull(char ch) {
+	*((char*)&DOShadow+1)=(*((char*)&DOShadow+1)&0xf)|(ch<<4);
+	outport(0x4060,*((char*)&DOShadow+1));
+}
+
+/*** beginHeader */
+
+#endif
+
+/*** EndHeader */

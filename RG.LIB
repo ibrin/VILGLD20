@@ -1,0 +1,10 @@
+/*** BeginHeader */
+
+/*
+The contents originally in this file is now moved to
+pk21xx.lib
+*/
+
+#use pk21xx.lib
+
+/*** EndHeader */

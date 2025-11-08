@@ -1,0 +1,362 @@
+/***
+
+PLC-bus specific stuff for Ezio.
+
+***/
+
+/*** beginHeader */
+
+#ifndef __EZIOPLC_LIB
+#define __EZIOPLC_LIB
+
+#use eziopbdv.lib
+
+/*** endheader */
+
+/*** BeginHeader _eioReadD0 */
+
+char _eioReadD0();
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+_eioReadD0
+
+SYNTAX: 	char _eioReadD0();
+
+DESCRIPTION:	this function reads the data on the PLC-bus in the BUSRD0
+cycle.
+
+RETURN VALUE:	the byte read on the PLC-bus in the BUSRD0 cycle
+
+END DESCRIPTION **********************************************************/
+
+#asm
+_eioReadD0::			;	16
+	in0	a,(BUSRD0)	;	12
+	ld		l,a			;	4
+	ld		h,0			;	6
+	ret					;	9
+	;	47 states
+#endasm
+
+/*** BeginHeader _eioReadD1 */
+
+char _eioReadD1();
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+_eioReadD1
+
+SYNTAX: 	char _eioReadD1();
+
+DESCRIPTION:	this function reads the data on the PLC-bus in the BUSRD1
+cycle.
+
+RETURN VALUE:	the byte read on the PLC-bus in the BUSRD1 cycle
+
+END DESCRIPTION **********************************************************/
+
+#asm
+_eioReadD1::
+	in0	a,(BUSRD1)
+	ld		l,a
+	ld		h,0
+	ret
+	;	47 states
+#endasm
+
+/*** BeginHeader _eioReadD2 */
+
+char _eioReadD2();
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+_eioReadD2
+
+SYNTAX: 	char _eioReadD2();
+
+DESCRIPTION:	this function reads the data on the PLC-bus in the BUSRD2
+cycle.
+
+RETURN VALUE:	the byte read on the PLC-bus in the BUSRD2 cycle
+
+END DESCRIPTION **********************************************************/
+
+#asm
+_eioReadD2::
+	in0	a,(BUSRD2)
+	ld		l,a
+	ld		h,0
+	ret
+	;	47
+#endasm
+
+/*** BeginHeader _eioWriteWR */
+
+void _eioWriteWR(char ch);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+_eioWriteWR
+
+SYNTAX: 	void _eioWriteWR(char ch);
+
+DESCRIPTION:	this function writes information to the PLC-bus during the
+BUSWR cycle.
+
+PARAMETER1:	this is the byte to be written to the PLC-bus
+
+RETURN VALUE:	N/A
+
+END DESCRIPTION **********************************************************/
+
+#asm
+_eioWriteWR::			;	16
+	ld		a,l			;	4
+	out0	(BUSWR),a	;	13
+	ret					;	9
+	;	42
+#endasm
+
+/*** BeginHeader eioResetPlcBus */
+
+void eioResetPlcBus();
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+eioResetPlcBus
+
+SYNTAX: 	void eioResetPlcBus();
+
+DESCRIPTION:	this function resets all boards on the PLC-bus. The
+programmer must make sure there is enough delay between this call and
+the first access to any PLC-bus devices for the reset to take effect.
+
+RETURN VALUE:	N/A
+
+END DESCRIPTION **********************************************************/
+
+#asm
+eioResetPlcBus::
+	in0	a,(RST8)
+	ret
+#endasm
+
+/*** BeginHeader eioPlcAdr12 */
+
+void eioPlcAdr12(unsigned addr);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+eioPlcAdr12
+
+SYNTAX: 	void eioPlcAdr12(unsigned addr);
+
+DESCRIPTION:	this function specifies an address on the PLC-bus using
+cycles BUSADR0, BUSADR1 and BUSADR2. "addr" is broken into three nibbles,
+and one nibble is written in each BUSADRx cycle.
+
+PARAMETER1:	this is the address to be written to the PLC-bus.
+
+RETURN VALUE:	N/A
+
+END DESCRIPTION **********************************************************/
+
+#asm
+eioPlcAdr12::
+	;	addr in HL
+	ex		de,hl
+	ld		hl,SHBUS0+1
+	ld		(hl),e
+	out0	(BUSADR0),e
+	srl	e
+	srl	e
+	srl	e
+	srl	e
+	inc	hl
+	ld		(hl),e
+	out0	(BUSADR1),e
+	inc	hl
+	ld		(hl),d
+	out0	(BUSADR2),d
+	ret
+#endasm
+
+/*** BeginHeader eioPlcAdr4 */
+
+void eioPlcAdr4(unsigned addr);
+
+/*** Endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+eioPlcAdr4
+
+SYNTAX: 	void eioPlcAdr4(unsigned addr);
+
+DESCRIPTION:	this function specifies an address on the PLC-bus using
+cycle BUSADR2 only. .
+
+PARAMETER1:	this is the nibble corresponding to ADR2.
+
+RETURN VALUE:	N/A
+
+END DESCRIPTION **********************************************************/
+
+#asm
+eioPlcAdr4::
+	ld		a,l
+	ld		(SHBUS0+3),a
+	out0	(BUSADR2),l
+	ret
+#endasm
+
+/*** BeginHeader eioPlcAdr24, eioPlcAdr8 */
+
+void eioPlcAdr24(unsigned long ul);
+
+void eioPlcAdr8(unsigned u);
+
+/*** EndHeader */
+
+#asm
+eioPlcAdr24::                     ; set 24-bit addr in 3-bytes addr in BCDE
+	ld hl,SHBUS0+1
+	ld (hl),c                   ; shadow BUSADR0
+	out0	(BUSADR0),c
+
+	inc   hl
+	ld (hl),d                   ; shadow BUSADR1
+	out0	(BUSADR1),d
+	;
+
+eioPlcAdr8::
+	ld hl,SHBUS0+3
+	ld (hl),e                   ;3rd byte
+	out0	(BUSADR2),e
+	ret
+#endasm
+
+/*** BeginHeader */
+
+/*** EndHeader */
+
+/*** BeginHeader _eioClockOut */
+
+/*
+dataword		hl
+bit count	a
+data0			d
+data1			e
+clk0			d'		default state of the clock line
+clk1			e'		data remains stable when clock line changes from default to
+						this state and back
+*/
+
+/*** EndHeader */
+
+#asm
+_eioClockOut::
+outAgain:
+	bit	7,h
+	jr		z,data0
+;	data1
+	out0	(BUSWR),e
+	jr		clock10
+data0:
+	out0	(BUSWR),d
+clock10:
+	exx
+	out0	(BUSWR),e
+	out0	(BUSWR),d
+	exx
+	add	hl,hl
+	dec	a
+	jr		nz,outAgain
+	ret	
+#endasm
+
+/*** BeginHeader _eioClockInD0 */
+
+/*
+dataword		hl
+bit count	a
+data1			d		mask to mask the bit indicating data
+clk0			d'		this is the default state of the clock line
+clk1			e'		read data after the clock transits from default state to this state
+*/
+
+/*** EndHeader */
+
+#asm
+_eioClockInD0::
+	exx
+inAgain:
+	out0	(BUSWR),e
+	exx
+	add	hl,hl
+	ex		af,af'
+	in0	a,(BUSRD0)
+	and	d
+	jr		z,data0
+	inc	hl
+data0:
+	ex		af,af'
+	exx
+	out0	(BUSWR),d
+	dec	a
+	jr		nz,inAgain
+	exx
+	ret
+#endasm
+
+/*** BeginHeader _eioClockOutM */
+
+/*
+dataword		hl
+bit count	a
+data0			d		data low, clock at default state
+data1			e		data high, clock at default state
+clk			d'		clock mask, toggled to change clock state
+
+*/
+
+/*** EndHeader */
+
+#asm
+_eioClockOutM::
+	push	bc
+	ld		b,a
+outAgain:
+	bit	7,h
+	jr		z,data0
+;	data1
+	out0	(BUSWR),e
+	ld		a,e
+	jr		clock10
+data0:
+	out0	(BUSWR),d
+	ld		a,d
+clock10:
+	exx
+	xor	d
+	out0	(BUSWR),a
+	xor	d
+	out0	(BUSWR),a
+	exx
+	add	hl,hl
+	djnz	outAgain
+	pop	bc
+	ret	
+#endasm
+
+/*** BeginHeader */
+
+#endif
+
+/*** endHeader */

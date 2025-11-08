@@ -1,0 +1,136 @@
+/* START LIBRARY DESCRIPTION *********************************************
+LP.LIB
+	Copyright (c) 1997, Z-World.
+
+DESCRIPTION: a switch file to #use the correct lcd port implementation for each
+board.
+
+END DESCRIPTION **********************************************************/
+
+/*** BeginHeader */
+
+#if (BOARD_TYPE == PK21xx) || (BOARD_TYPE==BL12xx) || (BOARD_TYPE==BL16xx) || \
+	(BOARD_TYPE==BL11xx)
+#use lp_8.lib
+#elif (BOARD_TYPE == PK22xx) || (BOARD_TYPE==CM72xx) || (BOARD_TYPE==CM71xx)
+#use lp_16.lib
+#elif (BOARD_TYPE == BL14xx) || (BOARD_TYPE == BL15xx)
+#use lp_bl145.lib
+#endif
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+
+
+SYNTAX:
+
+KEYWORDS:
+
+DESCRIPTION: 
+
+PARAMETER1:
+
+RETURN VALUE:  A pointer to the allocated block.
+
+END DESCRIPTION **********************************************************/
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+lpOutData
+
+SYNTAX: void lpOutData(int content)
+
+KEYWORDS: LCD port
+
+DESCRIPTION: This function outputs the lowest 8 bit of "content" to the
+data register on the LCD port (A0 low, /WR low, /RD high on the LCD port
+when /LCD strobes).
+
+PARAMETER1: The lowest 8-bit of this parameter is sent to the data bus.
+
+RETURN VALUE:  None.
+
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+lpOutCmd
+
+SYNTAX: void lpOutCmd(int content)
+
+KEYWORDS: LCD port
+
+DESCRIPTION: This function outputs the lowest 8 bit of "content" to the
+command register on the LCD port (A0 high, /WR low, /RD high on the LCD port
+when /LCD strobes).
+
+PARAMETER1: The lowest 8-bit of this parameter is sent to the data bus.
+
+RETURN VALUE:  None.
+
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+lpInData
+
+SYNTAX: int lpInData()
+
+KEYWORDS: LCD port
+
+DESCRIPTION: This function inputs the lowest 8 bit of "content" from the
+data register on the LCD port (A0 low, /WR high, /RD low on the LCD port
+when /LCD strobes).
+
+RETURN VALUE:  The contents of the data bus.
+
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+lpInCmd
+
+SYNTAX: int lpInCmd()
+
+KEYWORDS: LCD port
+
+DESCRIPTION: This function inputs the lowest 8 bit of "content" from the
+command register on the LCD port (A0 high, /WR high, /RD low on the LCD port
+when /LCD strobes).
+
+RETURN VALUE:  The contents of the data bus.
+
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+lpOutCmdOutData
+
+SYNTAX: void lpOutCmdOutData(int CmdData)
+
+KEYWORDS: LCD port
+
+DESCRIPTION: This command sends bit 8 to bit 15 of "CmdData" to the
+command register on the LCD port. Then it sends bit 0 to bit 7 of "CmdData"
+to the data register of the LCD port. The entire operation is atomic.
+
+PARAMETER1: Bit 8-15 is the command, bit 0-7 is the data.
+
+RETURN VALUE:  None.
+
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+lpOutCmdInData
+
+SYNTAX: int lpOutCmdInData(int Cmd)
+
+KEYWORDS: LCD port
+
+DESCRIPTION: This command sends bit 8 to bit 15 of "Cmd" to the
+command register on the LCD port. Then it reads the data register of the
+LCD port. The entire operation is atomic.
+
+PARAMETER1: Bit 8-15 is the command.
+
+RETURN VALUE:  The content of the data register on the LCD port.
+
+END DESCRIPTION **********************************************************/
+

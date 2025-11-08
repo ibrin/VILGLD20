@@ -1,0 +1,358 @@
+/* START LIBRARY DESCRIPTION *********************************************
+96IO.LIB
+    Copyright (c) 1995, Z-World.
+
+DESCRIPTION:    Set of drivers for configuring, reading and writing the PIO ports
+   of the 96 I/O line expansion board for the Little Giant.
+
+SUPPORT LIB'S: sys.lib
+END DESCRIPTION **********************************************************/
+
+
+/*** BeginHeader */
+
+/* Define Pio Address Calculation Constants
+------------------------------------------- */
+#define DA  0
+#define CA  2
+#define DB  1
+#define CB  3
+#define PORTA 0
+#define PORTB 1
+
+#define OUTPUT  0
+#define INPUT   1
+
+#define STRIP_MODE 0             /* zero output bits mixed with inputs */
+#define FILL_MODE  1             /* set output bits mixed with inputs */
+
+#define HIGH     1
+#define LOW      0
+
+#define TRUE     1
+#define FALSE    0
+#define ERR     -1
+
+
+/* Define TRAP Error numbers
+----------------------------- */
+#define  PORT_SELECTION     1 
+#define  PIO_SELECTION      2
+#define  BOARD_SELECTION    3
+#define  PIN_STATE          4
+#define  READ_MODE          5
+#define  WRITE_INPUT_PIN    6
+#define  READ_OUTPUT_PIN    7
+#define  BIT_DIRECTION      8
+#define  REGISTER_SELECTION 9
+#define  UNCONNECTED_UP_PIN 10
+
+char errmsg[10][41] ={"Invld PIO Port Req - Not PORTA or PORTB",
+                     "Invalid PIO Selected - Not 0-5          ",
+                     "Invalid Board Selection - Not 0-3       ",
+                     "Invalid Pin Set Request - Not 0-1       ",
+                     "Invld Read Mode Req - Not STRIP or FILL ",
+                     "Write Requested to Input Pin            ",
+                     "Read Requested from output Pin          ",
+                     "Invld Bit Dir Req - Not OUTPUT or INPUT ",
+                     "Invld PIO Reg Select - Not DA,DB,CA,CB  ",
+                     "Req Action - uP Pin not connected to PIO",
+                     };
+
+char configuration [4][6][2],       /* current configuration of ports */
+     last_write [4][6][2],          /* save last output bytes for ports */
+     last_read [4][6][2];           /* save last input bytes for ports */
+
+/*** EndHeader */
+
+
+/*** BeginHeader Init_Board_0 */
+int Init_Board_0();
+/*** EndHeader Init_Board_0   */
+
+/* START FUNCTION DESCRIPTION ********************************************
+Init_Board_0                     <96IO.LIB>
+
+SYNTAX: int Init_Board_0();
+
+KEY WORDS: IOE-DGL96
+
+DESCRIPTION: Set all bit on board address 0 to inputs.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+Init_Board_0()
+{ 
+   int i;
+   char *lwptr, *lrptr;
+
+   /* set all bits on PIO board address 0 to inputs */
+   Set_PIO_Board (0, INPUT);
+   lwptr = (char *)last_write; 
+   lrptr = (char *)last_read;
+
+   for (i = 0; i < 48 ; i++)  /* set all last accumulators to 0xff */
+   { 
+      *lwptr++ = 0xff;        
+      *lrptr++ = 0xff; 
+   }
+}
+
+
+/*** BeginHeader Set_Port_Dir */
+int Set_Port_Dir(int board, int pio_num, int port, char mask);
+/*** EndHeader Set_Port_Dir  */
+
+/* START FUNCTION DESCRIPTION ********************************************
+Set_Port_Dir                     <96IO.LIB>
+
+SYNTAX: int Set_Port_Dir(int board, int pio_num, int port, char mask);
+
+KEY WORDS: IOE-DGL96
+
+DESCRIPTION: 	Set the bit directions for the specified port (of the specified
+					PIO on the specified board). The term mask has 1s for inputs and
+					0s for outputs.
+					"board" specifies which board to address: 0 - 8x00, 1 - 9x00,
+               2 - Ax00, 3 - Bx00. "pio_num" specifies PIO 0 - 5. "port"
+               specifies the port of a PIO: 0 for Port A, 1 for Port B.
+			      "mask" is the bit mask for the port: Bit Set = This bit is Input,
+               Bit Clear = This bit is output
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+Set_Port_Dir (int board, int pio_num, int port, char mask)
+{ 
+   int ctrl_addr;
+
+   if (port == PORTA)
+      ctrl_addr = Port_Addr (board, pio_num, CA);
+   else
+      ctrl_addr = Port_Addr (board, pio_num, CB);
+
+   outport (ctrl_addr, 0xCF);                      /* Select Mode 3 */
+   outport (ctrl_addr, mask);                      /* Set I/O Mask  */
+   configuration [board][pio_num][port] = mask;    /* Save direction status */
+}
+       
+
+/*** BeginHeader Set_Bit_Dir */
+int Set_Bit_Dir(int board, int pio_num, int port, int bit_num, int dir);
+/*** EndHeader Set_Bit_Dir  */
+/* START FUNCTION DESCRIPTION ********************************************
+Set_Bit_Dir                     <96IO.LIB>
+
+SYNTAX: int Set_Bit_Dir(int board, int pio_num, int port, int bit_num, int dir);
+
+KEY WORDS: IOE-DGL96
+
+DESCRIPTION: 	Set the direction of an individual bit (of the specified
+					PIO port on the specified board. The term dir may be INPUT
+					or OUTPUT. Any other value for dir results in an error.
+					"board" specifies which board to address: 0 - 8x00, 1 - 9x00,
+               2 - Ax00, 3 - Bx00. "pio_num" specifies PIO 0 - 5. "port"
+               specifies the port of a PIO: 0 for Port A, 1 for Port B.
+			      "dir" may be INPUT or OUTPUT. Any other value for dir results
+			      in an error.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+Set_Bit_Dir (int board, int pio_num, int port, int bit_num, int dir)
+{ 
+   char mask;
+
+   if (dir == OUTPUT)
+      mask = configuration[board][pio_num][port] & ~((char) 1 << bit_num);
+   else if (dir == INPUT)
+      mask = configuration[board][pio_num][port] | ((char)1<<bit_num);
+   else
+      TRAP(BIT_DIRECTION,"Set_Bit_Dir");
+
+   Set_Port_Dir(board, pio_num, port, mask);
+}
+
+
+/*** BeginHeader Port_Addr */
+int Port_Addr(int board, int pio_num, int register);
+/*** EndHeader Port_Addr  */
+
+/* START FUNCTION DESCRIPTION ********************************************
+Port_Addr                     <96IO.LIB>
+
+SYNTAX: int Port_Addr(int board, int pio_num, int register);
+
+KEY WORDS: IOE-DGL96
+
+DESCRIPTION: 	Return the address of a PIO register on the specified board.
+				An error results if any of the parameters are out of range.
+				"board" must be from 0 to 3 and "pio_num" must be from 0 to 5. 
+				"register" must be DA, DB, CA, or CB.
+
+RETURN VALUE: Address of PIO register
+END DESCRIPTION **********************************************************/
+int Port_Addr (int board, int pio_num, int register)
+{ 
+   if (board > 3 || board < 0) 
+      TRAP (BOARD_SELECTION,"Port_Addr");
+
+   if (pio_num > 5 || pio_num < 0) 
+      TRAP (PIO_SELECTION,"Port_Addr");
+
+   if (register > CB || register < DA) 
+      TRAP (REGISTER_SELECTION,"Port_Addr");
+
+   return (0x8000 + (0x1000 * board) + (0x200 * pio_num) + register);
+}
+
+
+/*** BeginHeader Set_PIO_Board */
+int Set_PIO_Board(int board, int dir);
+/*** EndHeader Set_PIO_Board  */
+
+/* START FUNCTION DESCRIPTION ********************************************
+Set_PIO_Board                     <96IO.LIB>
+
+SYNTAX: int Set_PIO_Board(int board, int dir);
+
+KEY WORDS: IOE-DGL96
+
+DESCRIPTION: 	Set all PIOs on the specified board to mode 3: all input or
+					all output. "dir" must be INPUT or OUTPUT.
+
+RETURN VALUE: none
+END DESCRIPTION **********************************************************/
+int Set_PIO_Board (int board_num, int dir)
+{ 
+   int i, j, k, l;
+
+   for (j = 0; j < 6; j++)
+   { 
+      for (k = 0; k < 2; k++)
+      { 
+         for (l = 0; l < 8; l++)
+         Set_Bit_Dir (board_num, j, k, l, dir);
+     
+         if (dir == INPUT)
+            configuration [board_num][j][k] = 0xff;
+         else
+            configuration [board_num][j][k] = 0x00;
+      }
+   }
+}  
+
+
+/*** BeginHeader Write_Port */
+int Write_Port(int board, int pio_num, int port, char data);
+/*** EndHeader Write_Port  */
+
+/* START FUNCTION DESCRIPTION ********************************************
+Write_Port                     <96IO.LIB>
+
+SYNTAX: int Write_Port(int board, int pio_num, int port, char data);
+
+KEY WORDS: IOE-DGL96
+
+DESCRIPTION: Write "data" to the specified port (of the specified PIO on
+				 the specified board).	
+
+RETURN VALUE: none
+END DESCRIPTION **********************************************************/
+Write_Port (int board, int pio_num, int port, char data)
+{ 
+   int reg;
+
+   if (port == PORTA)
+      reg = DA;
+   else if (port == PORTB)
+      reg = DB;
+   else
+      TRAP(PORT_SELECTION,"Write_Port");
+
+   outport (Port_Addr (board, pio_num, reg), data);
+   last_write [board][pio_num][port] = data;
+}
+
+
+/*** BeginHeader Read_Port */
+char Read_Port(int board, int pio_num, int port, int mode);
+/*** EndHeader Read_Port  */
+
+/* START FUNCTION DESCRIPTION ********************************************
+Read_Port                     <96IO.LIB>
+
+SYNTAX: char Read_Port(int board, int pio_num, int port, int mode);
+
+KEY WORDS: IOE-DGL96
+
+DESCRIPTION: Read the value of the specified port (of  the specified PIO on
+				the specified board). The function reads only the input bits of
+				the port. The output bits of the returned value are set to 1 if
+				"mode" is FILL_MODE and set to 0 of "mode" is STRIP_MODE. An error
+				results if port is not PORTA or PORTB or if "mode" is not STRIP_MODE
+				or FILL_MODE.
+
+RETURN VALUE: The value read.
+END DESCRIPTION **********************************************************/
+char Read_Port (int board, int pio_num, int port, int mode)
+{ 
+   char data;
+   int reg;
+
+   if (port == PORTA)
+      reg = DA;
+   else if (port == PORTB)
+      reg = DB;
+   else
+      TRAP (PORT_SELECTION, "Read_Port");
+
+   data = inport (Port_Addr (board, pio_num, reg));
+
+   if (mode == STRIP_MODE)                       /* make output bits 0s */
+      data = data & configuration [board][pio_num][port]; 
+   else if (mode == FILL_MODE)                   /* Make Output bits 1s */
+      data = data | ~configuration [board][pio_num][port];
+   else
+         TRAP (READ_MODE,"Read_Port");
+  
+   last_read [board][pio_num][port] = data;
+
+   return data;
+}
+
+
+/*** BeginHeader TRAP */
+int TRAP(int errnum, char *routine_name);
+/*** EndHeader TRAP  */
+
+/* START FUNCTION DESCRIPTION ********************************************
+TRAP                     <96IO.LIB>
+
+SYNTAX: int TRAP(int errnum, char *routine_name);
+
+KEY WORDS: IOE-DGL96
+
+DESCRIPTION: Print an error message (indexed by "errnum"). The error message
+				includes other_message, which typically is the name of the
+				function reporting the error. Used internally by 96IO.LIB
+				functions.
+
+RETURN VALUE: The value read.
+END DESCRIPTION **********************************************************/
+TRAP (int errnum, char *routine_name)
+{
+#if ROM!=1
+   printf ("**** TRAP ****\n%s\nRoutine: %s", &errmsg [errnum - 1][0],
+                                              routine_name);
+#endif
+   while(1);     
+}
+
+
+
+
+
+
+
+
+
+

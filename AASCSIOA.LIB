@@ -1,0 +1,548 @@
+/*
+	AASCSIOA.LIB
+
+	AASC driver for SIOA of the Zilog 84C90 KIO chip.
+
+	This driver works for the following Z-World controllers.
+
+		BL11xx (Little Giant)
+
+			RTS/CTS handshaking is performed by polling the /CTS line.
+
+
+	Notes:
+
+	Use a minimum of 256 Kbytes of SRAM with this driver.
+	
+	The nature of the SIO negates the use of the AASC functions aascRxSwitch()
+	and aascTxSwitch() by the user. Never use these functions explicitly in
+	programs that use the SIO.
+	
+	Break processing is performed by a user supplied function written in C or
+	Assembly. Be sure to save and restore the current system state (registers,
+	PIO state, etc...) from within the break processing function.
+
+	Performance:
+	
+	Circular buffer sizes of 17 bytes and above are acceptable with handshaking
+	at bit rates up to 57,600 bps.
+
+	Continuous character-oriented transfer can be performed reliably with
+	debugging at 9600 bps without handshaking with a minimum buffer size of
+	2048 bytes.
+	
+	Continuous block-oriented transfer can be performed reliably with debugging
+	at 57,600 bps without handshaking with a minimum buffer size of 2048 bytes
+	and minimum block size of 50 bytes.
+*/
+
+#use circbuf.lib
+#use aasc.lib
+
+/*
+	Macro bit pattern
+
+  31                  15                 0
+   0000 0000 0000 00bb dd00 00h0 eeee sspp
+
+	p - parity
+	s - stop bits
+	e - Rx errors
+	h - handshaking
+	d - number of data bits
+	b - data bit rate in multiples of 1200 bps
+*/
+
+/*** BeginHeader sioAInit, sioAClose */
+
+#ifndef SIO_EPARITY
+
+#define SIO_NOPARITY 0x00000000
+#define SIO_OPARITY 	0x00000001
+#define SIO_EPARITY 	0x00000003
+#define SIO_1STOP 	0x00000004
+#define SIO_2STOP 	0x0000000c
+#define SIO_CRTS		0x00000200
+#define SIO_7D 		0x00004000
+#define SIO_8D 		0x0000c000
+#define SIO_1200 		0x00010000
+#define SIO_8N1 		0x0000c004
+#define SIO_7E1 		0x00004007
+
+#define SIO_RXERR_PARITY	0x000000010
+#define SIO_RXERR_OVERRUN	0x000000020
+#define SIO_RXERR_FRAME		0x000000040
+#define SIO_RXERR_BUFR		0x000000080
+#define SIO_RXERR_ANY		0x0000000f0
+
+#define N_ZEROS_FOR_BREQ 3
+
+#endif
+
+void sioAInit(long Param, char CRTS, struct _Channel * Channel, void(*brqfnc)(), int reopen);
+void sioAClose(struct _Channel *pChan);
+void sioATxSwitch(char OnOff, struct _Channel *pChan);
+void sioARxSwitch(char OnOff, struct _Channel *pChan);
+long sioAGetErr(struct _Channel *pChan);
+void sioAClrErr(struct _Channel *pChan);
+void _sioA_SpecRxInt(),_sioA_TxInt(),_sioA_RxInt(),_sioA_ExtStatInt();
+long sioAError;
+extern int BrkReqCount;
+#asm
+dumy: equ sioAInit
+#endasm
+
+/*** EndHeader */
+
+#define SIO_CTSRTS '\B00000010'
+#define RCTS_BUFR  0x10
+
+struct _CircBuffer *pSIOAInBuf, *pSIOAOutBuf;
+char sioACRTS;
+char sioAwreg1;
+char sioAwreg3;
+char sioAwreg4;
+char sioAwreg5;
+char sioAErrorMask;
+unsigned (*sioABRFnc)();
+int sioaBrkReqCnt;
+
+nodebug
+long sioAGetErr(struct _Channel *pChan)
+{
+	return sioAError;
+} 
+
+nodebug
+void sioAClrErr(struct _Channel *pChan)
+{
+	sioAError = 0;
+}
+
+// Read from a read register
+
+nodebug
+char rregSIOA( char register)
+{
+	outport( SIOCA, register + 0x10);// Point to "register"
+	return( inport( SIOCA) );			// Read the 8 bit port
+}
+
+// Write to a write register
+
+nodebug
+void wregSIOA( char register, char value)
+{
+	outport( SIOCA, register + 0x10);// Point to "register" and issue a "Reset Ext/Status"
+	outport( SIOCA, value);				// Write "value" to the port
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+sioAInit                       <AASCSIOA.LIB>
+
+SYNTAX:    void sioAInit(long Param, char CRTS, struct _Channel *Channel,
+                         void ( *brqfnc )(), int reopen);
+
+DESCRIPTION: Initializes the SIOA device. The SIOA device is the USART
+built-in to the 84C90 KIO. "Param" specifies the initialization attributes
+of the device, "CRTS" specifies RTS/CTS flow control, "Channel" is the
+ASCC channel for the device, "brqfnc" is the name of a break processing
+function and "reopen" is used by the download manager.
+
+RETURN VALUE:       None.
+
+END DESCRIPTION **********************************************************/
+nodebug
+void sioAInit(long Param,char CRTS,struct _Channel * Channel,void(*brqfnc)(),int reopen)
+{
+auto char baud, intrState;
+
+	segchain _aascInitDF {
+		DevFunc[DEV_SIOA].DevOpen = sioAInit;
+		DevFunc[DEV_SIOA].DevClose = sioAClose;
+		DevFunc[DEV_SIOA].TxSwitch = sioATxSwitch;
+		DevFunc[DEV_SIOA].RxSwitch = sioARxSwitch;
+		DevFunc[DEV_SIOA].DevGetError = sioAGetErr;
+		DevFunc[DEV_SIOA].DevClrError = sioAClrErr;
+	}
+
+	segchain _aascInitDF_DLP {
+	  	xmem2root( aascGetDLMChan(),&DevFunc[DEV_SIOA],12);
+	}
+
+	sioaBrkReqCnt = 0;
+	Param |= (CRTS ? SIO_CRTS : 0);
+
+	// Setup global variables
+	
+	pSIOAInBuf = Channel->InBuf;
+	pSIOAOutBuf = Channel->OutBuf;
+
+	sioAError = 0;
+	sioACRTS = (Param & SIO_CRTS) ? SIO_CTSRTS : 0;
+
+	if( !reopen ) sioABRFnc = brqfnc;
+	
+	sioAwreg1 = 0x1b;	// Interrupt on all Rx chars, Tx buffer empty and Ext/Status
+
+	sioAwreg3 = *((char*)&Param+1) & 0xc0;	// Get Rx data bits
+
+	sioAwreg4 = *((char*)&Param);	// Get stop bits and parity bits
+	sioAwreg4 |= 0x40;				//	x16 clock
+
+	if( bit( &sioAwreg4 ,0) ) sioAErrorMask = 0x70;	// Check for parity error in ISR
+	else sioAErrorMask = 0x60;								// Perform frame and overrun checking in ISR
+
+	sioAwreg5 = (*((char*)&Param+1) & 0xc0) >> 1;	// Get Tx data bits
+
+	// Start baud rate generator
+	
+	baud = *((char*)&Param+2);		// Get data rate
+
+	setctc(1, 2, siobaud(sysclock(), baud), 0);	// BRG is CTC1, external clock, no interrupt
+
+	// Initialize SIO port A
+	
+	outport(SIOCA, 0x18);		// Reset port A
+	
+	wregSIOA( 5, sioAwreg5);
+	wregSIOA( 4, sioAwreg4);
+	wregSIOA( 3, sioAwreg3);
+
+	// Enable Rx and Tx
+	
+	sioAwreg5 |= 0x08;			// Enable Tx
+	wregSIOA( 5, sioAwreg5);
+	sioAwreg3 |= 0x01;
+	wregSIOA( 3, sioAwreg3);	// Enable Rx
+
+	// Enable interrupts
+	
+   intoff(&intrState);			// Disable board interrupts and save the interrupt state
+	wregSIOA( 1, sioAwreg1);	// Enable SIOA interrupts
+   inton(&intrState);			// Enable board interrupts
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+sioAClose                      <AASCSIOA.LIB>
+
+SYNTAX:     void sioAClose()
+
+DESCRIPTION: Closes the SIOA device.
+
+RETURN VALUE: None.
+		
+END DESCRIPTION **********************************************************/
+nodebug
+void sioAClose(struct _Channel *pChan)
+{
+	outport(SIOCA, 0x18);		// Reset port A
+	pSIOAInBuf = NULL;
+	pSIOAOutBuf = NULL;
+	sioAError = 0;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+sioATxSwitch                   <AASCSIOA.LIB>
+
+SYNTAX:     void sioATxSwitch(char OnOff);
+
+DESCRIPTION: Turns the transmitter on and off. If turned on, a byte is
+placed into the transmitter buffer to initiate transmit interrupts. Use
+this function only if you wish to turn the transmitter off and then on
+again.
+
+RETURN VALUE: none
+
+END DESCRIPTION **********************************************************/
+nodebug
+void sioATxSwitch(char On, struct _Channel *pChan)
+{
+char iCTS, primer, TxStatus;
+int delay;
+
+	// Poll the /CTS pin if handshaking is enabled
+
+	if( On && pChan->CRTS ) {
+		iCTS = rregSIOA(0);
+		if( !BIT( &iCTS, 5 ) ) {	// Bit 5 is inverse of the /CTS pin
+			return;	// Exit if the other station is not ready for reception
+		}
+	}
+	
+	if( On ) {
+
+		DI();
+		TxStatus = rregSIOA(0);
+
+		if( TxStatus & 4 ) {	// Is the hardware Tx buffer empty?
+		
+			if( circbufGetByte( pChan->OutBuf, &primer) ) {
+				outport( SIODA, primer);// Prime the Tx buffer to initiate transmission
+			}
+		}
+		EI();
+		
+	}
+	else {
+
+		DI();
+		outport( SIOCA, 0x28);	// Disable the Tx (reset the TxIP)
+		EI();
+	}
+	
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+sioARxSwitch                   <AASCSIOA.LIB>
+
+SYNTAX:		void sioARxSwitch(char OnOff, struct _Channel * pChan)
+
+DESCRIPTION: Turns the SIO port A receiver on and off. If CTS/RTS flow
+control is specified when the device is opened, turning off this receiver
+also sets /RTS high, signaling the remote transmitter to stop sending bytes.
+Switching this receiver on sets /RTS low, signaling the remote transmitter
+that this receiver is ready to receive bytes.
+
+RETURN VALUE:	None.
+
+END DESCRIPTION **********************************************************/
+nodebug
+void sioARxSwitch(char OnOff, struct _Channel *pChan)
+{
+	DI();
+	if( pChan->CRTS ) { // If RTS/CTS handshaking is enabled
+		if( pChan->InBuf->Free > RCTS_BUFR ) {	// Leave room for 16 bytes (16550 Tx buffer)
+			wregSIOA( 5, sioAwreg5 |= 0x02 );	// Enable remote Tx (pull /RTS pin low)
+		}
+	}
+	EI();
+}
+
+char sioAIntChar;
+
+// Interrupts in decreasing order of precedence
+	
+#INT_VEC	SIOAR_VEC  _sioA_RxInt			// Rx ISR
+#INT_VEC	SIOAER_VEC _sioA_SpecRxInt		// Rx error ISR
+#INT_VEC SIOAEX_VEC _sioA_ExtStatInt	// Break detection ISR
+#INT_VEC SIOAT_VEC  _sioA_TxInt			// Tx ISR
+
+/*
+	ISR notes.
+
+	1. Issue an Reset Ext/Status interrupts command for every access to
+	   a register other than wr0 and rr0.
+
+	2. Rx and Tx interrupts are never disabled during operation.
+
+	3. Up to three bytes can be transferred to the CPU for every Rx interrupt.
+*/
+
+#asm nodebug
+
+; Rx character available interrupt
+
+; b - maximum number of characters in the Rx buffer
+
+_sioA_RxInt::
+	push  ix
+	push  iy
+	push  af
+	push  bc
+	push  de
+	push	hl
+
+	ld		b,3
+	
+sioA_RxChar:
+
+	ld    d,0					; Get the Rx character
+	in0   e,(SIODA)
+
+	push  de						; Store the character on the stack
+	ld    hl,(pSIOAInBuf)
+	push  hl						; Store the input buffer address on the stack
+
+	ld		a,(sioACRTS)		; Check for handshaking
+	or		a
+	jp		Z,sioA_RxPut		; Save the Rx character if not
+
+	ld		de,_CircBuffer+Free+1
+	add	hl,de
+	ld		a,(hl)
+	or		a
+	jp		NZ,sioA_RxPut		; (upper byte > 0 => Free > 256)
+	dec	hl
+	ld		a,(hl)
+	cp		0x10
+	jp		P,sioA_RxPut		; (lower byte > 16, eg: 16550 uart Tx buffer size)
+		
+	ld		a,(sioAwreg5)		; Set /RTS high to disable the remote Tx.
+	and	0xfd
+	ld		l,0x15
+	out0	(SIOCA),l
+	out0	(SIOCA),a
+	
+sioA_RxPut:
+
+	call  circbufPutByte
+	pop   de
+	pop   de
+	ld    a,h
+	or    l
+	jr    NZ,sioA_RxNext
+	ld    hl,sioAError		; Indicate that the Rx circular buffer is full
+	set   3,(hl)				; in bit 3 of error variable. A byte is lost.
+	jr    sioA_RxExit
+	
+sioA_RxNext:
+
+	dec	b						; Read the Rx buffer up to 3 times.
+	ld		a,b
+	cp		0
+	jr		Z,sioA_RxExit
+
+	in0	a,(SIOCA)			; Is another character available?
+	bit	0,a
+	jr		NZ,sioA_RxChar
+
+sioA_RxExit:
+	
+	pop   hl
+	pop   de
+	pop   bc
+	pop   af
+	pop   iy
+	pop   ix
+
+	ei
+	reti
+
+; Rx special condition interrupt
+
+_sioA_SpecRxInt::
+	push  ix
+	push  iy
+	push  af
+	push  bc
+	push  de
+	push	hl
+
+	ld		a,0x11				; Get error status from rr1
+	out0	(SIOCA),a
+	in0	a,(SIOCA)
+	ld		hl,(sioAErrorMask)
+	and	l						; Mask unnecessary bits
+	jr		NZ,sioA_RxErr
+
+sioA_RxErr:
+
+	ld		hl,sioAError		; Copy masked rr1 into error variable
+	ld		(hl),a
+
+	ld		a,0x30				; Reset error status latch
+	out0	(SIOCA),a
+
+	pop   hl
+	pop   de
+	pop   bc
+	pop   af
+	pop   iy
+	pop   ix
+
+	ei
+	reti
+
+; External and status interrupt
+
+_sioA_ExtStatInt::
+	push	ix
+	push	iy
+	push	af
+	push	bc
+	push	de
+	push	hl
+
+	in0	a,(SIOCA)
+	bit	7,a						; Break detected?
+	jr		Z,sioA_ExtStatDone
+
+	ld    hl,sioaBrkReqCnt
+	inc	(hl)
+	ld 	a,N_ZEROS_FOR_BREQ			
+	cp 	(hl)						; 0 recieved repeatedly ?
+	jr		nz,sioA_ExtStatDone
+
+	ld    hl,sioaBrkReqCnt  		; zero out brk count before jumping to brk handler
+	xor	(hl)
+
+	ld		hl,(sioABRFnc)			; Call the break request function if it's defined.
+	ld		a,0
+	or		l
+	jp		NZ,sioA_BreakFnc
+	or		h
+	jp		Z,sioA_ExtStatDone
+	
+sioA_BreakFnc:
+	ld		de,sioA_ExtStatDone
+	push	de							; push return address on stack
+	jp		(hl)						; Execute the break request function
+
+sioA_ExtStatDone:
+	ld		a,0x10
+	out0	(SIOCA),a				; Reset Ext/Status interrupt
+
+	pop   hl
+	pop   de
+ 	pop   bc
+	pop   af
+	pop   iy
+	pop   ix
+
+	ei
+	reti
+
+; Tx buffer empty interrupt
+
+_sioA_TxInt::
+	push	ix
+	push	iy
+	push	af
+	push	bc
+	push	de
+	push	hl
+
+	ld		hl,sioAIntChar
+	push	hl
+	ld		hl,(pSIOAOutBuf)
+	push	hl
+	call	circbufGetByte		; Get the next available character from the output buffer
+	pop	de
+	pop	de
+	ld		a,h
+	or		l
+	jr		NZ,sioA_TxWrt
+
+	ld		a,0x28				; No more characters, so reset the Tx interrupt pending latch
+	out0	(SIOCA),a
+
+	jr		sioA_TxDone
+	
+sioA_TxWrt:
+	ld		a,(sioAIntChar)	; Write to the SIO Tx buffer
+	out0	(SIODA),a
+
+sioA_TxDone:
+
+	pop	hl
+	pop	de
+	pop	bc
+	pop	af
+	pop	iy
+	pop	ix
+
+	ei
+	reti
+
+#endasm

@@ -1,0 +1,102 @@
+/*
+	PLC-bus driver for MG and MG2, assumes the following configuration on
+	PIODA
+
+	7 6 5 4 3 2 1 0
+	| | | | | | | +--- /STB
+   | | | | | | +----- D0
+   | | | | | +------- D1
+   | | | | +--------- D2
+   | | | +----------- D3
+   | | +------------- A1
+   | +--------------- A2
+   +----------------- A3
+	The tricky issue is to share pins with other drivers when possible.
+	
+	/STB cannot be shared because it will cause the PLC-bus to latch at the
+	wrong time.
+	
+	A1 to A3 can be shared, as long as the other driver also uses these as
+	output pins AND can afford to have the state of these lines changed
+	once in a while. If shared, the states of A1 to A3 must be saved and
+	restored.
+
+	D0 to D3 cannot be shared. This is because these are bi-directional lines.
+
+	A general PLC-bus operation using the PIO will be as follows:
+
+	- to initialize, set bit 0, 5, 6, 7 to output and 1, 2, 3 and 4 to input
+	  bit 0 should be initialized high
+
+	- all interrupting PLC-bus operations should be as follows:
+	  - save state of PIODA
+	  - perform operation
+	  - restore state of PIODA
+
+	- 	
+*/
+
+/*** BeginHeader */
+
+#ifndef __EZIOMGPL_LIB
+#define __EZIOMGPL_LIB
+
+#define PIODX PIODA
+#define PIOCX PIOCA
+#define PIOCXShadow PIOCAShadow
+
+#define PPLC_STBMASK 0x01
+#define PPLC_STBPIN 0x00
+
+#define PPLC_INMASK 00011110b
+#define PPLC_OUTMASK 00000000b
+
+#define PPLC_D0MASK 00000000b
+#define PPLC_D1MASK 00100000b
+#define PPLC_D2MASK 01000000b
+#define PPLC_WRMASK 11100000b
+#define PPLC_RSTMASK 01100000b
+#define PPLC_A1MASK 10000000b
+#define PPLC_A2MASK 10100000b
+#define PPLC_A3MASK 11000000b
+
+#define PPLC_DSHFT 1
+
+/*
+xlate tables are not needed, only for testing the eziopplc.lib.
+PPLC_XLATE should be defined 0 for best speed (about 10% to 15% gain
+compared to PPLC_XLATE defined 1.
+*/
+
+#define PPLC_XLATE 1
+
+#use eziopplc.lib
+#use eziopbdv.lib
+
+/*** endHeader */
+
+/*** beginHeader pplcDPXlateTab, pplcPDXlateTab */
+
+extern char pplcDPXlateTab[16];
+extern char pplcPDXlateTab[16];
+
+/*** endHeader */
+
+/*
+This table is not needed, only for testing the eziopplc.lib.
+*/
+
+#asm
+pplcDPXlateTab::
+	db	0x00, 0x02, 0x04, 0x06, 0x08, 0x0a, 0x0c, 0x0e
+	db 0x10, 0x12, 0x14, 0x16, 0x18, 0x1a, 0x1c, 0x1e
+pplcPDXlateTab::
+	db	0x00,	0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07
+	db	0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f
+#endasm
+
+/*** BeginHeader */
+
+#endif
+
+/*** EndHeader */

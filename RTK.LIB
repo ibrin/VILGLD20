@@ -1,0 +1,683 @@
+/* START LIBRARY DESCRIPTION *********************************************
+RTK.LIB
+    Copyright (c) 1994, Z-World.
+
+DESCRIPTION: Real time kernel library. The functions in this module provide
+an application with real time task management and multitasking capabilities.
+The real-time kernel is initialized by a call to init_kernel and driven
+under interrupt by calls to run_timer. Tasks can be started by calls to
+run_every, run_after, run_at, or request.
+
+SUPPORT LIB'S:
+END DESCRIPTION **********************************************************/
+
+/* Changes ***
+052793 TAK: forced rkernel to be in root.  rkernel changes the CBR,
+            therefore must be in root.
+*** */
+
+/*** beginheader */
+
+#ifndef __RTK_LIB
+#define __RTK_LIB
+
+/*** endHeader */
+
+/*** BeginHeader  run_every, run_after,
+                  run_at, run_cancel, gettimer, tsks,
+                  timer48, k_Lock, kblock */
+
+struct tasker
+{
+    int susp;
+    char cbr;
+    char flag;
+    char mode;
+    int *tstack;
+    unsigned int timer[3];
+};
+
+extern struct tasker tsks[];
+
+extern unsigned int timer48[3];     // 48 bit timer
+
+extern char k_Lock;
+
+extern char kblock;
+
+int request(unsigned ntask);
+int run_every(int ntask, int ticks);
+int run_after(int ntask, long ticks);
+int run_at(int ntask, int *time);
+int run_cancel(int ntask);
+int gettimer(int *time);
+int comp48(char *p1, char *p2);
+int k_lock(void);
+int k_unlock(void);
+
+/*** EndHeader */
+
+
+struct tasker tsks[NTASKS];
+
+unsigned int timer48[3];     // 48 bit timer
+
+char k_Lock;
+char kblock;
+
+/* START FUNCTION DESCRIPTION ********************************************
+request                      <RTK.LIB>
+
+SYNTAX: int request(unsigned ntask);
+
+KEY WORDS:
+
+DESCRIPTION: Requests that a task be run if not running, or resumed if
+suspended.  "ntask" identifies the task to run or resume.
+
+RETURN VALUE: Undefined.
+END DESCRIPTION **********************************************************/
+nodebug int request(unsigned ntask)
+{
+    SET(&tsks[ntask].flag, 1); // set request flag
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+run_every                    <RTK.LIB>
+
+SYNTAX: int run_every(int ntask, int ticks);
+
+KEY WORDS:
+
+DESCRIPTION: Schedules a task for periodic execution. "ntask" identifies
+the task to run. "ticks" is the number of clock ticks to wait between runs.
+
+RETURN VALUE: Undefined.
+END DESCRIPTION **********************************************************/
+nodebug int run_every(int ntask, int ticks)
+{
+    DI();
+    tsks[ntask].mode = 3;
+    tsks[ntask].timer[1] = tsks[ntask].timer[0] = ticks;
+    EI();
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+run_after                    <RTK.LIB>
+
+SYNTAX: int run_after(int ntask, long ticks);
+
+KEY WORDS:
+
+DESCRIPTION: Schedules a task for one-time execution after the desired
+number of ticks have expired. "ntask" identifies the task to run. "ticks"
+is the number of clocks ticks to wait before running.
+
+RETURN VALUE: Undefined.
+END DESCRIPTION **********************************************************/
+nodebug int run_after(int ntask, long ticks)
+{
+    DI();
+    tsks[ntask].mode = 2;
+    *( (long *)&tsks[ntask].timer[0]) = ticks;
+    EI();
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+run_at                       <RTK.LIB>
+
+SYNTAX: int run_at(int ntask, int *time);
+
+KEY WORDS:
+
+DESCRIPTION: Schedules a task for execution at the given time.  "ntask"
+identifies task to run. "time" points to the 48 bit tick value (stored
+least byte first) after which the task will run.
+
+RETURN VALUE: Undefined.
+END DESCRIPTION **********************************************************/
+nodebug int run_at(int ntask, int *time)
+{
+    int *p;
+
+    DI();
+    tsks[ntask].mode = 1;
+    p = (int*)&(tsks[ntask].timer[0]);
+    *p++= *time++;
+    *p++= *time++;
+    *p++= *time++;
+    EI();
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+run_cancel                   <RTK.LIB>
+
+SYNTAX: int run_cancel(int ntask);
+
+KEY WORDS:
+
+DESCRIPTION: Cancel any pending "run_every," "run_after," or "run_at"
+request for a task.  "ntask" identifies the task to cancel.
+
+RETURN VALUE: Undefined.
+END DESCRIPTION **********************************************************/
+nodebug int run_cancel(int ntask)
+{
+    tsks[ntask].mode = 0;
+    return;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+gettimer                     <RTK.LIB>
+
+SYNTAX: int gettimer(int *time);
+
+KEY WORDS:
+
+DESCRIPTION: Get the current 48 bit time.  "time" points to a 6 byte buffer
+where the value will be stored, least byte first. This value corresponds to
+the number of times run_timer has been called since the call to init_kernel.
+
+RETURN VALUE: Undefined.
+END DESCRIPTION **********************************************************/
+nodebug int gettimer(int *time)
+{
+    unsigned int k;
+
+    DI();
+    for (k = 0; k < 3; k++)
+        *time++= timer48[k];
+    EI();
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+k_lock                       <RTK.LIB>
+
+SYNTAX: int k_lock(void);
+
+KEY WORDS:
+
+DESCRIPTION: Blocks any change of tasks until k_unlock is called. If an
+interrupt routine wants to enable other interrupts while it is executing,
+it should call this function to prevent the real time kernel from changing
+tasks, as a change in tasks would constitute a very long interrupt from the
+routine. After this function is called, the timer interrupts continue to
+take place, stepping the timer48 and processing requests for run_at, etc.,
+but no change of the executing task takes place. This essentially makes the
+calling routine the highest priority task until k_unlock is called. This
+function should be called with interrupts off.
+
+RETURN VALUE: Undefined.
+END DESCRIPTION **********************************************************/
+nodebug int k_lock(void)
+{
+    ++k_Lock;
+}                            // block kernel from switching tasks
+
+/* START FUNCTION DESCRIPTION ********************************************
+k_unlock                     <RTK.LIB>
+
+SYNTAX: int k_unlock(void);
+
+KEY WORDS:
+
+DESCRIPTION: Reenables task changes after a call to k_lock. Note that k_lock
+and k_unlock maintain a lock count, so every call to k_lock must be matched
+with a single call to k_unlock, and only when the lock count returns to zero
+will task changes actually be reenabled. This function should be called with
+interrupts off.
+
+RETURN VALUE: Undefined.
+END DESCRIPTION **********************************************************/
+nodebug int k_unlock(void)
+{
+    --k_Lock;
+}                            // unblock kernel
+
+#asm
+dummy: equ run_timer
+#endasm
+
+/*** BeginHeader run_timer */
+
+void run_timer(void);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+run_timer                    <RTK.LIB>
+
+SYNTAX: void run_timer(void);
+
+KEY WORDS:
+
+DESCRIPTION: For the real-time kernel to operate, this function must be
+called by an interrupt routine between 10 and 500 times per second. Each
+call to this function constitutes one clock tick, so all time values used
+by other real time kernel functions depend on the rate at which this
+function is called.
+
+RETURN VALUE: Undefined.
+END DESCRIPTION **********************************************************/
+
+fast useix nodebug void run_timer(void)
+{
+
+    register unsigned k;
+    register struct tasker * ptr;
+
+#asm
+    ei              ; MGL / AC Fix to reduce latency 12/21/92
+    ld  hl,timer48  ; step 6-byte timer value
+    ld  b,6
+tmc:
+    inc (hl)
+    jr  nz,tmc2
+    inc hl
+    djnz    tmc
+tmc2:
+#endasm
+
+    ptr = tsks;
+    for (k = 0; k < NTASKS; k++)
+    {
+        // request task when suspense count hits zero
+        if (ptr->susp)
+            if (!--ptr->susp)
+                SET(&ptr->flag, 1);
+
+        switch (ptr->mode)
+        {
+                             // no request
+            case 0:
+                goto setf1;
+                             // request when 48 bit time reached
+            case 1:
+                if (comp48((char*)timer48, (char*)&ptr->timer[0]) >= 0)
+                {
+setf:              ptr->mode = 0;
+setf0:             SET(&ptr->flag, 1);
+                }
+setf1:         ++ptr;
+                continue;
+            case 2:
+                if ((-- (* ((long *) &ptr->timer[0]))))
+                    goto setf1;
+                else
+                    goto setf;
+            case 3:
+                if (!(--ptr->timer[0]))
+                {
+                    ptr->timer[0] = ptr->timer[1];
+                    goto setf0;
+                }
+                else
+                    goto setf1;
+        }       // end of switch
+    }           // end of for(k=
+    rkernel();  // return the kernel, then return from interrupt
+}
+
+#ifdef RUNKERNEL
+#ifdef __CPLC_LIB
+#define __USEPRT1
+#else
+#ifdef __VDRIVER_LIB
+#define __USEPRT1
+#else
+#ifdef __KDM_LIB
+#define __USEPRT1
+#endif
+#endif
+#endif
+#endif
+
+#ifdef __USEPRT1
+#funcchain _sys_25msPostEI run_timer
+#endif
+
+/*** BeginHeader comp48 */
+
+int comp48(char *p1, char *p2);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+comp48                       <RTK.LIB>
+
+SYNTAX: int comp48(char *p1, char *p2);
+
+KEY WORDS:
+
+DESCRIPTION: Compares two 48 bit numbers (6 bytes each), stored least byte
+first. p1 and p2 point to the numbers to compare.
+
+RETURN VALUE: Returns -1 if the value at *p1 is less than the value
+at *p2; 0 if *p1 is equal to *p2; and 1 if *p1 is greater than *p2.
+END DESCRIPTION **********************************************************/
+int comp48(char *p1, char *p2);
+#asm fast
+comp48::
+   pop   hl    ; 9 pop address
+   pop   bc    ; 9 first argument
+   ex (sp),hl     ; 16 address on top stack, 2nd argument in hl
+   ld de,5     ; 9 add 5 to hl
+   add   hl,de    ; 7
+   ld d,h      ; 4 put back to second argument
+   ld e,l      ; 4
+
+   ld h,b      ; 4
+   ld l,c      ; 4
+   ld bc,5     ; 9   first argument in register
+   add   hl,bc    ; 7
+
+   pop   bc
+   push  bc
+   push  bc
+   push  bc
+
+   ld b,6         ; 6
+clp:
+   ld a,(de)      ; 6
+   cp (hl)        ; 6
+   jr nz,clp1     ; 6/9
+   dec   hl
+   dec   de
+   djnz  clp
+   ld hl,0
+   ret
+clp1:
+   jr c,clp2      ; 6/9
+   ld hl,0-1      ; 9
+   ret
+clp2:
+   ld hl,1        ; 9
+   ret
+; about 38 states per iteration, + 18 states for epilog
+#endasm
+
+/*** BeginHeader rkernel, suspend */
+
+void rkernel(void);
+
+void suspend(unsigned int ticks);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+rkernel                      <RTK.LIB>
+
+SYNTAX: void rkernel(void);
+
+KEY WORDS:
+
+DESCRIPTION: Real time kernel core; called by run_timer. If there is no
+change to the currently executing task, this function will return
+immediately. If it decides to change tasks (based on run_every, run_after,
+etc., scheduling), then it will not return until the new task either
+returns or calls suspend.
+
+RETURN VALUE: Undefined.
+END DESCRIPTION **********************************************************/
+fast useix nodebug void rkernel(void)
+{
+
+    register struct tasker * ptr;
+    register unsigned k;
+    register unsigned stackvalue, ixvalue, auxvalue;
+    extern unsigned AUX_STACK_PTR;
+
+    DI();
+    if (kblock | k_Lock)
+    {
+        EI();
+        return;
+    }                        // kernel blocked
+    kblock = 1;
+    EI();
+start:
+    for (k = 0; k < NTASKS; k++)
+    {
+        EI();                // AC Fix to reduce latency 12-21-92
+        ptr = &tsks[k];
+        if (BIT(&ptr->flag, 0))
+        {
+            DI();
+            kblock = 0;
+            EI();
+            return;
+        }                    // task running
+        if (ptr->susp)
+            continue;        // suspended
+        DI();
+        kblock = 0;
+        if (BIT(&ptr->flag, 1))
+        {                    // task requested
+            ptr->flag = 1;   // set running flag, clear requested flag
+            EI();
+#asm
+            ld  hl,0
+            add hl,sp
+            ld  (stackvalue),hl     ;save stack value
+            ld  (ixvalue),ix        ;save ix value
+#endasm
+            auxvalue = AUX_STACK_PTR;
+            if (! *ptr->tstack)
+            {
+                (*Ftask[k]) ();   // call the task
+                *ptr->tstack = 0; // a true return, clear suspend stack
+#asm
+                ld  ix,(ixvalue)
+#endasm
+            }
+            else
+            {                           // return to suspended task
+                outport(CBR, ptr->cbr); // restore CBR
+#asm
+c               ptr->tstack;
+                ld  c,(hl)      ;get pointer
+                inc hl
+                ld  b,(hl)      ;bc is count
+                inc hl
+                ex  de,hl
+                ld  hl,0
+                or  a
+                sbc hl,bc
+                add hl,sp       ;new stack
+                ld  sp,hl
+                ex  de,hl
+                ldir            ;restore stack
+                pop ix          ;restore ix offset
+                add ix,sp       ; restore actual ix relative to stack
+                pop bc          ; count of aux stack
+                ld  a,c
+                or  a
+                ei
+                ret z     ;if nothing on aux stack
+                ld  hl,(AUX_STACK_PTR)
+                ld  e,a
+                ld  d,0
+                sbc hl,de   ; new value of aux stack
+                ld  (AUX_STACK_PTR),hl
+                add hl,de   ;get back previous value of stack
+                ld  b,c         ;count to b
+res0a:
+                pop de
+                bit 0,b         ;test for odd
+                jr  nz,res0b    ; skip 1/2 if odd
+                dec hl
+                ld  (hl),d
+                djnz    res0b   ;if more
+                ei
+                ret
+res0b:
+                dec hl
+                ld  (hl),e
+                djnz    res0a
+                ei
+                ret             ; return to users code
+#endasm
+            }
+#asm
+nexter:
+#endasm
+            next: DI();
+            kblock = 1;
+            RES(&ptr->flag, 0); // reset running bit
+            EI();
+            goto start;      // scan again
+            ;
+        }
+    }             // end of for loop
+                  // following code never entered, if background enabled
+    DI();
+    kblock = 0;
+    EI();
+    return;
+
+/* START FUNCTION DESCRIPTION ********************************************
+suspend                      <RTK.LIB>
+
+SYNTAX: void suspend(unsigned int ticks);
+
+KEY WORDS:
+
+DESCRIPTION: Call this function from within a task to suspend that task. The
+task will be blocked until the given number of ticks have expired, at which
+point normal scheduling (as requested by run_every, run_after, etc.) will
+resume. While the task is suspended, any counters associated with it (every,
+after, at) are updated, but the task is not executed. If ticks is set to 0,
+the task will stop until an external force requests that it start again by
+calling run_every, run_after, run_at, or request.
+
+RETURN VALUE: Undefined.
+END DESCRIPTION **********************************************************/
+#asm
+suspend::       ; saves the task stack in static save area
+        push    hl  ;save arg
+c       &ptr->susp; /* get address */
+        pop de
+        ld  (hl),e
+        inc hl
+        ld  (hl),d  ;suspend time saved
+        inc hl
+        in0 a,(CBR)  ; save CBR
+        ld  (hl),a   ; to ptr->
+c       auxvalue-AUX_STACK_PTR;
+        ld  b,l     ;count
+        ld  c,l     ;count
+        ld  a,b
+        or  a
+        jr  z,sus1a  ;if nothing changed in aux stack
+        ld  hl,(AUX_STACK_PTR)
+sus0:
+        ld  e,(hl)
+        inc hl
+        djnz    sus0a
+        push    de
+        jr  sus1
+sus0a:
+        ld  d,(hl)
+        inc hl
+        push    de
+        djnz    sus0
+sus1:
+        ld  (AUX_STACK_PTR),hl
+sus1a:
+        push    bc      ;save count
+;
+        push    ix      ;save ix
+        pop     hl
+        or      a
+        sbc hl,sp       ;offset between sp and ix
+        push    hl      ;ix offset
+        ld  ix,(ixvalue)
+        ld  hl,0
+        add hl,sp
+        ex  de,hl
+        ld  hl,(stackvalue)
+        or  a
+        sbc hl,de       ;get size of stack
+        push    hl      ;save it on stack
+        inc hl
+        inc hl
+        push    hl
+c       ptr->tstack;   /*point to save area*/
+        pop bc      ;count
+        ex  de,hl
+        ld  hl,0
+        add hl,sp
+        push    bc  ;save count
+        ldir
+        pop     hl
+        add hl,sp
+        ld  sp,hl       ;flush stack
+        jp  nexter        ; continue
+#endasm
+
+}
+
+/*** beginHeader init_kernel */
+
+void init_kernel(void);
+
+/*** EndHeader */
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+init_kernel                  <RTK.LIB>
+
+SYNTAX: void init_kernel(void);
+
+KEY WORDS:
+
+DESCRIPTION: Initializes the real-time kernel. This function takes no
+parameters, however the calling program must contain certain definitions:
+functions to be run as tasks must be declared with no parameters and return
+an int; the global variable, Ftask, must be declared as an array of pointers
+to the tasks, with the first task (Ftask[0]) given the highest priority and
+the last task the lowest priority; NTASKS must be defined to be the number
+of tasks; a periodic interrupt must be set up with a service routine that
+calls run_timer. Optionally, TASKSIZE_STORE may be defined to be the size
+of the task storage area (this will default to 50 if not defined). All of
+the above definitions must occur in the source code before any reference to
+real-time kernel functions.
+
+RETURN VALUE: Undefined.
+END DESCRIPTION **********************************************************/
+nodebug void init_kernel(void)
+{
+
+    static unsigned k;
+    static struct tasker * ptr;
+
+    /* an alternate version of this routine would make dat be
+       a different size for each task, allocating the amount of
+       space needed to save the incremental stack task by task */
+
+#ifndef TASKSTORE_SIZE
+        static char dat[NTASKS][50]; // adjust if needed
+#else
+        static char dat[NTASKS][TASKSTORE_SIZE]; // adjust if needed
+#endif
+    DI();
+    k_Lock = 0;
+    kblock = 0;
+    for (k = 0; k < NTASKS; k++)
+    {
+        ptr = &tsks[k];
+        ptr->susp = ptr->flag = ptr->mode = 0;
+        * (ptr->tstack = (int*)&dat[k][0]) = 0;
+    }
+    for (k = 0; k < 3; k++)
+        timer48[k] = 0;
+
+    tsks[NTASKS - 1].flag = 1; // mark the background as runnning
+    EI();
+}
+
+/*** beginHeader */
+
+#endif
+
+/*** endHeader */

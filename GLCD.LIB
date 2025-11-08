@@ -1,0 +1,1175 @@
+/* START LIBRARY DESCRIPTION *********************************************
+GLCD.LIB
+	Copyright (c) 1997, Z-World.
+
+DESCRIPTION: library of abstract (i.e., hardware independent) graphics
+LCD primitives.
+
+END DESCRIPTION **********************************************************/
+
+/*** BeginHeader glSetBrushType */
+
+#ifndef _GLCD_LIB
+#define _GLCD_LIB
+
+/*** EndHeader */
+
+/*** BeginHeader */
+
+#ifdef _RASTER_DEFINED
+#undefine _RASTER_DEFINED
+#endif
+
+#ifdef _WINTEK_LIB
+#define _RASTER_DEFINED
+#endif
+
+#ifdef _V256x64_LIB
+#define _RASTER_DEFINED
+#endif
+
+#ifdef _RASTER_DEFINED
+#define glInit wtInit
+#define glBlankScreen wtBlankScreen
+#define glBuf wtBuf
+#define glPlotDot wtPlotDot
+#define glBufOpen wtBufOpen
+#define glBufClose wtBufClose
+#define glBufPutBitmap wtBufPutBitmap
+#define glFastPutBitmap wtFastPutBitmap
+#define glBufXPutBitmap wtBufXPutBitmap
+#define glBufGetBitmap wtBufGetBitmap
+#define glBufPlotDot wtBufPlotDot
+#define glSetBrushType wtSetBrushType
+#define GL_SET WT_SET
+#define GL_CLEAR WT_CLEAR
+#define GL_XOR WT_XOR
+#define GL_BLOCK WT_BLOCK
+
+#else
+
+#error "No graphics LCD/VFD specific driver is selected."
+
+#endif
+
+struct _fontInfo {
+	char pixWidth, pixHeight;
+	unsigned startChar;
+	unsigned endChar;
+	char flags;
+	union {
+		char *bitmapBuffer;
+		unsigned long xmemBuffer;
+	} where;
+};
+
+#define GLFONT_INXMEM	1	//	bit mask to see if font is in xmem
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+glSetBrushType
+
+SYNTAX: void glSetBrushType(int type)
+
+KEYWORDS: graphics LCD
+
+DESCRIPTION: This function sets the brush type for all following graphics
+operations. It controls how pixels are drawn on the screen with respect
+to existing pixels.
+
+PARAMETER1: This is the type of the brush. Possible values are GL_SET for
+forcing pixels on, GL_CLEAR for forcing pixels off, GL_XOR for toggling
+the existing pixels and GL_BLOCK to overwrite the entire memory location
+corresponding to the pixel.
+
+RETURN VALUE:  None.
+
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+glInit
+
+SYNTAX: int glInit()
+
+KEYWORDS: graphics LCD
+
+DESCRIPTION: This function initializes the LCD module (software and
+hardware).
+
+RETURN VALUE:  returns the status of the LCD. If the initialization was
+successful, this function returns 0. Otherwise, the returned value
+indicates the LCD status.
+
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+glBlankScreen
+
+SYNTAX: int glBlankScreen()
+
+KEYWORDS: graphics LCD
+
+DESCRIPTION: This function blanks the screen of the LCD.
+
+RETURN VALUE:  The returned value indicates the status of the LCD after
+the operation.
+
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+glBufClose
+
+SYNTAX: void glBufClose(struct glBuf *pBuf)
+
+KEYWORDS: graphics LCD
+
+DESCRIPTION: This function closes a graphics buffer and updates the LCD
+of any remaining changes in the buffer.
+
+PARAMETER1: pointer to the buffer to be closed.
+
+RETURN VALUE:  None.
+
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+glBufGetBitmap
+
+SYNTAX: void glBufGetBitmap(	struct glBuf *pBuf, int x, int y,
+							int bmWidth, int bmHeight, char *bm)
+
+KEYWORDS: graphics LCD
+
+DESCRIPTION: this function reads back a bitmap from the LCD screen.
+
+PARAMETER1: points to a buffer that buffers the LCD operations.
+
+PARAMETER2: x-coordinate of the bitmap (left-edge of the bitmap)
+
+PARAMETER3: y-coordinate of the bitmap (top-edge of the bitmap)
+
+PARAMETER4: width of the bitmap
+
+PARAMETER5: height of the bitmap
+
+PARAMETER6: row-major linear array of the bitmap.
+
+RETURN VALUE: None.
+
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+glBufPutBitmap
+
+SYNTAX: void glBufPutBitmap(	struct glBuf *pBuf, int x, int y,
+							int bmWidth, int bmHeight, char *bm)
+
+KEYWORDS: graphics LCD
+
+DESCRIPTION: This function puts a bitmap on the screen as a buffered
+operation.
+
+PARAMETER1: points to the buffer used to buffer the LCD operation.
+
+PARAMETER2: x-coordinate of the bitmap (left-edge of the bitmap)
+
+PARAMETER3: y-coordinate of the bitmap (top-edge of the bitmap)
+
+PARAMETER4: width of the bitmap
+
+PARAMETER5: height of the bitmap
+
+PARAMETER6: row-major linear array of the bitmap.
+
+RETURN VALUE: None.
+
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+glBufPlotDot
+
+SYNTAX: void glBufPlotDot(struct glBuf *pBuf, int x, int y)
+
+KEYWORDS: graphics LCD
+
+DESCRIPTION: This function plots a pixel at coordinate (x,y).
+
+PARAMETER1: points to the buffer to buffer the operation.
+
+PARAMETER2: x-coordinate of the pixel.
+
+PARAMETER3: y-coordinate of the pixel.
+
+RETURN VALUE:  None.
+
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+glBufFlush
+
+SYNTAX: void glBufFlush(struct glBuf *pBuf)
+
+KEYWORDS: graphics LCD
+
+DESCRIPTION: This function flushes all pending operations at the graphics
+LCD buffer.
+
+PARAMETER1: points to the buffer to be flushed.
+
+RETURN VALUE: None.
+
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+glBufOpen
+
+SYNTAX: void glBufOpen(struct glBuf *pBuf)
+
+KEYWORDS: internal LCD specific
+
+DESCRIPTION: This function opens (initializes) a buffer for buffered
+graphics operations.
+
+PARAMETER1: points to the buffer structure to be opened.
+
+RETURN VALUE:  None.
+
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+glPlotDot
+
+SYNTAX: int glPlotDot(int x, int y)
+
+KEYWORDS: internal LCD specific
+
+DESCRIPTION: This function plots one pixel on the screen at coordinate
+(x,y).
+
+PARAMETER1: the x-coordinate of the pixel to be drawn.
+
+PARAMETER2: the y-coordinate of the pixel to be drawn.
+
+RETURN VALUE: Status of the LCD after the operation.
+
+END DESCRIPTION **********************************************************/
+
+/*** BeginHeader */
+
+/*** EndHeader */
+
+/*** BeginHeader glSlowPlotLine */
+
+void glSlowPlotLine(int x1, int y1, int x2, int y2);
+#define SWAP(a,b) swapper=a; a=b; b=swapper
+
+
+/*** EndHeader */
+
+void glSlowPlotLine(int x1, int y1, int x2, int y2) {
+	auto float slope;
+	auto int i;
+	auto int swapper;
+	auto struct glBuf displayBuf;
+
+	glBufOpen(&displayBuf);	
+	if (abs(y2-y1) > abs(x2-x1)) {
+		slope = ((float)(x2-x1)) / ((float)(y2-y1));
+		if (y1 > y2) {
+			SWAP(x1,x2);
+			SWAP(y1,y2);
+		}
+		for (i = y1; i <= y2; ++i) {
+			glPlotDot(0.5+slope*(i-y1)+x1,i);
+		}
+	} else {
+		if (x1 > x2) {
+			SWAP(x1,x2);
+			SWAP(y1,y2);
+		}
+		slope = ((float)(y2-y1)) / ((float)(x2-x1));
+		for (i = x1; i <= x2; ++i) {
+			glBufPlotDot(&displayBuf,i,floor(0.5+slope*(i-x1))+y1);
+		}
+	}
+	glBufClose(&displayBuf);
+}
+
+/*** BeginHeader glPlotLine */
+
+void glPlotLine(int x1, int y1, int x2, int y2);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+glPlotLine
+
+SYNTAX: void glPlotLine(int x1, int y1, int x2, int y2)
+
+KEYWORDS: graphics LCD primitive
+
+DESCRIPTION: This function plots a line on the LCD.
+
+PARAMETER1: x-coordinate of first end-point.
+
+PARAMETER2: y-coordinate of first end-point.
+
+PARAMETER3: x-coordinate of second end-point.
+
+PARAMETER4: y-coordinate of second end-point.
+
+RETURN VALUE: None.
+
+END DESCRIPTION **********************************************************/
+
+ASM_NOIX void glPlotLine(int x1, int y1, int x2, int y2) {
+	auto int iy,i,dx,s,dy,ilim;
+	auto int swapper;
+	auto int reverse;
+	auto int dir;
+	auto struct glBuf displayBuf;
+
+	glBufOpen(&displayBuf);	
+	dx = x2 - x1;
+	dy = y2 - y1;
+	if (abs(dy) <= abs(dx)) {
+		//	abs(slope < 1)
+		reverse = 0;
+	} else {
+		//	abs(slope > 1)
+		//	reverse x and y
+		SWAP(x1,y1);
+		SWAP(x2,y2);
+		SWAP(dx,dy);
+		reverse = 1;
+	}
+	if (dx < 0) {
+		SWAP(x1,x2);
+		SWAP(y1,y2);
+		dx = - dx;
+		dy = - dy;
+	}
+	if (dy >= 0) {
+		//	case 0: slope >= 0
+		dir = 1;
+	} else {
+		dir = -1;
+		dy = - dy;
+		//	case 1: s decrements, slope < 0
+	}
+	ilim = dx+x1;
+	s = y1;
+	for (	i = x1, iy = dx/2;
+			i <= ilim;
+			++i) {
+		if (iy >= dx) {
+			iy -= dx;
+			s += dir;
+		}
+		if (reverse) glBufPlotDot(&displayBuf, s, i);
+		else glBufPlotDot(&displayBuf, i, s);
+		iy += dy;
+	}
+	glBufClose(&displayBuf);
+}
+
+/*** BeginHeader glPlotHLine */
+
+void glPlotHLine(int x1, int y1, int x2, int y2);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+glPlotHLine
+
+SYNTAX: void glPlotHLine(int x1, int y1, int x2, int y2)
+
+KEYWORDS: graphics LCD primitive
+
+DESCRIPTION: This function plots a horizontal line on the LCD.
+
+PARAMETER1: x-coordinate of first end-point.
+
+PARAMETER2: y-coordinate of first end-point.
+
+PARAMETER3: x-coordinate of second end-point.
+
+PARAMETER4: y-coordinate of second end-point.
+
+RETURN VALUE: None.
+
+END DESCRIPTION **********************************************************/
+
+ASM_NOIX void glPlotHLine(int x1, int y1, int x2, int y2) {
+	auto struct glBuf displayBuf;
+	auto int swapper;
+	auto int i;
+
+	glBufOpen(&displayBuf);
+	if (x1 > x2) {
+		SWAP(x1,x2);
+	}
+	for (i = x1; i <= x2; ++i) glBufPlotDot(&displayBuf,i,y1);
+	glBufClose(&displayBuf);
+}
+
+/*** BeginHeader glPlotVLine */
+
+void glPlotVLine(int x1, int y1, int x2, int y2);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+glPlotVLine
+
+SYNTAX: void glPlotVLine(int x1, int y1, int x2, int y2)
+
+KEYWORDS: graphics LCD primitive
+
+DESCRIPTION: This function plots a horizontal line on the LCD.
+
+PARAMETER1: x-coordinate of first end-point.
+
+PARAMETER2: y-coordinate of first end-point.
+
+PARAMETER3: x-coordinate of second end-point.
+
+PARAMETER4: y-coordinate of second end-point.
+
+RETURN VALUE: None.
+
+END DESCRIPTION **********************************************************/
+
+ASM_NOIX void glPlotVLine(int x1, int y1, int x2, int y2) {
+	auto struct glBuf displayBuf;
+	auto int swapper;
+	auto int i;
+
+	glBufOpen(&displayBuf);	
+	if (y1 > y2) {
+		SWAP(y1,y2);
+	}
+	for (i = y1; i <= y2; ++i) glBufPlotDot(&displayBuf,x1,i);
+	glBufClose(&displayBuf);
+}
+
+/*** BeginHeader glPutBitmap */
+
+void glPutBitmap(int x, int y, int bmWidth, int bmHeight, char *bm);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+glPutBitmap
+
+SYNTAX: void glPutBitmap(int x, int y, int bmWidth, int bmHeight,
+	char *bm)
+
+KEYWORDS: graphics LCD primitive
+
+DESCRIPTION: This function displays a bitmap store in root memory
+on the LCD. For bitmaps defined in xmem memory, use glXPutBitmap.
+
+PARAMETER1: x-coordinate of the bitmap (left-edge).
+
+PARAMETER2: y-coordinate of the bitmap (top-edge).
+
+PARAMETER3: width of the bitmap.
+
+PARAMETER4: height of the bitmap.
+
+PARAMETER5: pointer to the bitmap. The bitmap format is column major,
+byte aligned for each column.
+
+RETURN VALUE: None.
+
+END DESCRIPTION **********************************************************/
+
+void glPutBitmap(int x, int y, int bmWidth, int bmHeight, char *bm) {
+	glFastPutBitmap(x,y,bmWidth,bmHeight,bm);
+}
+
+/*** BeginHeader glXPutBitmap */
+
+void glXPutBitmap(int x, int y, int bmWidth, int bmHeight,
+	unsigned long bmPtr);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+glXPutBitmap
+
+SYNTAX: void glXPutBitmap(int x, int y, int bmWidth, int bmHeight,
+	unsigned long bmPtr)
+
+KEYWORDS: graphics LCD primitive
+
+DESCRIPTION: This function displays a bitmap stored in xmem on the LCD.
+For bitmaps stored in root memory, use glPutBitmap.
+
+PARAMETER1: x-coordinate of the bitmap (left-edge).
+
+PARAMETER2: y-coordinate of the bitmap (top-edge).
+
+PARAMETER3: width of the bitmap.
+
+PARAMETER4: height of the bitmap.
+
+PARAMETER5: pointer to the bitmap. The bitmap format is column major,
+byte aligned for each column.
+
+RETURN VALUE: None.
+
+END DESCRIPTION **********************************************************/
+
+void glXPutBitmap(int x, int y, int bmWidth, int bmHeight,
+		unsigned long bmPtr) {
+	auto struct glBuf displayBuf;
+	glBufOpen(&displayBuf);
+	glBufXPutBitmap(&displayBuf,x,y,bmWidth,bmHeight,bmPtr);
+	glBufClose(&displayBuf);
+}
+
+/*** BeginHeader glGetBitmap */
+
+void glGetBitmap(int x, int y, int bmWidth, int bmHeight, char *bm);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+glGetBitmap
+
+SYNTAX: void glGetBitmap(int x, int y, int bmWidth, int bmHeight,
+		char *bm)
+
+KEYWORDS: graphics LCD primitive
+
+DESCRIPTION: This function gets a bitmap from the LCD.
+
+PARAMETER1: x-coordinate of the bitmap (left-edge).
+
+PARAMETER2: y-coordinate of the bitmap (top-edge).
+
+PARAMETER3: width of the bitmap.
+
+PARAMETER4: height of the bitmap.
+
+PARAMETER5: pointer to the bitmap. The bitmap format is column major,
+byte aligned for each column.
+
+RETURN VALUE: None.
+
+END DESCRIPTION **********************************************************/
+
+void glGetBitmap(int x, int y, int bmWidth, int bmHeight, char *bm) {
+	auto struct glBuf displayBuf;
+	glBufOpen(&displayBuf);
+	glBufGetBitmap(&displayBuf,x,y,bmWidth,bmHeight,bm);
+	glBufClose(&displayBuf);
+}
+
+/*** BeginHeader glFontInit */
+
+void glFontInit(struct _fontInfo *pInfo, char pixWidth, char pixHeight,
+	unsigned startChar, unsigned endChar, char *bitmapBuffer);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+glFontInit
+
+SYNTAX: void glFontInit(struct _fontInfo *pInfo, char pixWidth,
+	char pixHeight, unsigned startChar, unsigned endChar,
+	char *bitmapBuffer)
+
+KEYWORDS: graphics LCD primitive
+
+DESCRIPTION: This function initializes a font descriptor with the bitmap
+defined in the root memory. For fonts with bitmaps defined in xmem, use
+glXFontInit.
+
+PARAMETER1: pointer to the font descriptor to be initialized.
+
+PARAMETER2: width of each font item (must be uniform for all items).
+
+PARAMETER3: height of each font item  (must be uniform for all items).
+
+PARAMETER4: offset to the first useable item (useful for fonts for ASCII
+or other fonts with an offset).
+
+PARAMETER5: index of the last useable font item.
+
+PARAMETER6: pointer to a linear array of font bitmap.The bitmap is column
+major, byte aligned.
+
+RETURN VALUE: None.
+
+END DESCRIPTION **********************************************************/
+
+void glFontInit(struct _fontInfo *pInfo, char pixWidth, char pixHeight,
+	unsigned startChar, unsigned endChar, char *bitmapBuffer) {
+
+	pInfo->pixWidth = pixWidth;
+	pInfo->pixHeight = pixHeight;
+	pInfo->startChar = startChar;
+	pInfo->endChar = endChar;
+	pInfo->where.bitmapBuffer = bitmapBuffer;
+	pInfo->flags &= 0xfe;
+}
+
+/*** BeginHeader glXFontInit */
+
+void glXFontInit(struct _fontInfo *pInfo, char pixWidth, char pixHeight,
+	unsigned startChar, unsigned endChar, unsigned long xmemBuffer);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+glXFontInit
+
+SYNTAX: void glXFontInit(struct _fontInfo *pInfo, char pixWidth,
+	char pixHeight, unsigned startChar, unsigned endChar,
+	unsigned long xmemBuffer)
+
+KEYWORDS: graphics LCD primitive
+
+DESCRIPTION: This function initializes a font descriptor that has the
+bitmap defined in xmem. For bitmaps defined in root memory, use
+glFontInit.
+
+PARAMETER1: pointer to the font descriptor to be initialized.
+
+PARAMETER2: width of each font item (must be uniform for all items).
+
+PARAMETER3: height of each font item  (must be uniform for all items).
+
+PARAMETER4: offset to the first useable item (useful for fonts for ASCII
+or other fonts with an offset).
+
+PARAMETER5: index of the last useable font item.
+
+PARAMETER6: pointer to a linear array of font bitmap.The bitmap is column
+major, byte aligned.
+
+RETURN VALUE: None.
+
+END DESCRIPTION **********************************************************/
+
+void glXFontInit(struct _fontInfo *pInfo, char pixWidth, char pixHeight,
+	unsigned startChar, unsigned endChar, unsigned long xmemBuffer) {
+
+	pInfo->pixWidth = pixWidth;
+	pInfo->pixHeight = pixHeight;
+	pInfo->startChar = startChar;
+	pInfo->endChar = endChar;
+	pInfo->where.xmemBuffer = xmemBuffer;
+	pInfo->flags |= 0x01;
+}
+
+/*** BeginHeader glPutFont */
+
+void glPutFont(int x, int y, struct _fontInfo *pInfo, unsigned code);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+glPutFont
+
+SYNTAX: void glPutFont(int x, int y, struct _fontInfo *pInfo,
+	unsigned code)
+
+KEYWORDS: graphics LCD primitive
+
+DESCRIPTION: This function puts an entry from the font table to the LCD.
+
+PARAMETER1: x-coordinate of the entry (left edge).
+
+PARAMETER2: y-coordinate of the entry (top edge).
+
+PARAMETER3: pointer to the font descriptor that describes the font table
+to be indexed.
+
+PARAMETER4: code (offset) in the font table that indexes the bitmap to
+display.
+
+RETURN VALUE: None.
+
+END DESCRIPTION **********************************************************/
+
+void glPutFont(int x, int y, struct _fontInfo *pInfo, unsigned code) {
+	auto unsigned thisCode;
+
+	thisCode = (code - pInfo->startChar);
+	if ((code > pInfo->endChar) || (code < pInfo->startChar)) return;
+	if (pInfo->flags & GLFONT_INXMEM) {
+		glXPutBitmap(x,y,pInfo->pixWidth,pInfo->pixHeight,
+				pInfo->where.xmemBuffer+
+				(code-pInfo->startChar)*((pInfo->pixHeight+7)/8*pInfo->pixWidth));
+	} else {
+		glPutBitmap(x,y,pInfo->pixWidth,pInfo->pixHeight,
+				pInfo->where.bitmapBuffer+
+				(code-pInfo->startChar)*((pInfo->pixHeight+7)/8*pInfo->pixWidth));
+	}
+}
+
+/*** BeginHeader glVPrintf */
+
+void glVPrintf(int x, int y, struct _fontInfo *pInfo, char *fmt, void *firstArg);
+
+struct glPutCharInst {
+	struct _fontInfo *pFont;
+	int x, y;
+};
+
+/*** EndHeader */
+
+void glPutChar(char ch, struct glPutCharInst *pInst) {
+	if (ch == '\n') {
+		pInst->x = 0;
+		pInst->y += pInst->pFont->pixHeight;
+	} else if (ch == '\b') {
+		pInst->x -= pInst->pFont->pixWidth;
+	} else {
+		glPutFont(pInst->x, pInst->y, pInst->pFont, ch);
+		pInst->x += pInst->pFont->pixWidth;
+	}
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+glVPrintf
+
+SYNTAX: void glVPrintf(int x, int y, struct _fontInfo *pInfo,
+	char *fmt, void *firstArg)
+
+KEYWORDS: graphics LCD primitive
+
+DESCRIPTION: This function prints a formatted string on the LCD screen,
+similar to vprintf.
+
+PARAMETER1: x-coordinate of the text (left edge).
+
+PARAMETER2: y-coordinate of the text (top edge).
+
+PARAMETER3: pointer to font descriptor that describes the font used for
+printing the text.
+
+PARAMETER4: pointer to the string that describes the format.
+
+PARAMETER5: pointer to the first argument to instantiate the format
+string.
+
+RETURN VALUE: None.
+
+END DESCRIPTION **********************************************************/
+
+void glVPrintf(int x, int y, struct _fontInfo *pInfo, char *fmt, void *firstArg) {
+	struct glPutCharInst instanceParam;
+
+	instanceParam.x = x;
+	instanceParam.y = y;
+	instanceParam.pFont = pInfo;
+	doprnt(glPutChar,fmt,firstArg,&instanceParam);
+}
+
+/*** BeginHeader glPrintf */
+
+void glPrintf(int x, int y, struct _fontInfo *pInfo, char *fmt,...);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+glPrintf
+
+SYNTAX: void glPrintf(int x, int y, struct _fontInfo *pInfo,
+			char *fmt,...)
+
+KEYWORDS: graphics LCD primitive
+
+DESCRIPTION: This function prints a formatted string (much like printf)
+on the LCD screen.
+
+PARAMETER1: x-coordinate of the text (left-edge).
+
+PARAMETER2: y-coordinate of the text (top-edge).
+
+PARAMETER3: pointer to the font descriptor used for printing on the
+LCD screen.
+
+PARAMETER4: pointer to the format string
+
+RETURN VALUE: None.
+
+END DESCRIPTION **********************************************************/
+
+void glPrintf(int x, int y, struct _fontInfo *pInfo, char *fmt,...) {
+	glVPrintf(x, y, pInfo, fmt, &fmt+1);
+}
+
+/*** BeginHeader glPlotCircle */
+
+void glPlotCircle(int xc, int yc, int rad);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+glPlotCircle
+
+SYNTAX: void glPlotCircle(int xc, int yc, int rad)
+ 
+KEYWORDS: graphics LCD primitive
+
+DESCRIPTION: This function draws a circle on the LCD.
+
+PARAMETER1: x-coordinate of the center.
+
+PARAMETER2: y-coordinate of the center.
+
+PARAMETER3: radius of the circle.
+
+RETURN VALUE: None.
+
+END DESCRIPTION **********************************************************/
+
+void glPlotCircle(int xc, int yc, int rad) {
+	auto int x,y,d,lastY;
+	auto struct glBuf displayBuf;
+
+	glBufOpen(&displayBuf);	
+
+	if (rad <= 1) {
+		glBufPlotDot(&displayBuf,xc,yc);
+	} else {
+		x=0;
+		y=rad;
+		lastY=y;
+		d=3-2*rad;
+		while (x <= y) {
+			if (x) {
+				glBufPlotDot(&displayBuf,xc+x,yc+y);
+				glBufPlotDot(&displayBuf,xc+x,yc-y);
+				glBufPlotDot(&displayBuf,xc-y,yc+x);
+				if (x != y) {
+					glBufPlotDot(&displayBuf,xc+y,yc+x);
+				}
+			}
+			glBufPlotDot(&displayBuf,xc-x,yc-y);
+			if (x != y) {
+				glBufPlotDot(&displayBuf,xc-y,yc-x);
+				glBufPlotDot(&displayBuf,xc-x,yc+y);
+				glBufPlotDot(&displayBuf,xc+y,yc-x);
+			}
+			if (d < 0) {
+				d = d + 4*x + 6;
+			} else {
+				d = d + 4 * (x - y) + 10;
+				y = y - 1;
+			}
+			x = x + 1;
+		}
+	}
+	glBufClose(&displayBuf);
+}
+
+/*** BeginHeader glFillCircle */
+
+void glFillCircle(int xc, int yc, int rad);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+glFillCircle
+
+SYNTAX: void glFillCircle(int xc, int yc, int rad)
+
+KEYWORDS: graphics LCD primitive
+
+DESCRIPTION: This function draws a circle on the LCD.
+
+PARAMETER1: x-coordinate of the center.
+
+PARAMETER2: y-coordinate of the center.
+
+PARAMETER3: radius of the circle.
+
+RETURN VALUE: None.
+
+END DESCRIPTION **********************************************************/
+
+void glFillCircle(int xc, int yc, int rad) {
+	auto int x,y,d,lastY,lastX;
+
+	if (rad <= 1) glPlotDot(xc,yc);
+	else {
+		x=0;
+		y=rad;
+		lastY=y;
+		d=3-2*rad;
+		while (x <= y) {
+			if (x) glPlotVLine(xc+x, yc+y, xc+x, yc-y);
+			glPlotVLine(xc-x, yc+y, xc-x, yc-y);
+			if (d < 0) {
+				d = d + 4*x + 6;
+			} else {
+				d = d + 4 * (x - y) + 10;
+				y = y - 1;
+			}
+			x = x + 1;
+			if ((y != lastY) && ((x-1) != lastY)) {
+				glPlotVLine(xc+lastY, yc+lastX, xc+lastY, yc-lastX);
+				glPlotVLine(xc-lastY, yc+lastX, xc-lastY, yc-lastX);
+				lastY = y;
+			}
+			lastX = x;
+		}
+	}
+}
+
+/*** BeginHeader glPlotVPolygon */
+
+void glPlotVPolygon(int n, int *pFirstCoord);
+
+/*** endHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+glPlotVPolygon
+
+SYNTAX: void glPlotVPolygon(int n, int *pFirstCoord)
+
+KEYWORDS: graphics LCD primitive
+
+DESCRIPTION: This function fills a polygon.
+
+PARAMETER1: number of vertices
+
+PARAMETER2: array of vertex coordinates, x,y,x,y,x,y...
+
+RETURN VALUE: None.
+
+END DESCRIPTION **********************************************************/
+
+void glPlotVPolygon(int n, int *pFirstCoord) {
+	int *pCurrentCoord;
+
+	pCurrentCoord = pFirstCoord;
+	while (--n) {
+		glPlotLine(
+			pCurrentCoord[0], pCurrentCoord[1],
+			pCurrentCoord[2], pCurrentCoord[3]);
+		glPlotDot(pCurrentCoord[0],pCurrentCoord[1]);
+		pCurrentCoord += 2;
+	}
+	glPlotLine(
+		pCurrentCoord[0],pCurrentCoord[1],
+		pFirstCoord[0],pFirstCoord[1]);
+	glPlotDot(pCurrentCoord[0], pCurrentCoord[1]);
+}
+
+/*** BeginHeader glPlotPolygon */
+
+void glPlotPolygon(int n, int x1, int y1, int x2, int y2,...);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+glPlotPolygon
+
+SYNTAX: void glPlotPolygon(int n, int x1, int y1, int x2, int y2,...)
+
+KEYWORDS: graphics LCD primitive
+
+DESCRIPTION: This function plots the outline of a poly
+
+PARAMETER1: number of vertices
+
+PARAMETER2: x of first vertex
+
+PARAMETER3: y of first vertex
+
+PARAMETER4: x of second vertex
+
+PARAMETER5: y of second vertex
+
+RETURN VALUE: None.
+
+END DESCRIPTION **********************************************************/
+
+void glPlotPolygon(int n, int x1, int y1, int x2, int y2,...) {
+	glPlotVPolygon(n,&x1);
+}
+
+/*** BeginHeader glPlotPolySeg */
+
+void glPlotPolySeg(int n, int *pFirstV, int x);
+
+/*** EndHeader */
+
+void glPlotPolySeg(int n, int *pFirstV, int x) {
+	auto int minY,min2Y,min3Y,swapper;
+	auto int yBound;
+	auto int c1,c2;
+	auto int y;
+	auto int i;
+	auto int *pCurrentV;
+	auto int x1,y1,x2,y2;
+
+	minY = 0x7fff;
+	yBound = 0;
+	c1 = c2 = 0;
+	do {
+		pCurrentV = pFirstV;
+		min2Y = min3Y = 0x7fff;
+		for (i = 0; i < n; ++i) {
+			x1 = pCurrentV[0];
+			y1 = pCurrentV[1];
+			if (i != n-1) {
+				x2 = pCurrentV[2];
+				y2 = pCurrentV[3];
+			} else {
+				x2 = pFirstV[0];
+				y2 = pFirstV[1];
+			}
+			if (((x1 <= x) && (x2 >= x)) ||
+				 ((x2 <= x) && (x1 >= x))) {
+				if (x1 == x2) {
+					if (y2 < y1) SWAP(y1,y2);
+					if (y1 < minY) minY = (y1 < yBound)?yBound:y1;
+					if (y2 > min2Y) min2Y = y2;
+					if (y2 >= min3Y) min3Y = 0x7fff;
+				} else {
+					if (x == x1) y = y1;
+					else if (x == x2) y = y2;
+					else {
+						y = (int)(y1 + 0.5 +
+							(float)((x-x1) * (y2 - y1)) /
+								(x2 - x1));
+					}
+					if (y > 63) y;
+					if (y >= yBound) {							//	yBound is the lower bound
+						if (y == minY) ++c1;
+						if (y == min2Y) ++c2;
+						if (y < minY) {							//	an upper vertex
+							if (min2Y != y) min3Y = min2Y;
+							min2Y = minY;
+							minY = y;								//	shift minimum due to new min
+							c2 = c1;
+							c1 = 0;
+						} else if (y < min2Y) {
+							if (min2Y != y) min3Y = min2Y;
+							min2Y = y;
+							c2 = 0;
+						} else if (y < min3Y) {
+							if (min2Y != y) min3Y = y;
+						}
+					}
+				}
+			}
+			pCurrentV += 2;
+		}
+		if (min2Y != 0x7fff) {
+			if (minY == min2Y) {
+				if (c1 & 1) {
+					if (min3Y != 0x7fff) {
+						glPlotVLine(x,minY,x,min3Y);
+//						if (minY == min3Y) printf("yuhoo1!\n");
+						c1 = 1;
+						minY = min3Y;
+						yBound = min3Y;
+					}
+				} else {
+//					printf("yuhoo2!\n");
+					glPlotVLine(x,minY,x,minY);
+					c1 = 0;
+					yBound = min3Y;
+					minY = 0x7fff;
+				}
+			} else {
+				glPlotVLine(x,minY,x,min2Y);
+//				if (minY == min2Y) printf("yuhoo3!\n");
+				minY = (c2&1)?0x7fff:min2Y;
+				yBound = (c2&1)?min3Y:min2Y;
+				c1 = !(c2&1);
+			}
+		}
+		if (min3Y != 0x7fff) min3Y;
+	} while (min3Y != 0x7fff);
+}
+
+/*** BeginHeader glFillVPolygon */
+
+void glFillVPolygon(int n, int *pFirstV);
+
+/*** endHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+glFillVPolygon
+
+SYNTAX: void glFillVPolygon(int n, int *pFirstCoord)
+
+KEYWORDS: graphics LCD primitive
+
+DESCRIPTION: This function fills a polygon.
+
+PARAMETER1: number of vertices
+
+PARAMETER2: array of vertex coordinates, x,y,x,y,x,y...
+
+RETURN VALUE: None.
+
+END DESCRIPTION **********************************************************/
+
+void glFillVPolygon(int n, int *pFirstV) {
+	auto int maxX, minX;
+	auto int x;
+	auto int *pCurrentV;
+
+	maxX = 0; minX = 0x7fff;
+	pCurrentV = pFirstV;
+	for (x = 0; x < n; ++x) {
+		if (maxX < *pCurrentV) maxX = *pCurrentV;
+		if (minX > *pCurrentV) minX = *pCurrentV;
+		pCurrentV += 2;
+	}
+	for (x = minX; x <= maxX; ++x) {
+		glPlotPolySeg(n,pFirstV,x);
+	}
+}
+
+/*** BeginHeader glFillPolygon */
+
+void glFillPolygon(int n, int x1, int y1, int x2, int y2,...);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+glFillPolygon
+
+SYNTAX: void glFillPolygon(int n, int x1, int y1, int x2, int y2,...)
+
+KEYWORDS: graphics LCD primitive
+
+DESCRIPTION: This function fills a polygon.
+
+PARAMETER1: number of vertices
+
+PARAMETER2: x of first vertex
+
+PARAMETER3: y of first vertex
+
+PARAMETER4: x of second vertex
+
+PARAMETER5: y of second vertex
+
+RETURN VALUE: None.
+
+END DESCRIPTION **********************************************************/
+
+void glFillPolygon(int n, int x1, int y1, int x2, int y2,...) {
+	glFillVPolygon(n,&x1);
+}
+
+/*** beginheader */
+
+#endif
+
+/*** EndHeader */

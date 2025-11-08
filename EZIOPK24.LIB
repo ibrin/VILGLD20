@@ -1,0 +1,472 @@
+/***
+library for pk2400
+
+PIOA-data port of LCD port
+0-h3.2-d0
+1-h3.3-d1
+2-h3.4-d2
+3-h3.5-d3
+4-h3.6-d4
+5-h3.7-d5
+6-h3.8-d6
+7-h3.9-d7
+
+PIOB
+0-/rtcrst
+1-en485
+2-rtcdat,h3.18
+3-rtcclk,h3.17
+4-h3.16-PIN08
+5-h3.15-a0 of LCD port
+6-h3.14-/wr of LCD port
+7-h3.13-lcd strobe
+
+PIO2A
+0-h1.2-out0
+1-h1.3-out1
+2-h1.4-out2
+3-h1.5-out3
+4-h1.6-out4
+5-h1.7-out5
+6-h1.8-out6
+7-h1.9-out7
+
+PIO2B
+0-adcclk
+1-addin
+2-addout
+3-eoc/nmi
+4-h1.11-bank A select for input
+5-h1.12-bank B select for input
+6-h1.13-input 1
+7-h1.14-input 2
+
+ad0-h1.20
+ad1-h1.18
+ad2-h1.15
+ad3-h1.16
+
+***/
+
+/*** BeginHeader */
+
+#ifndef __EZIOPK24_LIB
+#define __EZIOPK24_LIB
+
+#ifndef EIO_NODEV
+#define EIO_NODEV 0x2
+#endif
+
+#define EIO_BRD_NUM_ADC 4
+#define EIO_EE_ACAL_B 10
+
+#use eziocmmn.lib
+#use bl14_15.lib
+
+/*** EndHeader */
+
+/*** BeginHeader PIODA2Shadow */
+
+extern char PIODA2Shadow;
+
+/*** EndHeader */
+
+char PIODA2Shadow;
+
+/*** BeginHeader _eioBrdInit */
+
+void _eioBrdInit(int flag);
+
+/*** EndHeader */
+
+void _eioBrdInit(int flag) {
+#asm xmemok
+	  ld    a, 0xcf				; mode 3
+	  out0  (PIOCA),a				;
+	  ld		a,0xff				;
+	  ld		(PIOCAShadow),a
+	  out0  (PIOCA),a				;
+	  ld    a, 0xcf				; mode 3
+	  out0  (PIOCB),a				;
+	  ld		a,0x04				;
+	  ld		(PIOCBShadow),a
+	  out0  (PIOCB),a				;
+	  ld    a, 0xcf				; mode 3
+	  out0  (PIOCA2),a			;
+	  ld		a,0x00				;
+	  ld		(PIOCA2Shadow),a
+	  out0  (PIOCA2),a			;
+	  ld    a, 0xcf				; mode 3
+	  out0  (PIOCB2),a			;
+	  ld		a,0xdc				;
+	  ld		(PIOCB2Shadow),a
+	  out0  (PIOCB2),a			;
+	  xor		a
+	  ld		(PIODA2Shadow),a
+	  out0	(PIODA2),a
+#endasm	
+}
+
+/*** BeginHeader bl15ADCClkOI8 */
+
+int bl15ADCClkOI8(char outByte);
+#define ADC_IN_MASK 0x2
+#define ADC_IN_BIT 0x1
+#define ADC_OUT_MASK 0x4
+#define ADC_OUT_BIT 0x2
+#define ADC_CLK_MASK 0x1
+#define ADC_CLK_BIT 0x0
+#define ADC_EOC_BIT 0x3
+#define ADC_EOC_MASK 0x8
+#define ADC_CS_MASK 0x1
+#define ADC_CS_BIT 0x0
+#define ADC_PORT PIODB2
+
+/*** EndHeader */
+
+#asm
+;###
+bl15ADCClkOI8::
+	in0	a,(ADC_PORT)
+	ld		d,8
+shiftOut:
+	bit	7,l
+	jr		z,shift0
+	or		ADC_IN_MASK
+	jr		shiftMerge
+shift0:
+	and	~ADC_IN_MASK
+shiftMerge:
+	or		ADC_CLK_MASK
+	out0	(ADC_PORT),a
+	in0	a,(ADC_PORT)
+	and	~ADC_CLK_MASK
+	out0	(ADC_PORT),a
+	sla	l
+	bit	ADC_OUT_BIT,a
+	jr		nz,shiftIn1
+	; shiftIn0
+	res	0,l
+	jr		afterShiftIn
+shiftIn1:
+	set	0,l
+afterShiftIn:
+	dec	d
+	jr		z,endShift
+	
+	jr		shiftOut
+endShift:
+	ld		h,0
+	ret
+#endasm
+
+/*** BeginHeader bl15ADCClkO */
+
+void bl15ADCClkO(char outByte);
+
+/*** EndHeader */
+
+#asm
+bl15ADCClkO::
+	ld		b,8
+	in0	a,(ADC_PORT)
+	ld		de,+(((~ADC_CLK_MASK)*256)|ADC_CLK_MASK)
+shiftOut:
+	bit	7,l
+	jr		z,shift0
+	;	shift1
+	or		ADC_IN_MASK
+	jr		shiftMerge
+shift0:
+	and	~ADC_IN_MASK
+shiftMerge:
+	out0	(ADC_PORT),a
+	or		e
+	out0	(ADC_PORT),a
+	and	d
+	out0	(ADC_PORT),a
+	sla	l
+	djnz	shiftOut
+
+	ret
+#endasm
+
+/*** BeginHeader bl15ADCClkI_ */
+
+int bl15ADCClkI_(char numBits);
+
+/*** EndHeader */
+
+#asm
+bl15ADCClkI_::
+	ld		a,l
+	ld		b,a					;	load #bits to read to b
+	in0	a,(ADC_PORT)		;	read the port to a
+	ld		de,+(ADC_CLK_MASK*256)|ADC_OUT_MASK
+	ld		c,~ADC_CLK_MASK
+	res	ADC_IN_BIT,c		;	
+	ld		hl,0
+shiftIn:
+	add	hl,hl
+	or		d
+	out0	(ADC_PORT),a
+	in0	a,(ADC_PORT)
+	and	c
+	out0	(ADC_PORT),a
+	tst	e
+	jr		nz,shiftIn1
+	; shiftIn0
+	res	0,l
+	djnz	shiftIn
+	ret
+	
+shiftIn1:
+	set	0,l
+afterShiftIn:
+	djnz	shiftIn
+	ret
+#endasm
+
+/*** BeginHeader bl15ADCDis */
+
+/*** EndHeader */
+
+#asm
+bl15ADCDis::
+	in0	a,(PIODB)
+	or		ADC_CS_MASK
+	out0	(PIODB),a
+	ret
+#endasm
+	
+/*** BeginHeader bl15ADCEnb */
+
+/*** EndHeader */
+
+#asm
+bl15ADCEnb::
+	in0	a,(PIODB)
+	and	~ADC_CS_MASK
+	out0	(PIODB),a
+	ret
+#endasm
+	
+/*** BeginHeader bl15ADCReset */
+
+void bl15ADCReset();
+
+/*** EndHeader */
+
+#asm
+bl15ADCReset::
+	in0	a,(PIODB)
+	or		ADC_CS_MASK
+	out0	(PIODB),a
+	and	~ADC_CS_MASK
+	out0	(PIODB),a
+	ret
+#endasm
+
+/*** BeginHeader _eioBrdAI */
+
+int _eioBrdAI(unsigned Chan);
+
+/*** EndHeader */
+
+#asm 
+_eioBrdAI::
+	ex		de,hl		;	save hl to de
+	ld		hl,(_P1B0SpinLock)
+	inc	hl
+	ld		(_P1B0SpinLock),hl
+	ld		c,l
+	ld		b,h
+	ex		de,hl		;	restore hl
+	push	hl			;	save channel number
+	push	bc			;	save local copy of spinlock
+	call	bl15ADCReset
+	add	hl,hl
+	add	hl,hl
+	add	hl,hl
+	add	hl,hl
+	call	bl15ADCClkO
+	ld		hl,4
+	call	bl15ADCClkI_
+	call	bl15ADCDis
+	
+	ld		d,30
+waitAgain:
+	dec	d
+	jr		z,timedOut
+	in0	a,(ADC_PORT)
+	bit	ADC_EOC_BIT,a
+	jr		z,waitAgain
+	call	bl15ADCEnb
+	ld		hl,12
+	call	bl15ADCClkI_	
+	jr		waitOver
+timedOut:
+	ld		hl,-1
+waitOver:
+	ex		de,hl		;	save return result
+	ld		hl,(_P1B0SpinLock)
+	pop	bc
+	xor	a
+	sbc	hl,bc
+	jr		z,exitFunction
+	pop	hl
+	jp		_eioBrdAI
+exitFunction:
+	pop	bc
+	ex		de,hl
+	ret
+#endasm
+
+/*** BeginHeader eioBrdAdcInit */
+
+void eioBrdAdcInit();
+
+/*** EndHeader */
+
+#asm
+eioBrdAdcInit::
+	ret
+#endasm
+
+/*** BeginHeader eioBrdDI */
+
+int eioBrdDI(unsigned eioAddr);
+
+/*** EndHeader */
+
+int eioBrdDI(unsigned eioAddr) {
+	if (eioAddr < 8) {
+		eioAddr;		//	load eioAddr to HL
+#asm xmemok
+		ld		a,i
+		push	af
+		di
+		in0	a,(PIODB)
+		bit	0,l
+		jr		z,AisLow
+		;	AisHi
+		set	4,a
+		jr		updateA
+AisLow:
+		res	4,a
+updateA:
+		out0	(PIODB),a
+
+		in0	a,(PIODB2)
+		bit	1,l
+		jr		z,BisLow
+		;	BisHi
+		set	5,a
+		jr		updateB
+BisLow:
+		res	5,a
+updateB:
+		out0	(PIODB2),a
+		
+		in0	a,(PIODB2)	;	read back the input
+		bit	2,l			;	did we want to read the high bit?
+		jr		z,loBit		;	nope, branch
+		and	10000000b	;	yep, check now
+		jr		seeIfZero	;	and normalize the boolean
+loBit:
+		and	01000000b	;	want to read the low bit
+seeIfZero:
+		ld		hl,0			;	normalize the boolean
+		jr		z,.done
+		inc	hl
+.done:
+		pop	af
+		jp		po,.noEI1
+		ei
+.noEI1:
+#endasm
+	} else if (eioAddr == 8) {
+#asm xmemok
+		ld		a,i
+		push	af
+		di
+		ld		hl,0
+		in0	a,(PIODB2)
+		and	0x10
+		jr		z,.noInc
+		inc	hl
+.noInc:
+		pop	af
+		jp		po,.noEI2
+		ei
+.noEI2:
+#endasm
+//
+//		return (inport(PIODB2) & 0x10) ? 1 : 0;
+	} else {
+		eioErrorCode |= EIO_NODEV;
+		return -1;
+	}
+}
+
+/*** BeginHeader eioBrdDO */
+
+int eioBrdDO(unsigned chan, int state);
+
+/*** EndHeader */
+
+int eioBrdDO(unsigned chan, int state) {
+	if (chan < 8) {
+		chan;		//	load value of chan into HL
+#asm xmemok
+		ex		de,hl					;	save chan into DE
+		ld		hl,__bitmap			;	load hl with base of __bitmap
+		add	hl,de					;	add together to get the bitmask address
+		ld		b,(hl)				;	load bit mask into b
+		ld		hl,@SP+state
+		add	hl,sp
+		ld		a,(hl)
+		inc	hl
+		or		(hl)
+		ld		hl,PIODA2Shadow	;	load the current configuration
+		jr		z,toReset
+		;		to set
+		ld		a,(hl)
+		or		b
+		jr		done
+toReset:
+		ld		a,0xff
+		xor	b
+		and	(hl)
+done:
+		out0	(PIODA2),a
+		ld		(hl),a
+		ld		hl,0
+#endasm
+	} else {
+		eioErrorCode |= EIO_NODEV;
+		return -1;
+	}
+}
+
+/*** BeginHeader */
+
+/*** EndHeader */
+
+/*** BeginHEader */
+
+#endif
+
+/*** EndHeader */
+
+main() {
+	eioBrdInit(0);
+	while (1) {
+		printf("%d\n",_eioBrdAI(0));
+		printf("%d\n",_eioBrdAI(1));
+		printf("%d\n",_eioBrdAI(2));
+		printf("%d\n",_eioBrdAI(3));
+		printf("%d\n",eioBrdDI(0));
+		hitwd();
+	}
+}

@@ -1,0 +1,134 @@
+/*****************************************************************************
+
+LCD port with 16-bit IO address
+
+*****************************************************************************/
+
+/*** BeginHeader */
+
+#ifndef _LP_16_LIB
+#define _LP_16_LIB
+
+/*** endHeader */
+
+/*** BeginHeader lpOutData */
+
+void lpOutData(int content);
+
+/*** EndHeader */
+
+#asm
+lpOutData::
+	ld		bc, LCDWR
+	out	(c),l
+	ret
+#endasm
+
+/*** BeginHeader lpOutCmd */
+
+void lpOutCmd(content);
+
+/*** EndHeader */
+
+#asm
+lpOutCmd::
+	ld		bc,LCDWR+1
+	out	(c),l
+	ret
+#endasm
+
+/*** Beginheader lpOutCmdOutData */
+
+void lpOutCmdOutData(int x);
+
+/*** EndHeader */
+
+#asm
+lpOutCmdOutData::
+	push	bc
+	push	af
+	ld		a,i
+	push	af
+	
+	ld		bc,LCDWR+1
+	out	(c),h
+	dec	bc
+	out	(c),l
+	pop	af
+	jp		po,noInt
+	ei
+noInt:
+	pop	af
+	pop	bc
+	ret
+#endasm
+
+/*** BeginHeader lpOutCmdInData */
+
+int lpOutCmdInData(int x);
+
+/*** EndHeader */
+
+#asm
+lpOutCmdInData::
+	push	bc
+	push	af
+	ld		a,i
+	push	af
+	
+ 	ld		bc,LCDWR+1
+	out	(c),h
+	dec	bc
+	ld		h,0
+	in		l,(c)
+	pop	af
+	jp		po,noInt
+	ei
+noInt:
+	pop	af
+	pop	bc
+	ret
+#endasm
+
+/*** BeginHeader lpInData */
+
+int lpInData();
+
+/*** EndHeader */
+
+#asm
+lpInData::
+	ld		bc,LCDRD
+	in		l,(c)
+	ld		h,0
+	ret
+#endasm
+
+/*** BeginHeader lpInCmd */
+
+int lpInCmd();
+
+/*** EndHeader */
+
+#asm
+lpInCmd::
+	ld		bc,LCDRD+1
+	in		l,(c)
+	ld		h,0
+	ret
+#endasm
+
+/*** BeginHeader lpInit */
+
+void lpInit();
+
+/*** EndHeader */
+
+void lpInit() {}
+
+/*** BeginHeader */
+
+#endif
+
+/*** EndHeader */
+

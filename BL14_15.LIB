@@ -1,0 +1,4387 @@
+// 2-29-96
+// Activate rev2.
+// 2-22-96
+// Use #define for the port and bit access for the ADC chip. This way
+// it is easy to convert from rev1 to rev2. Rev 2 will have TLC2543.
+// 2-6-96 , Access second PIO port as PIODA2, PIODB2 etc. Made sure that
+// DATAOUT bit for the MG2's ADC is low when clocking out extra data.
+// 1-24-96, Added support for the ADC TLC1543 or TLC  for the MicroG2.
+// The ADC drivers are implemented with interrupt lock out whenever
+// the PIOB2 is accessed. This is necessary to prevent recovering to
+// the wrong state of the PIO when the AD chip is used. If the user
+// finds the lockout superflous, define the following in the application
+// code:
+// #define ADCPioNoLock 1.
+// 1-15-96, Added interrupt lock out for lc_keyscan. This is necessary to 
+// make sure that the save state of the PIO's are not changed in the middle 
+// of a keyscan. If the user finds the lockout superfluous, define the
+// following in the application code :  
+// #define KeyPioNoLock 1.
+// 1-15-96, Added interrupt lock out for lc_char and lc_ctrl. This is
+// necessary to make sure that the save state of the PIO's are not changed 
+// in the middle of an LCD write. If the user finds the lockout superfluous,
+// define the following in the application code:
+// #define LcdPioNoLock 1.
+// 1-10-96 Optimize clocking data to the DS1302. Execute faster by 2 - 2.5 times
+// from previous code.
+// 1-5-96 Lower and raise RST line for the DS1302 for the first time read.
+// 1-5-96 Increase delay for 9Mhz board when using mgreset_pbus.
+// 1-4-96 Append support for the MicroG2 board.
+// 11-16-95 Rename file to bl14_15.lib. 
+// 10-30-95 Fine tune mgreset_pbus to make delay timing closer to 1 sec.
+// 10-30-95 Added support for the ADC4 board for the MicroG.
+// 10-xx-95 Alternate PIO bit for EZStart lcd support.
+// 4-13-95 Modified lc_keyscan for better keyscan with dead time.
+
+/***************************************************************************
+bl14_15.lib
+Z-World Engineering   @Copyright 1995
+
+Low level drivers for the MicroG. 
+***************************************************************************/
+/*** BeginHeader */
+#if (BOARD_TYPE!=MicroG) && (BOARD_TYPE!=MicroG2)
+#error "MicroG's only."
+#endif
+/*** EndHeader */
+
+
+/*** BeginHeader Read555, Set555 */
+
+int Read555(unsigned int *lapsecount);
+int Set555(unsigned int maxcount);
+void _555_TimeOut();
+void _555_SetDone();
+/*** EndHeader */
+
+unsigned _555_timerload;
+shared int _555_done;
+char _555_cnthi;
+char _555_cntlo;
+
+/* START FUNCTION DESCRIPTION **********************************************
+Read555     <bl14_15.lib>
+
+SYNTAX:     int Read555(unsigned int *lapsecount);     
+
+KEYWORDS:   555 Timer, Resistance Measurement
+
+DESCRIPTION: Read timer0 count for the amount of time it took the 555 chip
+to reach t=1.1RC time.  The timer count is returned in "*lapsecount". The 555 
+chip should be set previously with "Set555(unsigned int maxcount)".
+
+RETURN VALUES: 0, if timer0 has not timed out and the 555 chip has not reached 
+t = 1.1RC time. 1, if the 555 has reached t = 1.1RC time and has generated
+an interrupt on INT1 and DREQ0. -1, if the timer0 has finished counting 
+maxcount and the 555 has not reached t = 1.1RC time.
+END DESCRIPTION *************************************************************/
+nodebug
+int Read555(unsigned int *lapsecount)
+{
+	int chkdone;
+
+	chkdone = _555_done;       // capture the state
+		
+	switch(chkdone)
+	{
+		case 0:
+					*lapsecount = 0;
+					break;
+		case 1:
+					*lapsecount = _555_timerload - 
+										((_555_cnthi << 8) + _555_cntlo);
+					break;
+		case -1:
+					*lapsecount = _555_timerload;
+					break;
+	}
+	return chkdone;            // return the captured state
+}
+
+/* START FUNCTION DESCRIPTION ***********************************************
+Set555      <bl14_15.lib>
+
+SYNTAX:     int Set555(unsigned int maxcount);     
+
+KEYWORDS:   555 Timer, Resistance Measurement
+
+DESCRIPTION:  Load timer0 with "maxcount" and set it to generate one interrupt.
+Prepare DMA0 to receive data from timer0 TMRD0L. Prepare INT1 and 
+DREQ0 to receive a done signal from the 555 chip. Trigger the 555 chip.
+
+RETURN VALUES:  Returns 1 if the setup is successful.
+END DESCRIPTION ************************************************************/
+nodebug
+int Set555(unsigned int maxtime)
+{
+	unsigned long testmem;
+	int dma_dest, dma_hi, dma_hiB;
+
+	resPIOCB(0x01);            // bit 0 is set as output
+	setPIODB(0x01);            // set bit 0 high 
+	
+	outport(TCR, inport(TCR) & '\B11101110');       // disable the timer   
+	inport(TMDR0L);                                 // read last interrupt
+
+	
+	_555_done = 0;
+	_555_timerload = maxtime;
+	testmem = phy_adr(&_555_cntlo);
+ 
+ 
+	dma_dest = (char) (testmem & 0xff);
+	dma_hi   = (char) ((testmem >> 8) & 0xff);
+	dma_hiB  = (char) ((testmem >> 16) & 0xff);
+
+	DI();                      // disable interrupt during setup   
+	iset(DCNTL,2);             // set dma_req0 to edge sense
+	outport(DMODE, 0x2c);      // fixed IO to fixed memory one byte transfer 
+	outport(BCR0H,0x00);       // load dma byte count ...
+	outport(BCR0L,0x01);       // ... of one
+	outport(SAR0L,TMDR0L);     // set dma source address to low byte of timer 
+	  
+	outport(SAR0H,0x00);
+	outport(SAR0B,0x00);
+	outport(DAR0H,dma_hi);     // set the destination address for memory write
+	outport(DAR0L,dma_dest);
+	outport(DAR0B,dma_hiB);
+
+	outport(DSTAT,(inport(DSTAT) | 0x40) & '\B11101111');    // enable dma
+		
+	outport(TMDR0L,maxtime & 0xff);                 // preset counter
+	outport(TMDR0H,(maxtime >> 8) & 0xff);
+	outport(TCR, inport(TCR) | 0x11);
+  
+	resPIODB(0x01);
+	setPIODB(0x01);
+	ISET(ITC,1);
+	EI();                                           // enable interrupt
+	return 1;
+}
+
+
+#INT_VEC PRT0_VEC _555TimeOut                                 
+
+// Timer0 vector to support functions Read555() and Set555().
+
+interrupt void _555TimeOut()
+{
+	IRES(ITC, 1);                                   // disable INT1
+	outport(TCR, inport(TCR) & '\B11101110');       // disable the timer
+	inport(TMDR0L);                                 // read last interrupt
+	if(!_555_done) _555_done = -1;                  // timeout flag
+	outport(DSTAT, inport(DSTAT) & '\B10101111');   // disable DMA0
+}
+	
+						
+#INT_VEC INT1_VEC _555SetDone
+		
+// INT1 interrupt routine to support functions Read555() and Set555().
+interrupt void _555SetDone()
+{
+	outport(TCR, inport(TCR) & '\B11101110');       // disable the timer
+	_555_cnthi = inport(TMDR0H);
+	IRES(ITC, 1);                                   // disable INT1
+	if(!_555_done)
+	{
+		_555_done = 1;
+	}
+	outport(DSTAT, inport(DSTAT) & '\B10101111');   // disable DMA0
+}
+
+/*** BeginHeader Charger1302 */
+int Charger1302(int on_off, int diode, int resistor);
+/*** Endheader */
+/* START FUNCTION DESCRIPTION ***********************************************
+Charger1302     <bl14_15.lib>
+
+SYNTAX:     int Charger1302(int on_off, int diode, int resistor);
+
+KEYWORDS:   DS1302, Trickle Charger
+
+DESCRIPTION: Turn "on_off" the trickle charger on the DS1302 chip. "Diode" is 
+1 or 2 for the number of diode from VCC2 to VCC1. "Resistor" is 2, 4 or 8 for 
+the number of kilo ohms resistance across the line.
+
+RETURN VALUES:  Returns 1 if the setup is successful.
+END DESCRIPTION ************************************************************/
+nodebug
+int Charger1302(int on_off, int diode, int resistor)
+{
+	int control;
+	Write1302(0x8e, 0x00);      // unprotect the RAM space
+	if(!on_off)
+		Write1302(0x90, 0x00);
+	else
+	{
+		if(diode == 1)
+			control = '\B10100100';
+		else
+			control = '\B10101000';
+
+		switch(resistor)
+		{
+			case 2: control = control | '\B00000001';
+					break;
+			case 4: control = control | '\B00000010';
+					break;
+			case 8: control = control | '\B00000011';
+					break;
+			default:
+					break;
+		}
+		Write1302(0x90, control);       // turn on the charger
+	}   
+	Write1302(0x8e, 0x80);              // protect the RAM space
+	return 1;
+}       
+
+/*** BeginHeader ReadTime1302, WriteTime1302 */
+int ReadTime1302( struct tm *thistime);
+int WriteTime1302(struct tm *thistime);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ***********************************************
+ReadTime1302            <bl14_15.lib>
+
+SYNTAX:     int ReadTime1302(struct tm* thistime);
+
+KEYWORDS:   DS1302, RTC
+
+DESCRIPTION: Read real time clock data from DS1302 to the time structure
+pointed to by "thistime".
+
+RETURN VALUES: 0 if successful; -1 if the RTC is in halt mode.
+END DESCRIPTION ************************************************************/
+nodebug
+int ReadTime1302(struct tm *thistime)
+{
+	int myreturn;
+	char data;
+	int j;
+	char dtime[8];
+	char *p, *d;
+	struct tm basetime = { 0,0,0,1,1,80,0};
+
+	auto unsigned spin;
+
+	myreturn = 0;
+	resPIOCB(0x0d);                  // bits 0 , 2 and 3 are set as outputs
+	data = Read1302(0x80);           // read the clock halt bit
+	if( data & 0x80) 
+	{   
+		WriteTime1302(&basetime);      // set it to start at Jan 1, 1980
+		myreturn = -1;
+	}
+
+	BEG_LOCK_P1B0
+		RSTReady1302();         // Activate the RST line to access the DS1302
+		DataOut1302(0xbf);      // 1-10-96, 0xbf is the register for clock burst read
+
+		setPIOCB(0x04);         // make PIOB bit 2 as input
+
+		d = dtime;
+		for(j=0;j<8;j++)
+		{
+			*(d++) = DataIn1302();  // 1-10-96
+		}	
+	
+		p = (char *) thistime;
+		d = dtime;
+	
+		*(p++) = (*d & 0x0f) + ((*(d++) & 0x70)>>4) * 10;   // sec
+		*(p++) = (*d & 0x0f) + ((*(d++) & 0x70)>>4) * 10;   // min
+		*(p++) = (*d & 0x0f) + ((*(d++) & 0x30)>>4) * 10;   // hour
+		*(p++) = (*d & 0x0f) + ((*(d++) & 0x30)>>4) * 10;   // month day
+		*(p++) = (*d & 0x0f) + ((*(d++) & 0x10)>>4) * 10;   // month
+		d++;
+		*(p++) = (*d & 0x0f) + (*(d--)>>4) * 10;
+		*(p++) = (*d & 0x0f) - 1;
+		resPIODB(0x01 | 0x08);      // lower 1302 reset line and clock line
+		resPIOCB(0x04);      // make data as output again
+	END_LOCK_P1B0
+
+	return myreturn;
+}
+
+/* START FUNCTION DESCRIPTION ***********************************************
+WriteTime1302           <bl14_15.lib>
+
+SYNTAX:     int WriteTime1302(struct tm* thistime);
+
+KEYWORDS:   DS1302, RTC
+
+DESCRIPTION: Write time structure data pointed to by "thistime" to the 
+real time clock of the DS1302.
+
+RETURN VALUES: 0 if successful; -1 if the RTC is in halt mode.
+END DESCRIPTION ************************************************************/
+nodebug
+int WriteTime1302(struct tm *thistime)
+{
+	int j;
+	char dtime[8];
+	char *p, *d;
+	auto unsigned spin;
+	
+	p = (char *) thistime;
+	d = dtime;
+	
+	*(d++) = (*p % 10) | ((*(p++) / 10) << 4);        // get seconds
+	*(d++) = (*p % 10) | ((*(p++) / 10) << 4);        // get minute 
+	*(d++) = (*p % 10) | ((*(p++) / 10) << 4);        // get hour 
+	*(d++) = (*p % 10) | ((*(p++) / 10) << 4);        // get month day
+	*(d++) = (*p % 10) | ((*(p++) / 10) << 4);        // get month
+	*(++d) = (*p % 10) | ((*(p++) / 10) << 4);        // get year
+	*(--d) = (*p % 10) + 1;                           // week day  
+														// DS1302 has 1-7 days
+	d++;
+	*(++d)    = '\B10000000';                 // enable write protect
+	
+	resPIOCB(0x0d);             // bits 0, 2 and 3 are set as outputs
+	Write1302(0x8e, 0x00);      // unprotect RAM space
+
+	BEG_LOCK_P1B0
+		RSTReady1302();         // Activate RST line to access the DS1302 registers
+		DataOut1302(0xbe);      // 1-10-96, 0xbe is the clock burst register for write
+
+		d = dtime;
+		for(j=0;j<8;j++)
+		{
+			DataOut1302(*(d++)); // 1-10-96
+		}
+	END_LOCK_P1B0
+
+	resPIODB(0x01);                                 // lower 1302 reset line
+	if( Read1302(0x80) & 0x80) return -1;       // if clock is not running
+	else return 0;
+}
+
+/*** BeginHeader WriteRam1302, ReadRam1302 */
+int WriteRam1302(int ram_loc, int data);
+int ReadRam1302(int ram_loc);
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION ***********************************************
+WriteRam1302            <bl14_15.lib>
+
+SYNTAX:     int WriteRam1302(int ram_loc, int data);
+
+KEYWORDS:   DS1302, Write RAM.
+
+DESCRIPTION: Write "data" to any of the 31 (0-30) "ram_loc" ram of the DS1302. 
+RETURN VALUES: 1 if write is okay; -1 if error.
+END DESCRIPTION ************************************************************/      
+nodebug
+int WriteRam1302(int ram_loc, int data)
+{
+	if( (ram_loc < 0) || (ram_loc > 30)) return -1;
+	Write1302(0x8e, 0x00);                  // unprotect the RAM space
+	Write1302(0xc0 + (ram_loc << 1), data);
+	Write1302(0x8e, 0x80);                  // protect the RAM space
+	return 1;
+}
+
+/* START FUNCTION DESCRIPTION ***********************************************
+ReadRam1302         <bl14_15.lib>
+
+SYNTAX:     int ReadRam1302(int ram_loc);
+
+KEYWORDS:   DS1302, Read RAM.
+
+DESCRIPTION: Read data from any of the 31 (0-30) "ram_loc" ram of the DS1302. 
+
+RETURN VALUES: Returns ram data. Returns -1 if error. 
+END DESCRIPTION ************************************************************/
+nodebug
+int ReadRam1302(int ram_loc)
+{
+	int mydata;
+	if( (ram_loc < 0) || (ram_loc>30)) return -1;
+	mydata = Read1302( 0xc0 + (ram_loc << 1));
+	return mydata;
+}
+ 
+/*** BeginHeader WriteBurst1302, ReadBurst1302 */
+void WriteBurst1302(char *pdata, int count);
+void ReadBurst1302(char *pdata, int count);
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION ***********************************************
+WriteBurst1302              <bl14_15.lib>
+
+SYNTAX:     void WriteBurst1302(char *pdata, int count);
+
+KEYWORDS:   DS1302, Write Burst Ram
+
+DESCRIPTION: Write "count" number of bytes from the byte array pointed to by  
+"pdata" to the ram of the DS1302 starting at ram location 0.
+
+RETURN VALUES: None.
+END DESCRIPTION ************************************************************/
+nodebug
+void WriteBurst1302(char *pdata, int count)
+{
+	int j;
+	auto unsigned spin;
+
+	resPIOCB(0x0d);             // bits 0,2 and 3 are set as outputs
+	Write1302(0x8e, 0x00);      // unprotect RAM space
+	BEG_LOCK_P1B0
+		RSTReady1302();               // Activate the RST to access the DS1302 registers
+		DataOut1302(0xfe);            // 1-10-96, 0xfe is the ram burst register for write
+		if(count > 31) count = 31;    // limit to 31 bytes only
+		for(j=0;j<count;j++)
+		{
+			DataOut1302(*(pdata+j));
+		}
+		resPIODB(0x01);                 // lower 1302 reset line and clock line
+	END_LOCK_P1B0
+	Write1302(0x8e, 0x80);          // protect RAM space
+}
+
+/* START FUNCTION DESCRIPTION ***********************************************
+ReadBurst1302               <bl14_15.lib>
+
+SYNTAX:     void ReadBurst1302(char *pdata, int count);
+
+KEYWORDS:   DS1302, Read Burst Ram.
+
+DESCRIPTION: Read back "count" number of bytes from the DS1302 starting from
+ram location 0 to data array pointed to by "pdata".
+
+RETURN VALUES:  None.
+END DESCRIPTION ************************************************************/
+nodebug
+void ReadBurst1302(char *pdata, int count)
+{
+	int j;
+	auto unsigned spin;
+
+	BEG_LOCK_P1B0
+		resPIOCB(0x0d);         // bits 0, 2, 3 are set us outputs
+		RSTReady1302();         // Activate the RST line to access the DS1302 registers
+		DataOut1302(0xff);      // 1-10-96, 0xff is the ram burst register for read
+		setPIOCB(0x04);         // make PIOB bit 2 as input
+		if(count > 31) count = 31;    // limit to 31 bytes only
+		for(j=0;j<count;j++)
+		{
+			*(pdata+j) = DataIn1302();    // 1-10-96
+		}
+		resPIODB(0x01|0x08);      // lower 1302 reset line and clock line
+		resPIOCB(0x04);      // make data as output again
+	END_LOCK_P1B0
+}
+
+/*** BeginHeader _P1B0SpinLock */
+
+extern unsigned _P1B0SpinLock;
+
+#define BEG_LOCK_P1B0 do { spin = ++_P1B0SpinLock;
+#define END_LOCK_P1B0 } while (spin != _P1B0SpinLock);
+
+/*** EndHeader */
+
+unsigned _P1B0SpinLock;
+	
+/*** BeginHeader Write1302, Read1302 */
+void Write1302(int reg, int data);
+int Read1302(int reg);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ***********************************************
+Write1302               <bl14_15.lib>
+
+SYNTAX:     void Write1302(int reg, int data);
+
+KEYWORDS:   DS1302, Write
+
+DESCRIPTION:Write "data" to specified register "reg" of the DS1302.
+
+RETURN VALUES: None.
+END DESCRIPTION ************************************************************/
+nodebug
+void Write1302(int reg, int data)
+{
+	auto unsigned spin;
+
+	BEG_LOCK_P1B0
+		resPIOCB(0x0d);            // bits 0, 2 and 3 are set to output
+		RSTReady1302();            // Activate RST line to access the DS1302
+		DataOut1302(reg & 0xfe);   // 1-10-96, make sure register is set for write
+		DataOut1302(data);         // 1-10-96
+		resPIODB(0x01|0x08);            // lower 1302 reset line and clock line
+	END_LOCK_P1B0
+}
+
+/* START FUNCTION DESCRIPTION ***********************************************
+Read1302                <bl14_15.lib>
+
+SYNTAX:     int Read1302(int reg);
+
+KEYWORDS:   DS1302, Read
+
+DESCRIPTION: Read data from a specified register "reg" of the DS1302.
+
+RETURN VALUES: Data read.
+END DESCRIPTION ************************************************************/
+nodebug 
+int Read1302(int reg)
+{
+	char data;
+	auto unsigned spin;
+
+	BEG_LOCK_P1B0
+		resPIOCB(0x0d);         // bits 0, 2 and 3 are set to outputs
+		RSTReady1302();            // Activate RST line to access the DS1302
+		DataOut1302(reg | 0x01);   // 1-10-96, make sure it is set for read
+		setPIOCB(0x04);            // make PIOB bit 2 as input
+		data = DataIn1302();       // 1-10-96
+		resPIODB(0x01|0x08);            // lower 1302 reset line and clock line
+		resPIOCB(0x04);            // make data as output again
+	END_LOCK_P1B0
+	return data;
+}
+
+// 1-10-96
+// The following supplementary routines to the drivers that access the DS1302.
+// This routines makes the execution of the routines faster.
+/*** BeginHeader DataOut1302, DataIn1302, RSTReady1302 */
+void DataOut1302(int data);
+int DataIn1302();
+void RSTReady1302();
+/*** EndHeader */
+
+// DataOut1302(int data)
+// Clocks out eight bit data to the DS1302.
+#asm nodebug
+DataOut1302::
+		ld    b, 8              ; clock 8 bits
+loop:
+		ld    a, i              ; get the status of ei flag
+		ex    af, af'           ; save to alternate
+		di                      ; disable interrupt
+		in0   a, (PIODB)
+		bit   0, l              ; data is in l
+		jr    z, data_low
+data_high:
+		or    00000100b
+		jr    clk_data
+data_low:
+		and   11111011b
+clk_data:
+		out0  (PIODB), a
+		or    00001000b
+		out0  (PIODB), a        ; clock high
+		and   11110111b
+		out0  (PIODB), a        ; clock low
+		rr    l                 ; rotate data to right
+		ex    af, af'           ; get state of ei flag
+		jp    po, no_ei
+		ei
+no_ei:
+		djnz  loop
+		ret
+#endasm              
+
+// DataIn1302()
+// Clocks in 8 bit data from the DS1302.
+#asm nodebug
+DataIn1302::
+		ld    b, 8              ; clock 8 bits
+		xor   a                 
+loop:
+		rrca                    ; rotate to right
+		in0   l, (PIODB)
+		bit   2, l
+		jr    z, clk_data
+		or    10000000b         ; change bit to high
+clk_data:
+		ld    e, a
+		ld    a, i              ; get state of ei flag
+		ex    af, af'           ; to alternate
+		di                      ; disable interrupt
+		in0   a, (PIODB)        ; get the state of the port
+		or    00001000b
+		out0  (PIODB), a        ; clock high
+		and   11110111b
+		out0  (PIODB), a        ; clock low
+		ex    af, af'           ; get back ei flag
+		jp    po, no_ei
+		ei
+no_ei:
+		ld    a, e
+		djnz  loop
+		ld    l, a
+		ld    h, 0              ; return data in hl
+		ret
+#endasm
+		
+// RSTReady1302()
+// Readies the DS1302 for usage by enabling the RST line.
+#asm nodebug
+RSTReady1302::
+		ld    a, i              ; get state of interrupt
+		ex    af, af'           ; save to alternate
+		di                      ; disable interrupt as the IO is changed
+		in0   a, (PIODB)        ; read state of PIODB
+		and   11110111b         ; lower clock line before setting RST high
+		out0  (PIODB), a  
+		or    00000001b         ; raise RST line
+		out0  (PIODB), a
+		and   11111110b         ; lower RST line
+		out0  (PIODB), a
+		or    00000001b         ; raise RST line
+		out0  (PIODB), a
+		ex    af, af'           ; get back state of interrupt
+		ret   po                ; just return if interrupt was off
+		ei                      ; else enable interrupt
+		ret
+#endasm
+		
+/*** BeginHeader Clock1302 */   
+void Clock1302();
+/*** EndHeader */
+/****************************************************************************
+Clock1302               <bl14_15.lib>
+
+SYNTAX:     void Clock1302();
+
+KEYWORDS:   DS1302, CLK Line
+
+DESCRIPTION:  Generate a positive pulse on the CLK line to drive the Trickle
+Charge Timekeeping Chip DS1302.
+
+RETURN VALUES: None.
+END DESCRIPTION ************************************************************/   
+nodebug
+void Clock1302()
+{
+	setPIODB(0x08);
+	resPIODB(0x08);
+}
+			
+/*** BeginHeader setPIODB, resPIODB, setPIOCB, resPIOCB */
+void setPIODB(int mask);
+void resPIODB(int mask);
+void setPIOCB(int mask);
+void resPIOCB(int mask);
+/*** EndHeader */
+extern char PIOCBShadow;
+
+/* START FUNCTION DESCRIPTION ***********************************************
+setPIODB        <bl14_15.lib>
+
+SYNTAX:     setPIODB(int byte_mask);
+
+KEYWORDS:   Set data bits, PIOB.
+
+DESCRIPTION: Active bits (1's) of "byte_mask" are set and or'ed with the 
+current output of PIODB. PIOB is in mode 3.
+
+RETURN VALUES: None.
+END DESCRIPTION ************************************************************/      
+#asm nodebug fast 
+setPIODB::
+	  ld    a, i
+	  ex    af, af'
+	  di
+	  in0      a, (PIODB)
+	  or       l
+	  out0  (PIODB), a
+	  ex    af, af'
+	  ret      po
+	  ei
+	  ret
+#endasm
+
+/* START FUNCTION DESCRIPTION ***********************************************
+resPIODB                <bl14_15.lib>
+
+SYNTAX:     resPIODB(int byte_mask);
+
+KEYWORDS:   Reset data bits, PIOB.
+
+DESCRIPTION: Active bits (1's) of "byte_mask" are reset and and'ed with the
+current output of PIODB. PIOB is in mode 3.
+
+RETURN VALUES: None.
+END DESCRIPTION ************************************************************/
+#asm nodebug fast 
+resPIODB::
+	  ld    a, i
+	  ex    af, af'
+	  ld    a, l
+	  cpl
+	  di
+	  in0      h, (PIODB)
+	  and      h
+	  out0  (PIODB), a
+	  ex    af, af'
+	  ret      po
+	  ei
+	  ret
+#endasm
+
+/* START FUNCTION DESCRIPTION ***********************************************
+setPIOCB                <bl14_15.lib>
+
+SYNTAX:     setPIOCB(int byte_mask);
+
+KEYWORDS:   Set control bits, PIOB.
+
+DESCRIPTION: Active bits (1's) of byte_mask are set and or'ed with 
+PIOCBShadow. The result is then send to PIOCB. Active bits effectively 
+becomes input bits. PIOB is in mode 3.
+
+RETURN VALUES: None.
+END DESCRIPTION ************************************************************/
+#asm nodebug fast 
+setPIOCB::
+	  ld    a, i
+	  ex    af, af'
+	  di
+	  ld    a, 0xcf           ; mode 3
+	  out0  (PIOCB), a
+	  ld    a, (PIOCBShadow)
+	  or    l
+	  out0  (PIOCB), a        ; set a bit to input
+	  ld    (PIOCBShadow), a
+	  ex    af, af'
+	  ret      po
+	  ei
+	  ret
+#endasm
+
+/* START FUNCTION DESCRIPTION ***********************************************
+resPIOCB                <bl14_15.lib>
+
+SYNTAX:     resPIOCB(int byte_mask);
+
+KEYWORDS:   Set control bits, PIOB.
+
+DESCRIPTION: Active bits (1's) of "byte_mask" are reset and and'ed with 
+PIOCBShadow. The result is then send to PIOCB. Active bits effectively 
+becomes output bits. PIOB is in mode 3.
+
+RETURN VALUES: None.
+END DESCRIPTION ************************************************************/
+#asm nodebug fast 
+resPIOCB::
+	  ld    a, i
+	  ex    af, af'
+	  ld    a, 0xcf
+	  di
+	  out0  (PIOCB), a          ; mode 3
+	  ld    a, l                ; mask in a
+	  cpl
+	  ld    h, a                ; complement of mask in a
+	  ld    a, (PIOCBShadow)
+	  and      h
+	  out0  (PIOCB), a
+	  ld    (PIOCBShadow), a
+	  ex    af, af'
+	  ret   po
+	  ei
+	  ret
+#endasm
+
+/*** BeginHeader setPIODA, resPIODA, setPIOCA, resPIOCA */
+void setPIODA(int mask);
+void resPIODA(int mask);
+void setPIOCA(int mask);
+void resPIOCA(int mask);
+/*** EndHeader */
+extern char PIOCAShadow;
+
+/* START FUNCTION DESCRIPTION ***********************************************
+setPIODA                <bl14_15.lib>
+
+SYNTAX:     setPIODA(int byte_mask);
+
+KEYWORDS:   Set data bits, PIOA.
+
+DESCRIPTION: Active bits (1's) of "byte_mask" are set and or'ed with the 
+current output of PIODA. PIOA is in mode 3.
+
+RETURN VALUES: None.
+END DESCRIPTION ************************************************************/      
+#asm nodebug fast 
+setPIODA::
+	  ld    a, i
+	  ex    af, af'
+	  di
+	  in0      a, (PIODA)
+	  or       l
+	  out0  (PIODA), a
+	  ex    af, af'
+	  ret      po
+	  ei
+	  ret
+#endasm
+
+/* START FUNCTION DESCRIPTION ***********************************************
+resPIODA                <bl14_15.lib>
+
+SYNTAX:     resPIODA(int byte_mask);
+
+KEYWORDS:   Reset data bits, PIOA.
+
+DESCRIPTION: Active bits (1's) of "byte_mask" are reset and and'ed with the
+current output of PIODA. PIOA is in mode 3.
+
+RETURN VALUES: None.
+END DESCRIPTION ************************************************************/
+#asm nodebug fast 
+resPIODA::
+	  ld    a, i
+	  ex    af, af'
+	  ld    a, l
+	  cpl
+	  di
+	  in0      h, (PIODA)
+	  and      h
+	  out0  (PIODA), a
+	  ex    af, af'
+	  ret      po
+	  ei
+	  ret
+#endasm
+
+/* START FUNCTION DESCRIPTION ***********************************************
+setPIOCA                <bl14_15.lib>
+
+SYNTAX:     setPIOCA(int byte_mask);
+
+KEYWORDS:   Set control bits, PIOA.
+
+DESCRIPTION: Active bits (1's) of "byte_mask" are set and or'ed with 
+PIOCAShadow. The result is then send to PIOCA. Active bits effectively 
+becomes input bits. PIOA is in mode 3.
+
+RETURN VALUES: None.
+END DESCRIPTION ************************************************************/
+#asm nodebug fast 
+setPIOCA::
+	  ld    a, i
+	  ex    af, af'
+	  di
+	  ld    a, 0xcf           ; mode 3
+	  out0  (PIOCA), a
+	  ld    a, (PIOCAShadow)
+	  or    l
+	  out0  (PIOCA), a        ; set a bit to input
+	  ld    (PIOCAShadow), a
+	  ex    af, af'
+	  ret      po
+	  ei
+	  ret
+#endasm
+
+/* START FUNCTION DESCRIPTION ***********************************************
+resPIOCA                <bl14_15.lib>
+
+SYNTAX:     resPIOCA(int byte_mask);
+
+KEYWORDS:   Set control bits, PIOA.
+
+DESCRIPTION: Active bits (1's) of "byte_mask" are reset and and'ed with 
+PIOCAShadow. The result is then send to PIOCA. Active bits effectively 
+becomes output bits. PIOA is in mode 3.
+
+RETURN VALUES: None.
+END DESCRIPTION ************************************************************/
+#asm nodebug fast 
+resPIOCA::
+	  ld    a, i
+	  ex    af, af'
+	  ld    a, 0xcf
+	  di
+	  out0  (PIOCA), a          ; mode 3
+	  ld    a, l                ; mask in a
+	  cpl
+	  ld    h, a                ; complement of mask in a
+	  ld    a, (PIOCAShadow)
+	  and      h
+	  out0  (PIOCA), a
+	  ld    (PIOCAShadow), a
+	  ex    af, af'
+	  ret   po
+	  ei
+	  ret
+#endasm
+
+
+/**************************************************************************
+PLCBUS Driver with the PIOA of the MicroG. These PLCBUS drivers are
+limited to 4 bit (data) plcbus peripherals. The AT line is also not available.
+The following wiring is used:
+
+	PA0      to    STROBE
+	PA1      to    D0
+	PA2      to    D1
+	PA3      to    D2
+	PA4      to    D3
+	PA5      to    A1
+	PA6      to    A2
+	PA7      to    A3.
+
+For multiple thread access to the PLCBUS, be sure to save and restore the
+state of the PLCBUS when entering a thread that can preempt other threads 
+that also use the PLCBUS. Save and restore are called with mgsave_pbus()
+and mgrestore_pbus(). The state of the PLCBUS is saved to and restored 
+from the stack.
+***************************************************************************/
+
+/*** BeginHeader mgset12adr, mgwrite12data */
+
+void mgset12adr(int addr);
+void mgwrite12adr(int addr, int data);
+
+char PIOSHBUS2, PIOSHBUS1, PIOSHBUS0;
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION **********************************************
+mgset12adr           <bl14_15.lib>
+
+SYNTAX: void mgset12adr(int addr);
+
+KEYWORDS: PLCBUS, PIO driver 
+
+DESCRIPTION: Set the address "addr" of the PLCBUS. All read and write to
+the PLCBUS device will access board with this address until a new address 
+is set. "Addr" is a 16 bit physical address of the PLCBUS device. The lowest 
+nibble has the data for BUSADR2, and the third nibble has the data for 
+BUSADR0. 
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+#asm nodebug fast
+mgset12adr::
+		in0   a, (PIODA)
+		and   00000001b
+		out0  (PIODA), a
+		ld    c, a           ; save also to c
+		
+		or    10000000b      ; set address to BUSADR0
+		
+		ld    b, a           
+		ld    a, l           ; load data for BUSADR0
+		rla
+		and   0x1e           ; bits 4 to 1 are the data
+		ld    (PIOSHBUS0), a
+		or    b
+		out0  (PIODA), a     ; send data and address out together
+
+		call  mgpbus_strobe
+
+		ld    a, c           ; get the initial PIODA state
+		or    10100000b      ; set address to BUSADR1
+		ld    b, a
+		ld    a, l           ; load data for BUSADR1
+		rra
+		rra
+		rra
+		and   0x1e
+		ld    (PIOSHBUS1), a
+		or    b
+		out0  (PIODA), a     ; send data and address out together
+
+		call  mgpbus_strobe
+
+		ld    a, c           ; get the initial PIODA state
+		or    11000000b      ; or    00001100b      ; set address to BUSADR2
+		ld    b, a
+		ld    a, h
+		rla                  ; load data for BUSADR2
+		and   0x1e
+		ld    (PIOSHBUS2), a
+		or    b
+		out0  (PIODA), a     ; send data and address out together
+		
+		call  mgpbus_strobe
+		ret
+#endasm     
+
+/* START FUNCTION DESCRIPTION **********************************************
+mgwrite12data           <bl14_15.lib>
+
+SYNTAX: void mgwrite12data(int addr, int data);
+
+KEYWORDS: PLCBUS, PIO driver 
+
+DESCRIPTION: Set the address "addr" of the PLCBUS with mgset12adr(addr)
+and write "data" to BUSWR of the PLCBUS device. Only the lowest four bits 
+"data" for BUSWR is valid data.
+
+RETURN VALUE: None.
+END DESCRIPTION ************************************************************/
+#asm nodebug fast
+mgwrite12data::
+	call  mgset12adr
+	pop   hl                ; return
+	pop   de                ; first argument
+	pop   de                ; second argument
+
+	in0   a, (PIODA)
+	and   00000001b         ; zero address and data bits
+	or    11100000b         ; set address to BUSWR
+	ld    b, a
+	ld    a, e
+	rla
+	and   0x1e              ; data in bits 4 to 1
+	or    b                 ; get the address
+	out0  (PIODA), a
+
+	call  mgpbus_strobe
+	
+	push  de
+	push  de
+	jp    (hl)              ; return           
+#endasm
+
+/* START FUNCTION DESCRIPTION ***********************************************
+mgwrite4data         <bl14_15.lib>
+
+SYNTAX:  void mgwrite4data(int data);
+KEYWORDS:   PLCBUS, PIO Driver.
+DESCRIPTION:   Write a 4 bit data to BUSWR of a PLCBUS device. This function 
+assumes that the targetted PLCBUS device's address has been previously set
+with mgset12adr(addr).
+
+RETURN VALUES: none.
+END DESCRIPTION ************************************************************/
+#asm nodebug fast
+mgwrite4data::
+	in0   a, (PIODA)
+	and   00000001b         ; zero address and data bits
+	or    11100000b         ; set address to BUSWR
+	
+	ld    b, a
+	ld    a, l
+	rla
+	and   0x1e              ; data in bits 4 to 1
+	or    b                 ; get the address
+	out0  (PIODA), a
+
+	call  mgpbus_strobe
+	ret   
+	
+#endasm
+
+// mgpbus_strobe
+// Strobe the PLCBUS to read/to write data from/to the PLCBUS device .
+#asm nodebug fast
+mgpbus_strobe::
+	in0   a, (PIODA)
+	or    00000001b
+	out0  (PIODA), a
+	and   11111110b
+	out0  (PIODA), a
+	or    00000001b
+	out0  (PIODA), a
+	ret
+#endasm
+
+/*** BeginHeader mgreset_pbus, mgplc_poll_node */
+void mgreset_pbus();
+int mgplc_poll_node(int addr);
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION **********************************************
+mgreset_pbus           <bl14_15.lib>
+
+SYNTAX: void mgreset_pbus();
+
+KEYWORDS: PLCBUS, PIO driver 
+
+DESCRIPTION: Initialize the PIO port to talk to PLCBUS devices. Also
+resets the PLCBUS.
+
+RETURN VALUE: None.
+END DESCRIPTION ************************************************************/
+nodebug 
+void mgreset_pbus()
+{
+	unsigned int i;
+	DI();
+	resPIOCA(0xff);   // make sure all bits of PIOA is set as output    
+	resPIODA(0xff);   // set all bits as low 3-14-95
+	resPIODA(0xe0);   // reset the address bits
+	setPIODA(0x60);   // set to BUSRESET
+	setPIODA(0x01);   // strobe bit is high
+	resPIODA(0x01);   // strobe bit is low
+	setPIODA(0x01);   // strobe bit is high
+	resPIODA(0xe0);   // reset the address bits
+	EI();
+	hitwd();                // delay to give the PLC expansion boards 
+	for(i=0;i<20000;i++);   // time to reset.
+	hitwd();                   
+//   for(i=0;i<15000;i++);   // MicroG is a 6 Mhz Board.
+	for(i=0;i<20000;i++);      // 10-31-95, increase delay
+	hitwd();
+//   for(i=0;i<15000;i++);
+	for(i=0;i<16000;i++);      // 10-31-95, increase delay
+	hitwd();
+	if(sysclock() == 0x1e00)   // 1-5-96, if 9Mhz, increase delay
+	{
+		for(i=0;i<16000;i++);
+	}
+	hitwd();
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+mgplc_poll_node           <bl14_15.lib>
+
+SYNTAX: int mgplc_poll_node(int addr);
+
+KEYWORDS: PLCBUS, PIO driver 
+
+DESCRIPTION: Polls for the presence of a PLCBUS device with the specified
+address "addr".
+
+RETURN VALUE: 1 if the board is found. 0 if board is not present.
+END DESCRIPTION **********************************************************/
+nodebug
+int mgplc_poll_node(int addr)
+{
+	if( mgread12data0(addr) & 0x01) return 0;
+	else return 1;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+mgread12data0           <bl14_15.lib>
+
+SYNTAX: int mgread12data0(int addr);
+
+KEYWORDS: PLCBUS, PIO driver 
+
+DESCRIPTION: Set the address "addr" of the PLCBUS with mgset12adr(addr)
+and read data from BUSRD0 of the PLCBUS device.
+
+RETURN VALUE: Data from BUSRD0 of the PLCBUS device.
+END DESCRIPTION **********************************************************/
+
+/*** BeginHeader mgplc_poll_relay */
+					
+int mgplc_poll_relay(int addr);
+
+/*** EndHeader */
+
+int mgplc_poll_relay(int addr) {
+	auto int oldAdr, res;
+	oldAdr=(int)((PIOSHBUS0&0xf)>>1) | (int)((PIOSHBUS1&0xf)<<3) | 
+				(((int)PIOSHBUS2&0xf)<<7);
+	res = mgplc_poll_node(mgplcrly_board(addr));
+	mgset12adr(oldAdr);
+	return res;
+}
+
+/*** BeginHeader mgread12data0 */
+int mgread12data0(int addr);
+/*** EndHeader */
+#asm nodebug fast
+mgread12data0::
+	call  mgset12adr
+	ld    a, (PIOCAShadow)
+	ld    e, a               
+	in0   d, (PIODA)        ; save control and state to de
+		
+	ld    a, 0xcf
+	out0  (PIOCA), a
+	ld    a, e
+	or    0x1e              ; set data bits 4 to 1 as inputs
+	out0  (PIOCA), a
+	ld    (PIOCAShadow), a
+
+	in0   a, (PIODA)
+	and   00011111b         ; set to BUSRD0
+	out0  (PIODA), a
+
+	or    00000001b
+	out0  (PIODA), a        ; strobe is high
+	and   11111110b
+	out0  (PIODA), a        ; strobe is low
+		
+	in0   a, (PIODA)        ; read in data
+	rra
+	and   0x0f
+	ld    l, a
+	ld    h, 0
+	
+	ld    a, 0xcf
+	out0  (PIOCA), a
+	ld    a, e
+	out0  (PIOCA), a
+	ld    (PIOCAShadow), a  
+	out0  (PIODA), d
+	ret
+#endasm
+
+/* START FUNCTION DESCRIPTION ********************************************
+mgread12data1           <bl14_15.lib>
+
+SYNTAX: int mgread12data1(int addr);
+
+KEYWORDS: PLCBUS, PIO driver 
+
+DESCRIPTION: Set the address "addr" of the PLCBUS with mgset12adr(addr) and 
+read data from BUSRD1 of the PLCBUS device.
+
+RETURN VALUE: Data from BUSRD1 of the PLCBUS device.
+END DESCRIPTION **********************************************************/
+/*** BeginHeader mgread12data1 */
+int mgread12data1(int addr);
+/*** EndHeader */
+#asm nodebug fast
+mgread12data1::
+	call  mgset12adr
+	ld    a, (PIOCAShadow)
+	ld    e, a               
+	in0   d, (PIODA)        ; save control and state to de
+		
+	ld    a, 0xcf
+	out0  (PIOCA), a
+	ld    a, e
+	or    0x1e              ; set data bits 4-1 to input
+	out0  (PIOCA), a
+	ld    (PIOCAShadow), a
+
+	in0   a, (PIODA)
+	and   00011111b         ; clear the address bits
+	or    00100000b         ; set to BUSRD1
+	out0  (PIODA), a
+
+	or    00000001b
+	out0  (PIODA), a        ; strobe is high
+	and   11111110b
+	out0  (PIODA), a        ; strobe is low
+		
+	in0   a, (PIODA)        ; read in data
+	rra
+	and   0x0f
+	ld    l, a
+	ld    h, 0
+	
+	ld    a, 0xcf
+	out0  (PIOCA), a
+	ld    a, e
+	out0  (PIOCA), a
+	ld    (PIOCAShadow), a  
+	out0  (PIODA), d
+	ret
+#endasm
+
+/* START FUNCTION DESCRIPTION ********************************************
+mgread12data2           <bl14_15.lib>
+
+SYNTAX: int mgread12data2(int addr);
+
+KEYWORDS: PLCBUS, PIO driver 
+
+DESCRIPTION: Set the address "addr" of the PLCBUS with mgset12adr(addr) and 
+read data from BUSRD2 of the PLCBUS device.
+
+RETURN VALUE: Data from BUSRD2 of the PLCBUS device.
+END DESCRIPTION **********************************************************/
+/*** BeginHeader mgread12data2 */
+int mgread12data2(int addr);
+/*** EndHeader */
+#asm nodebug fast
+mgread12data2::
+	call  mgset12adr
+	ld    a, (PIOCAShadow)
+	ld    e, a               
+	in0   d, (PIODA)        ; save control and state to de
+		
+	ld    a, 0xcf
+	out0  (PIOCA), a
+	ld    a, e
+	or    0x1e              ; set data bits 4 to 1 as inputs
+	out0  (PIOCA), a
+	ld    (PIOCAShadow), a
+
+	in0   a, (PIODA)
+	and   00011111b         ; clear the address bits
+	or    01000000b         ; set to BUSRD2
+	out0  (PIODA), a
+
+	or    00000001b
+	out0  (PIODA), a        ; strobe is high
+	and   11111110b
+	out0  (PIODA), a        ; strobe is low
+		
+	in0   a, (PIODA)        ; read in data
+	rra
+	and   0x0f
+	ld    l, a
+	ld    h, 0
+	
+	ld    a, 0xcf
+	out0  (PIOCA), a
+	ld    a, e
+	out0  (PIOCA), a
+	ld    (PIOCAShadow), a  
+	out0  (PIODA), d
+	ret
+#endasm
+
+/*** BeginHeader mgsave_pbus, mgrestore_pbus */
+void mgsave_pbus();
+void mgrestore_pbus();
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+mgsave_pbus          <bl14_15.lib>
+
+SYNTAX: void mgsave_pbus();
+
+KEYWORDS: PLCBUS, PIO driver 
+
+DESCRIPTION: Save the current state of the PLCBUS to the stack. This function
+should only be called in tandem with mgrestore_pbus(). Otherwise the stack
+will become imbalance and the program will crashed.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+#asm nodebug fast
+mgsave_pbus::
+
+	pop   hl       ; pop the return address
+	
+	ld    a, (PIOSHBUS0)
+	rra
+	and   0x0f
+	ld    e, a
+	
+	ld    a, (PIOSHBUS1)
+	rla
+	rla
+	rla
+	and   0xf0
+	or    e
+	ld    e, a
+
+	ld    a, (PIOSHBUS2)
+	rra
+	and   0x0f
+	ld    d, a
+	
+	push  de             ; save the shadow d(lo) is adr2, e(hi) is adr1, e(lo) is adr0
+
+	jp    (hl)           ; jump to return address
+
+#endasm
+
+/* START FUNCTION DESCRIPTION ********************************************
+mgrestore_pbus          <bl14_15.lib>
+
+SYNTAX: void mgrestore_pbus();
+
+KEYWORDS: PLCBUS, PIO driver 
+
+DESCRIPTION: Restore the current state of the PLCBUS from the stack. 
+This function should only be called in tandem with mgsave_pbus(). Otherwise 
+the stack will become imbalance and the program will crashed.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+#asm nodebug fast
+mgrestore_pbus::
+
+	pop   de          ; pop the return address
+
+	pop   hl          ; get the save shadow adr0, adr1 and adr2
+
+	push  de          ; push back the return address
+	
+	push  hl          ; push the argument  
+	call  mgset12adr
+	pop   hl
+	ret
+#endasm
+
+/*** BeginHeader mgplc_set_relay, mgplcrly_board */
+void mgplc_set_relay(int board, int relay, int state);
+int mgplcrly_board(int board);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+mgplc_set_relay      <bl14_15.lib>
+
+SYNTAX: void mgplc_set_relay(int board, int relay, int state);
+
+KEYWORDS: PLCBUS, PIO driver 
+
+DESCRIPTION: Turn on/off a relay on the PLCBus. "Board" number must be between 
+0 to 63 corresponding to the relay board to access. relay is the relay number 
+on the board (0-5 for RELAY6 and 0-7 for RELAY8). State is 1 to turn on a 
+relay and 0 to turn off a relay.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug
+void mgplc_set_relay(int board, int relay, int state)
+{
+	auto int oldAdr;
+	oldAdr=(int)((PIOSHBUS0&0xf)>>1) | (int)((PIOSHBUS1&0xf)<<3) | 
+				(((int)PIOSHBUS2&0xf)<<7);
+	mgwrite12data(mgplcrly_board(board), (relay<<1) | state);
+	mgset12adr(oldAdr);
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+mgplcrly_board      <bl14_15.lib>
+
+SYNTAX: int mgplcrly_board(int board);
+
+KEYWORDS: PLCBUS, PIO driver 
+
+DESCRIPTION: Compute the physical board address of a relay board from "board".
+Board number must be between 0 to 63 corresponding to the relay board to 
+access. 0 corresponds to board address 0x000 and 63 corresponds to board
+address 0x11f. The return value has the third and the first nibbles 
+interchanged.
+
+RETURN VALUE: Physical board address of the board with the third and the
+first nibbles interchanged.
+END DESCRIPTION **********************************************************/
+nodebug 
+int mgplcrly_board(int board)
+{
+	int group;
+	int bdnum;
+
+	group = board >> 3;     // group = board / 8                        
+	bdnum = board & 0x07;   // bdnum = board % 8
+
+	return (((bdnum & 4) >> 2) + ((bdnum & 2) << 3) + 
+				(((bdnum & 1) + (group << 1))<<8));
+}
+
+/*** BeginHeader mgplcuio_board */
+int mgplcuio_board(int board);
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION ********************************************
+mgplcuio_board      <bl14_15.lib>
+
+SYNTAX: int mgplcuio_board(int board);
+
+KEYWORDS: PLCBUS, PIO driver 
+
+DESCRIPTION: Compute the physical board address of a EXP-UIO from "board".
+Board number must be between 0 to 15 corresponding to the exp-uio board to 
+access. 0 corresponds to board address 0x040 and 15 corresponds to 0x04f.
+The return value has the third and the first nibbles interchanged.
+
+RETURN VALUE: Physical board address with the third and the first nibbles
+interchanged.
+END DESCRIPTION **********************************************************/
+nodebug
+int mgplcuio_board(int board)
+{
+	return ( (board << 8) | 0x040); 
+}
+
+
+/*** BeginHeader mgplcdac_board, mginit_dac, mgwrite_dac1, mglatch_dac1, 
+mgset_dac1, mgwrite_dac2, mglatch_dac2, mgset_dac2 */
+int  mgplcdac_board(int board);
+void mginit_dac();
+void mgwrite_dac1(int value);
+void mglatch_dac1();
+void mgset_dac1(int value);
+void mgwrite_dac2(int value);
+void mglatch_dac2();
+void mgset_dac2(int value);
+void mgdac_on();
+void mgdac_off();
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+mgplcdac_board      <bl14_15.lib>
+
+SYNTAX: int mgplcdac_board(int board);
+
+KEYWORDS: PLCBUS, PIO driver 
+
+DESCRIPTION: Compute the physical board address of a EXP-DAC2 from "board".
+Board number must be between 0 to 63 corresponding to the EXP-DAC2 board to 
+access. 0 corresponds to board address 0x020 and 63 corresponds to 0x13f.
+The return value has the third and the first nibbles interchanged.
+
+RETURN VALUE: Physical board address with the third and the first nibbles
+interchanged.
+END DESCRIPTION **********************************************************/
+nodebug
+int mgplcdac_board(int board)
+{
+	int addr;
+	int group;
+	int bdnum;
+
+	group = board >> 3;     // group = board / 8
+	bdnum = board & 0x07;   // bdnum = board % 8
+
+	return ((bdnum & 4) >> 2) + (((bdnum & 2) + 4) << 3) + 
+				(((bdnum & 1) + (group << 1))<<8);
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+mginit_dac      <bl14_15.lib>
+
+SYNTAX: void mginit_dac();
+
+KEYWORDS: PLCBUS, PIO driver 
+
+DESCRIPTION: Initialize a EXP-DAC2 board on the PLCBUS. The address of the
+board should have been previously set with mgset12adr(addr).
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug
+void mginit_dac()
+{
+	int i;
+	mgwrite4data(0x09);     // 1001  = 4 << 1  + 1, L1 high
+	mgwrite4data(0x05);     // 0101  = 2 << 1  + 1, L2 high     
+	mgwrite4data(0x0c);     // 1100  = 6 << 1  + 0, T1 low
+	mgwrite4data(0x0d);     // 1101  = 6 << 1  + 1, T1 high
+	mgwrite4data(0x0e);     // 1110  = 7 << 1  + 0, T2 low 
+	mgwrite4data(0x0f);     // 1111  = 7 << 1  + 1, T2 high
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+mgwrite_dac1      <bl14_15.lib>
+
+SYNTAX: void mgwrite_dac1(int val);
+
+KEYWORDS: PLCBUS, PIO driver 
+
+DESCRIPTION: Write a 12 bit integer "val" to register A of DAC 1 of the 
+EXP-DAC2. This function assumes that the address of the EXP-DAC2 board has 
+been previously set with mgset12adr(addr). New DAC value is not send out 
+until a call to mglatch_dac1() is executed.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug
+void mgwrite_dac1(int val)
+{
+	int i;
+	int k;
+
+	mgwrite4data(0x06);
+	k = 0x800;
+	for(i=11;i>=0;i--)
+	{
+		if( val & k)
+			mgwrite4data(0x01);
+		else
+			mgwrite4data(0x00);
+
+		mgwrite4data(0x07);     // clock it to dac1
+		mgwrite4data(0x06);     
+		k = k >> 1;
+		
+	}
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+mglatch_dac1      <bl14_15.lib>
+
+SYNTAX: void mglatch_dac1();
+
+KEYWORDS: PLCBUS, PIO driver 
+
+DESCRIPTION: Move register A data to register B of DAC1 of the EXP-DAC2.
+Actual DAC1 output is the value in register B. This function assumes that the
+address of the EXP-DAC2 device has been previously set with mgset12adr(addr).
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug
+void mglatch_dac1()
+{
+	mgwrite4data(0x08);
+	mgwrite4data(0x09);
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+mgset_dac1      <bl14_15.lib>
+
+SYNTAX: void mgset_dac1(int val);
+
+KEYWORDS: PLCBUS, PIO driver 
+
+DESCRIPTION: Write a 12 bit integer "val" to register A and then move the
+data from register A to register B of DAC 1 of the EXP-DAC2. This function 
+assumes that the address of the EXP-DAC2 device has been previously set with
+mgset12adr(addr);
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug
+void mgset_dac1(int value)
+{
+	mgwrite_dac1(value);
+	mglatch_dac1();
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+mgwrite_dac2      <bl14_15.lib>
+
+SYNTAX: void mgwrite_dac2(int val);
+
+KEYWORDS: PLCBUS, PIO driver 
+
+DESCRIPTION: Write a 12 bit integer "val" to register A of DAC 2 of the 
+EXP-DAC2. This function assumes that the address of the EXP-DAC2 board has 
+been previously set with mgset12adr(addr). New DAC value is not send out 
+until a call to mglatch_dac2() is executed.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug
+void mgwrite_dac2(int val)
+{
+	int i;
+	int k;
+
+	k = 0x800;
+	for(i=11;i>=0;i--)
+	{
+		if( val & k)
+			mgwrite4data(0x01);
+		else
+			mgwrite4data(0x00);
+
+		mgwrite4data(0x03);     // clock it to dac1
+		mgwrite4data(0x02);     
+		k = k >> 1;
+	}
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+mglatch_dac2      <bl14_15.lib>
+
+SYNTAX: void mglatch_dac2();
+
+KEYWORDS: PLCBUS, PIO driver 
+
+DESCRIPTION: Move register A data to register B of DAC2 of the EXP-DAC2.
+Actual DAC2 output is the value in register B.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug
+void mglatch_dac2()
+{
+	mgwrite4data(0x04);
+	mgwrite4data(0x05);
+}
+/* START FUNCTION DESCRIPTION ********************************************
+mgset_dac2      <bl14_15.lib>
+
+SYNTAX: void mgset_dac2(int val);
+
+KEYWORDS: PLCBUS, PIO driver 
+
+DESCRIPTION: Write a 12 bit integer "val" to register A and then move the
+data from register A to register B of DAC 2 of the EXP-DAC2. This function 
+assumes that the address of the EXP-DAC2 device has been previously set with
+mgset12adr(addr);
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug
+void mgset_dac2(int value)
+{
+	mgwrite_dac2(value);
+	mglatch_dac2();
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+mgdac_on      <bl14_15.lib>
+
+SYNTAX: void mgdac_on();
+
+KEYWORDS: PLCBUS, PIO driver 
+
+DESCRIPTION: Enable the high side switch activation of the U10-LT1188 if
+used.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug
+void mgdac_on()
+{
+	mgwrite4data(0x0b);
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+mgdac_off      <bl14_15.lib>
+
+SYNTAX: void mgdac_off();
+
+KEYWORDS: PLCBUS, PIO driver 
+
+DESCRIPTION: Disable the high side switch activation of the U10-LT1188 if
+used.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug
+void mgdac_off()
+{
+	mgwrite4data(0x0a);
+}
+		
+// 10-30-95, Added support for ADC4 for the MicroG.
+/*** BeginHeader */
+#define ADC4_CLK0    0x00
+#define ADC4_CLK1    0x01
+#define ADC4_DAT0    0x02
+#define ADC4_DAT1    0x03
+#define ADC4_CS0     0x04
+#define ADC4_CS1     0x05
+#define ADC4_SDA0    0x06
+#define ADC4_SDA1    0x07
+#define ADC4_SCL0    0x08
+#define ADC4_SCL1    0x09
+#define ADC4_EOC     0x03  // bit position of ADC4 end of conversion
+#define ADC4_ID      0x00  // bit position to detect board presence
+
+struct adc4coeff
+		{
+			int zero_offset;
+			float invgain;
+		};
+
+/*** EndHeader */
+
+/*** BeginHeader mgadc4_init */
+int mgadc4_init( unsigned int board_adr);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+mgadc4_init               <bl14_15.lib>
+
+SYNTAX: int mgadc4_init(unsigned int board_adr);
+
+DESCRIPTION: Determines if an ADC4 board is on the PLCBUS. "Board_adr"
+is the physical address of the board defined as: 0000 1100 PPJJ. If the
+board is found, the A/D chip TLC2543 is initialized by enabling its
+chip select line. The chip select line remains enabled until the board
+is powered down.
+
+RETURN VALUE: 1 if the specified ADC4 board is on the PLCBUS; 0 if the
+ADC4 board is not found. 
+END DESCRIPTION *******************************************************/
+nodebug
+int mgadc4_init(unsigned int board_adr)
+{
+	mgset12adr(((board_adr << 8) & 0x0f00) | (board_adr & 0xf0) |
+					((board_adr >> 8) & 0x00f));
+	if(mgread0() & 0x01) return 0;
+	mgwrite4data(ADC4_CLK0);   // clock low 
+	mgwrite4data(ADC4_CS1);    // set chip select 0
+	mgwrite4data(ADC4_CS0);    // set chip select 1
+	return 1;
+}
+
+
+/*** BeginHeader mgadc4_read, mgadc4readpaddr */
+int mgadc4_read(unsigned int board_adr, int chan);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ******************************************
+mgadc4_read               <bl14_15.lib>
+
+SYNTAX: int mgadc4_read(unsigned int board_adr, int chan);
+
+DESCRIPTION: Sets and reads the A/D data conversion for the specified
+"chan". "Board_adr" is the physical address of the ADC4 board defined as:
+0000 1100 PPJJ. "Chan" is 0-10 for the 11 A/D channels; "Chan" is 11 for
+(Vref+ - Vref-)/2; "Chan" is 12 for Vref-; "Chan" is 13 for Vref+. All
+data defaults to 12 bits unipolar mode with MSB first. The nominal zero
+point is 4095 for unipolar input and 2047 for bipolar input.
+This function reads an adc4 chan in approximately 3.25 ms @6Mhz and
+~2.15 ms @9 Mhz.
+
+RETURN VALUE: 0 to 4095 as converted for the chosen A/D "chan"; -1 if
+the specified ADC4 board is not found.
+END DESCRIPTION *******************************************************/
+#asm nodebug
+mgadc4_read::
+		pop   bc       ; 9, pop return address
+		pop   hl       ; 9, pop the board_id
+		pop   de       ; 9, pop the chan to read
+		push  de       ; 11
+		push  hl       ; 11
+		push  bc       ; 11, restore the stack
+
+		push  de       ; 11, save the command data
+
+		
+		ld    e, l     ; 4, switch third nibble and first nibble
+		ld    a, l     ; 4,  
+		and   0xf0     ; 6, zero first nibble
+		ld    l, a     ; 4, 
+		ld    a, h     ; 4, get third nibble
+		and   0x0f     ; 6, zero fourth nibble
+		or    l        ; 4, mask third nibble to first nibble
+		ld    l, a     ; 4, copy result to l
+		ld    a, e     ; 4, get first byte
+		and   0x0f     ; 6, mask out second nibble
+		ld    h, a     ; 4, copy first nibble to third nibble
+
+					
+		push  hl          ; 11, pass the board address
+		call  mgset12adr  ; 
+		pop   bc          ; 9
+
+		pop   de          ; 9, pop the command data
+
+adc4_c_entry:
+		call  mgread0           ; 10-26-95, read data to detect board
+		bit   ADC4_ID, l        ; 10-26-95
+		ld    hl, 0xffff        ; 9, return -1 if board is not found
+		ret   nz                ; 5 or 10
+										; 
+wait_eoc1:
+		call  mgread0        ; 10-26-95, make sure board is not in conversion
+		jr    z, wait_eoc1   ; 6 or 8
+		
+		ld    a, e           ; 4
+		and   0x0f           ; 6, make sure only the 4 channel select
+									;  bits has 1's ,12 bit data = 00,
+									;  LSBF = 0 (MSB), BIP = 0(Unipolar)  
+		ld    e, a           ; 10-26-95, dataout in e
+		ld    b, 12          ; 4
+									
+loop1:                     ; clock out 12 bits of command
+		push  bc             ; 10-26-95
+		bit   3, e           ; 10-26-95
+		jp    z, data_lo1    ; 6 or 9
+data_hi1:
+		ld    l, ADC4_DAT1   ; 10-26-95
+		call  mgwrite4data   ; 10-26-95  
+		jr    next_clk1      ; 8
+data_lo1:   
+		ld    l, ADC4_DAT0   ; 10-26-95
+		call  mgwrite4data
+next_clk1:
+		rlc   e              ; 10-26-95, 1 left shift for command
+		ld    l, ADC4_CLK1   ; 10-26-95
+		call  mgwrite4data   ; 10-26-95, clock high 
+		ld    l, ADC4_CLK0
+		call  mgwrite4data   ; 10-26-95, clock low
+		pop   bc             ; 10-26-95
+		djnz  loop1          ; 9 to loop back           
+
+wait_eoc2:
+		call  mgread0        ; 10-26-95, make sure board is not in
+		bit   ADC4_EOC, l    ; 10-26-95, conversion mode
+		jp    z, wait_eoc2   ; 6 or 9
+
+		ld    l, ADC4_DAT0   ; 10-26-95, 
+		call  mgwrite4data   ; 10-26-95, data low
+		ld    b, 12          ; 10-26-95
+		ld    de, 0x0000     ; zero de for data
+
+loop2:                     ; clock out 12 bits of command
+		push  bc             ; 10-26-95, push loop counter
+		ld    l, ADC4_CLK1   ; 10-26-95
+		call  mgwrite4data   ; 10-26-95, clock high
+		xor   a              ; 10-26-95, clear carry flag           
+		rl    e              ; 10-26-95, rotate left by 1
+		rl    d              ; 10-26-95, rotate left by 1
+		call  mgread0        ; 10-26-95, read in data
+		bit   1, l           ; 10-26-95, check bit 1 for high or low
+		jp    z, data_low    ; 6 or 9    
+		ld    a, e           ; 10-26-95, if high or 1 to e
+		or    0x01           ; 10-26-95
+		ld    e, a           ; 10-26-95
+		
+data_low:
+		ld    l, ADC4_CLK0   ; 10-26-95, clock low
+		call  mgwrite4data   ; 10-26-95, 
+		pop   bc             ; 10-26-95, pop loop counter
+		djnz  loop2          ; 9, to loop back       
+		
+		ex    de, hl         ; 10-26-95, return data in hl
+		
+		ret                  ; 9
+
+mgadc4readpaddr::
+	ex		de,hl
+	jp		adc4_c_entry
+#endasm
+
+
+/*** BeginHeader mgadc4_set */
+int mgadc4_set(unsigned int board_adr, int chan);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ******************************************
+mgadc4_set               <bl14_15.lib>
+
+SYNTAX: int mgadc4_set(unsigned int board_adr, int chan);
+
+DESCRIPTION: Sets the A/D to start conversion on the specified "chan".
+"Board_adr" is the physical address of the board defined as:
+0000 1100 PPJJ. "Chan" is 0-10 for the 11 A/D channels; "Chan" is 11
+for (Vref+ - Vref-)/2; "Chan" is 12 for Vref-; "Chan" is 13 for Vref+;
+"Chan" is 14 to put the A/D chip TLC2543 into software power down mode.
+All data defaults to 12 bits unipolar mode with MSB first. The A/D
+conversion data can be read with another call to this function. The
+nominal zero point is 4095 for unipolar conversion and 2047 for bipolar
+conversion. This function sets an ADC4 chan in approximately 2.5ms @6Mhz
+and ~1.60 ms @9Mhz. 
+
+RETURN VALUE: 0 to 4095 of the last A/D conversion (Caller should be
+aware of what A/D channel was set previously); -1 if the specified
+ADC4 board is not found.
+END DESCRIPTION ********************************************************/
+#asm nodebug
+mgadc4_set::
+		pop   bc       ; pop return address
+		pop   hl       ; pop the board_id
+		pop   de       ; pop the chan to read
+		push  de       ; 
+		push  hl       ; 
+		push  bc       ; restore the stack
+
+		push  de       ; save the command data
+
+		ld    e, l     ; switch third nibble and first nibble
+				
+		ld    a, l     ; 
+		and   0xf0     ; zero first nibble
+		ld    l, a     
+		ld    a, h     ; get third nibble
+		and   0x0f     ; zero fourth nibble
+		or    l        ; mask third nibble to first nibble
+		ld    l, a     ; copy result to l
+		ld    a, e     ; get first byte
+		and   0x0f     ; mask out second nibble
+		ld    h, a     ; copy first nibble to third nibble
+				
+		push  hl       ; pass the board address
+		call  mgset12adr 
+		pop   bc       ; 
+
+		pop   de       ; pop the command data
+
+		call  mgread0           ; detect for board presence
+		bit   ADC4_ID, l        ; 
+		
+		ld    hl, 0xffff        ; return -1 if board is not found
+		ret   nz                ;
+												
+wait_eoc1:
+		call  mgread0        ; make sure board is not in 
+		bit   ADC4_EOC, l    ; conversion mode
+		jr    z, wait_eoc1   ; 
+				
+		ld    a, e           ; 
+		and   0x0f           ; make sure lower nibble is set for 12 bit, MSB,
+									; unipolar mode
+		exx                  ; 
+		ld    e, a           ; use alternate e for data out
+		exx                  ; back to regular
+
+		ld    b, 12          ; 
+		ld    de, 0x0000     ; zero de for data in
+															
+loop2:                     ; clock out 12 bits of command
+		push  bc             ; save loop counter
+		exx                  ; use alternate
+		bit   3, e           ; check data bit 
+		exx                  ; back to regular
+		jp    z, data_lo2    ; 
+data_hi2:
+		ld    l, ADC4_DAT1   ; set data high
+		call  mgwrite4data   ; 
+		jr    next_clk2      ; 
+data_lo2:
+		ld    l, ADC4_DAT0   ; set data low
+		call  mgwrite4data   ; 
+next_clk2:
+		exx                  ; 
+		rlc   e              ; left shift command
+		exx                  ; 
+
+		ld    l, ADC4_CLK1   ; clock high
+		call  mgwrite4data   ; 
+									; clock in 12 bits of A_to_D data
+		xor   a              ; clear carry
+		rl    e              ; rotate in data left
+		rl    d              ; 
+		call  mgread0        ; read for data in
+		bit   1, l           ; is data high?
+		jp    z, data_low    ;     
+
+		ld    a, e           ; if data high, or 1 to e
+		or    0x01           ; 
+		ld    e, a           ; 
+data_low:
+		ld    l, ADC4_CLK0   ; clock low   
+		call  mgwrite4data   ;   
+		pop   bc             ; pop loop counter
+		djnz  loop2          ; to loop back       
+									
+		ex    de, hl         ; return data in hl
+		ret                  ; 
+#endasm
+
+
+/*** BeginHeader mgadc4_convert */
+float mgadc4_convert(int data, struct adc4coeff *cnvrsn);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ******************************************
+mgadc4_convert               <bl14_15.lib>
+
+SYNTAX: float mgadc4_convert(unsigned int data, struct adc4coeff *cnvrsn);
+
+DESCRIPTION: Converts A/D "data" read with function mgadc4_read(...)
+or mgadc4_set(...) into its voltage equivalent. Conversion constants are
+stored in an adc4coeff structure pointed to by "cnvrsn". The voltage is
+computed as: voltage = cnvrsn->invgain * ( cnvrsn->zero_offset - data).   
+
+RETURN VALUE: Voltage equivalent of raw A_to_D data.
+END DESCRIPTION *******************************************************/
+nodebug
+float mgadc4_convert(int data, struct adc4coeff *cnvrsn)
+{
+	return ( cnvrsn->invgain * (cnvrsn->zero_offset - data));
+}
+
+
+/*** BeginHeader mgadc4_writecoef */
+int mgadc4_writecoeff(unsigned int board_adr, int chan, 
+					struct adc4coeff *cnvrsn);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION *******************************************
+mgadc4_writecoef               <bl14_15.lib>
+
+SYNTAX: int mgadc4_writecoef(unsigned int board_adr, int chan,
+						struct adc4coeff *cnvrsn );
+
+DESCRIPTION: Stores the constants for converting A/D data to voltages.
+"Board_adr" is the physical address of the board defined as:
+0000 1100 PPJJ. "Chan" is 0-10 for the 11 A/D channels. "Cnvrsn" is a
+pointer to a adc4coeff structure that stores the constant "zero_offset"
+and the data to voltage conversion constant "invgain". The constants are
+stored as 6 continuous bytes in reserved spaces of the ADC4 board's
+eeprom.
+
+RETURN VALUE: 0 if the data is successfully stored in the eeprom. -1 if
+the ADC4 board is not found; -2 if there is problem in accessing the
+eeprom; -3 if the upper 256 bytes of the eeprom is write protected.
+END DESCRIPTION ********************************************************/
+nodebug
+int mgadc4_writecoef(unsigned int board_adr, int chan,
+							struct adc4coeff *cnvrsn)
+{
+	char *pdata;
+	int ee_address;
+	int ercode;
+
+	ee_address = 446 + chan * 6;
+
+	pdata = (char *)(cnvrsn);
+
+	if((ercode = mgadc4_eewr(board_adr, ee_address++,    *(pdata++))) < 0)
+			return ercode;
+	if((ercode = mgadc4_eewr(board_adr, ee_address++,    *(pdata++))) < 0)
+			return ercode;
+	if((ercode = mgadc4_eewr(board_adr, ee_address++,    *(pdata++))) < 0)
+			return ercode;
+	if((ercode = mgadc4_eewr(board_adr, ee_address++,    *(pdata++))) < 0)
+			return ercode; 
+	if((ercode = mgadc4_eewr(board_adr, ee_address++,    *(pdata++))) < 0)
+			return ercode;
+	if((ercode = mgadc4_eewr(board_adr, ee_address,      *(pdata))) < 0)
+			return ercode;
+	return 0;
+}  
+
+
+/*** BeginHeader mgadc4_readcoef */
+int mgadc4_readcoef(unsigned int board_adr, int chan, 
+						struct adc4coeff *cnvrsn);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION *******************************************
+mgadc4_readcoef               <bl14_15.lib>
+
+SYNTAX: int mgadc4_readcoef(unsigned int board_adr, int chan,
+					struct adc4coeff *cnvrsn );
+
+DESCRIPTION: Reads the constants for converting A/D data to voltages.
+"Board_adr" is the physical address of the board defined as:
+0000 1100 PPJJ. "Chan" is 0-10 for the 11 A/D channels. "Cnvrsn" is a
+pointer to the adc4coeff structure that stores the constant "zero_offset"
+and the data to voltage conversion constant "invgain". The constants are
+stored as 6 continuous bytes in reserved spaces of the ADC4 board's
+eeprom.
+
+RETURN VALUES: 0 if the data are successfully read from the eeprom; -1
+if the ADC4 board is not found; -2 if there is problem in accessing the 
+eeprom. 
+END DESCRIPTION ********************************************************/
+nodebug
+int mgadc4_readcoef(unsigned int board_adr, int chan,
+			struct adc4coeff *cnvrsn)
+{
+	char *pdata;
+	int ee_address;
+	int ercode;
+
+	ee_address = 446 + chan * 6;
+
+	pdata = (char *)(cnvrsn);
+
+	if((ercode = mgadc4_eerd(board_adr, ee_address++)) < 0) return ercode;
+	*(pdata++) = ercode;  // get the data
+	if((ercode = mgadc4_eerd(board_adr, ee_address++)) < 0) return ercode;
+	*(pdata++) = ercode;
+	if((ercode = mgadc4_eerd(board_adr, ee_address++)) < 0) return ercode;
+	*(pdata++) = ercode;
+	if((ercode = mgadc4_eerd(board_adr, ee_address++)) < 0) return ercode;
+	*(pdata++) = ercode;
+	if((ercode = mgadc4_eerd(board_adr, ee_address++)) < 0) return ercode;
+	*(pdata++) = ercode;
+	if((ercode = mgadc4_eerd(board_adr, ee_address)) < 0) return ercode;
+	*(pdata)   = ercode;
+
+	return 0;
+}
+
+
+/*** BeginHeader mgadc4_sample */
+int mgadc4_sample(unsigned int board_adr, int chan, int count, int *buf,
+						unsigned int divider);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION *******************************************
+mgadc4_sample               <bl14_15.lib>
+
+SYNTAX: int mgadc4_sample(unsigned int board_adr, int chan,
+						int count, int *buf, unsigned int divider);
+
+DESCRIPTION: Samples data from an A/D "chan" at uniform intervals in
+time. "Board_adr" is the physical address of the board defined as:
+0000 1100 PPJJ. "Chan" is 0-11 for the 11 A/D channels; "Chan" is 11
+for (Vref+ - Vref-)/2; "Chan" is 12 for Vref-; "Chan" is 13 for Vref+.
+"Count" specifies the number of samples to collect. "buf" points to
+a buffer where the samples will be stored. "Divider" specifies the
+sample rate based on the formula: rate = sysclock()/(20 * divider).
+All data defaults to 12 bits unipolar mode with MSB first.
+The minimum value for "divider" is dependent on the clock speed, number
+of IO wait states and number of memory wait states. For the 6Mhz MicroG,
+the mininum divider value was experimentally determined to be 635 counts.
+This value translate to approximately 2.07 ms. At 9Mhz, the fastest rate
+is at about 635 counts or 1.37 ms. Note that the interrupts are turn off 
+during the whole sampling period.
+
+RETURN VALUE: 0 if successful; -1 if the ADC4 board is not found; -2 if 
+the sampling rate is too fast for A/D conversion. Data are not collected 
+if the sampling rate is too fast.
+END DESCRIPTION ********************************************************/
+#asm nodebug
+mgadc4_sample::
+		ld    a, i
+		di                   ;  disable interrupt
+		push  af             ;  save interrupt state
+
+		ld    iy, 4
+		add   iy, sp
+
+		ld    l, (iy+0)
+		ld    h, (iy+1)
+
+		ld    e, l     ; switch third nibble and first nibble
+		ld    a, l     ;   
+		and   0xf0     ; zero first nibble
+		ld    l, a     ;  
+		ld    a, h     ; get third nibble
+		and   0x0f     ; zero fourth nibble
+		or    l        ; mask third nibble to first nibble
+		ld    l, a     ; copy result to l
+		ld    a, e     ; get first byte
+		and   0x0f     ; mask out second nibble
+		ld    h, a     ; copy first nibble to third nibble
+
+					
+		push  hl       ; pass the board address
+		call  mgset12adr     ; 
+		pop   bc       ; 
+
+		call  mgread0           ; detect board presence
+		bit   ADC4_ID, l        ; 
+		ld    hl, 0xffff        ; return -1 if board is not found
+		jp    nz, the_end       ; 
+		
+		in0   a, (TCR)    ; read status of timers
+		and   0x22        ; keep setting for timer1
+		out0  (TCR), a
+		ld    a, (iy+8)   ; get divider least
+		out0  (TMDR0L), a
+		out0  (RLDR0L), a
+		ld    a, (iy+9)   ; get divider most
+		out0  (TMDR0H), a
+		out0  (RLDR0H), a
+
+wait_eoc1:
+		call  mgread0           ; make sure board is not
+		bit   ADC4_EOC, l       ; in conversion
+		jr    z, wait_eoc1
+									; 
+		exx                  ; use alternate                           
+		ld    e, (iy+4)      ; number of count, least
+		ld    d, (iy+5)      ; number of count, most
+		ld    l, (iy+6)      ; char buffer, least
+		ld    h, (iy+7)      ; char buffer, most
+		exx                  ; back to regular                           
+
+		in0   a, (TCR)
+		and   0x22
+		or    0x01           ; enable timer0
+		out0  (TCR), a       ; start timer0
+		in0   a, (TCR)       ; reset timer0
+		in0   a, (TMDR0L)    ; reset timer0
+
+		ld    a, (iy+2)      ; get channel to sample
+		and   0x0f           ; make sure only the 4 channel select
+									;  bits has 1's ,12 bit data = 00,
+									;  LSBF = 0 (MSB), BIP = 0(Unipolar)  
+		exx
+		ld    c, a           ; use alternate c for data out
+		exx
+		
+; clock out first command word
+		ld    b, 12
+loop1:                     ; clock out 12 bits of command
+		push  bc             ; push loop counter
+		exx                  ; 
+		bit   3, c           ; data bit high or low
+		exx                  ; 
+		jp    z, data_lo1    ; 
+data_hi1:
+		ld    l, ADC4_DAT1   ; data high
+		call  mgwrite4data   ; 
+		jr    next_clk1      ; 
+data_lo1:   
+		ld    l, ADC4_DAT0   ; data low
+		call  mgwrite4data   ; 
+next_clk1:                 
+		exx                  ; 
+		rlc   c              ; left shift for command
+		exx                  ; 
+		ld    l, ADC4_CLK1   ; clock high
+		call  mgwrite4data   ; 
+		ld    l, ADC4_CLK0   ; clock low
+		call  mgwrite4data   ;  
+		pop   bc             ; pop loop counter
+		djnz  loop1          ;            
+
+timer_loop:
+		in0   a, (TCR)
+		bit   6, a           ; not ready
+		jr    z, not_ready
+overrun:
+		ld    hl, -2         ; return -2 if the sampling rate is too fast
+		jp    the_end
+not_ready:
+		in0   a, (TCR)
+		bit   6, a
+		jr    z, not_ready
+
+		in0   a, (TCR)       ; reset timer0
+		in0   a, (TMDR0L)    ; reset timer0
+		
+		ld    b, 12          ; clocks     
+
+		ld    a, (iy+2)      ; get command word
+		and   0x0f           ; make sure other bits are 0
+		exx
+		ld    c, a           ; c has the dataout
+		exx
+		ld    de, 0x0000     ; zero data
+data_loop:
+		push  bc             ; save loop counter
+		exx                  ; alternate
+		bit   3, c           ; dataout in c
+		exx                  ; regular
+		jp    z, data_low    ; 
+data_high:
+		ld    l, ADC4_DAT1   ; data high
+		call  mgwrite4data   ; 
+		jr    next_clk       ; 
+data_low:
+		ld    l, ADC4_DAT0   ; data low
+		call  mgwrite4data   ; 
+next_clk:
+		exx                  ; 
+		rlc   c              ; left shift for command word
+		exx                  ; 
+		ld    l, ADC4_CLK1   ; 
+		call  mgwrite4data   ; clock high
+		xor   a              ; clear carry
+		rl    e              ; rotate left by 1
+		rl    d              ; rotate carry to d
+		call  mgread0        ; read data
+		bit   1, l           ; is data bit high or low
+		jp    z, datain_low  ; 
+		ld    a, e           ; if high, or 1 to e
+		or    0x01           ; mask in bit 0  
+		ld    e, a           ; 
+datain_low:
+		ld    l, ADC4_CLK0   ; clock low
+		call  mgwrite4data   ; 
+		pop   bc             ; 
+		djnz  data_loop      ; loop back 12 times
+									
+		push  de             ; push data to stack
+		exx                  ; alternate
+		pop   bc             ; transfer data to alternate bc
+		ld    (hl), c        ; store low byte of data
+		inc   hl             ; 
+		ld    (hl), b        ; store high byte of data
+		inc   hl             ; 
+		dec   de             ; decrement counter
+		ld    a, e           ; 
+		or    d              ; 
+		exx                  ; regular
+		jp    nz, timer_loop ; for count number of data
+			
+		ld    hl, 0x0000     ; return 0 for successful operation
+the_end:      
+		in0   a, (TCR)
+		and   0x22           ; make sure channel 0 is off
+		out0  (TCR), a
+		in0   a, (TCR)       ; reset one last time
+		in0   a, (TMDR0L)    ; reset one last time
+		pop   af
+		jp    po, add1
+		ei
+add1:
+		ret
+#endasm
+
+/*** BeginHeader mgadc4_compute */
+int mgadc4_compute(struct adc4coeff *cnvrsn, int data1, float volt1,
+						int data2, float volt2);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION *******************************************
+mgadc4_compute               <bl14_15.lib>
+
+SYNTAX: int mgadc4_compute(struct adc4coeff *cnvrsn, int data1, 
+			float volt1, int data2, float volt2);
+
+DESCRIPTION: Computes the "zero_offset" and "invgain" for the adc4coeff 
+structure pointed to by cnvrsn. The constants "zero_offset" and "invgain" 
+are used to convert A/D data to voltage using the following equation:
+volts = invgain *( zero_offset - A/D data). "data1" is the raw A/D reading 
+for known input voltage "volt1". "data2" is the raw A/D reading for the 
+known input volatge "volt2".
+
+RETURN VALUE: 0 if the constants are successfully computed; -1 if the
+data used resulted in divide the zero to compute the constants.  
+END DESCRIPTION *******************************************************/
+nodebug
+int mgadc4_compute(struct adc4coeff *cnvrsn, int data1, float volt1,
+			int data2, float volt2)
+{
+	float tmp;
+	
+	if( (volt1 == volt2) || (data1 == data2) ) return -1;
+	cnvrsn->zero_offset = tmp = ( volt2*data1 - volt1*data2)/ (volt2-volt1);
+	if( cnvrsn->zero_offset == data1)
+		cnvrsn->invgain = volt2 / ( tmp - data2);
+	else
+		cnvrsn->invgain = volt1 / ( tmp - data1);
+	
+	return 0;
+}
+
+
+/*** BeginHeader mgadc4_eewr, mgadc4_eerd*/
+int mgadc4_eerd(unsigned int board_adr, int addr);
+int mgadc4_eewr(unsigned int board_adr, int addr,char data);
+void mgadc4_eedata(int data);
+int mgadc4_eedata_ack(int data);
+int mgadc4_eehdr(int address);
+int mgadc4_eeinit();
+/*** EndHeader*/
+
+unsigned char mgadc4eemap[] = {0xa0,0xa2,0xa4,0xa6,0xa8,0xaa,0xac,0xae}; 
+
+/* START FUNCTION DESCRIPTION *****************************************
+mgadc4_eewr               <bl14_15.lib>
+
+SYNTAX: int mgadc4_eewr(unsigned int board_adr, int address, char data);
+
+DESCRIPTION: Writes byte "data" to EEPROM data "address". "Board_adr"
+is the physical address of the board defined as: 0000 1100 PPJJ.
+"Address" is 0 - 511 for the 512 bytes of eeprom memory storage. The
+top 256 bytes can also be write protected.
+
+RETURN VALUE: 0 if data write is successful; -1 if the ADC4 board is
+not found or if there is hardware problem in accessing the eeprom; -2
+if a write to the top 256 bytes of the eeprom is attempted and the
+write protect jumper is connected.
+END DESCRIPTION *******************************************************/
+nodebug
+int mgadc4_eewr(unsigned int board_adr, int address, char datum)
+{
+
+	mgset12adr(((board_adr << 8) & 0x0f00) | (board_adr & 0x0f0) |
+					((board_adr >> 8) & 0x00f));     // set the plcbus
+	if(mgread0() & 0x01) return -1;              // check for board presence
+	if(mgadc4_eeinit()) return -2;               // EEPROM busy, return error
+	if(mgadc4_eehdr(address)) return -2;         // EEPROM no acknowledge,
+																// return error
+	if(mgadc4_eedata_ack(address)) return -2;    // no acknowledge, return error
+	if(mgadc4_eedata_ack(datum)) return -3;      // no acknowledge, return error
+	mgwrite4data(ADC4_SCL0);                     // eeprom clock low
+	mgwrite4data(ADC4_SDA0);                     // eeprom data low
+	mgwrite4data(ADC4_SCL1);                     // eeprom clock high
+	mgwrite4data(ADC4_SDA1);                     // eeprom data high
+	return 0;                                    // data write okay
+}
+
+/* START FUNCTION DESCRIPTION ******************************************
+mgadc4_eerd               <bl14_15.lib>
+
+SYNTAX: int mgadc4_eerd(unsigned int board_adr, int address);
+
+DESCRIPTION: Reads byte data from EEPROM data "address". "Board_adr"
+is the physical address of the board defined as: 0000 1100 PPJJ.
+Address is 0 - 511 for the 512 bytes of eeprom memory storage.
+
+RETURN VALUE: Non-negative value data; -1 if the ADC4 board is not
+found or there is harware problem in accessing the eeprom.
+END DESCRIPTION *******************************************************/
+nodebug
+int mgadc4_eerd(unsigned int board_adr, int address) 
+{
+	int ee_j, ee_k;
+	mgset12adr(((board_adr << 8) & 0x0f00) | (board_adr & 0x0f0) |
+				((board_adr >> 8) & 0x00f));     // set the plcbus
+	if(mgread0() & 0x01) return -1;           // check for board presence
+	if(mgadc4_eeinit())       return -2;      // EEPROM busy, return error
+	if(mgadc4_eehdr(address)) return -2;      // EEPROM no acknowledge,
+															// return error 
+	if(mgadc4_eedata_ack(address))
+		return -2;                             // no acknowledge,
+															// return error
+
+	mgwrite4data(ADC4_SCL0);                  // eeprom clock low
+	mgwrite4data(ADC4_SCL1);                  // eeprom clock high
+	mgwrite4data(ADC4_SDA0);                  // eeprom data low
+	mgwrite4data(ADC4_SCL0);                  // eeprom clock low
+	
+	ee_k = mgadc4eemap[*((char *)&address+1)&0x07] | 0x01; 
+	if(mgadc4_eedata_ack(ee_k))
+		return -2;                 // eeprom no acknowledge, return error
+	ee_k=0;
+
+	// start to read 8 bit data 
+	for(ee_j=0; ee_j<8; ee_j++)
+	{
+		mgwrite4data(ADC4_SCL0);               // clock low
+		mgwrite4data(ADC4_SCL1);               // clock high
+		if(mgread0() & 4)                      // check data     
+			ee_k = (ee_k<<1) | 0x01;       
+		else                              
+			ee_k = ee_k << 1;              
+	}
+	mgwrite4data(ADC4_SCL0);                  // clock low
+	mgwrite4data(ADC4_SDA1);                  // data high
+	mgwrite4data(ADC4_SCL1);                  // clock high
+	mgwrite4data(ADC4_SDA1);                  // data high
+	return ee_k;
+}
+
+	
+// Clock out 8 bit of data to the EEPROM serial line of the ADC4 Board
+nodebug
+void mgadc4_eedata(int data)
+{
+		char ee_k, ee_j;
+		
+		for(ee_j = 0; ee_j < 8; ee_j++)
+		{
+			mgwrite4data(ADC4_SCL0);               // clock low
+			if( data & 0x80)
+					mgwrite4data(ADC4_SDA1);         // data high
+			else
+					mgwrite4data(ADC4_SDA0);         // data low
+			data <<= 1;                            // rotate the data
+			mgwrite4data(ADC4_SCL1);               // clock high
+		}                    
+}
+		
+
+// Clock out 8 bit of data to the EEPROM serial line.
+// Returns with the ACK bit from the eeprom.
+nodebug
+int mgadc4_eedata_ack(int v)   
+{   
+	mgadc4_eedata(v);                // clock out 8 data bits
+	mgwrite4data(ADC4_SCL0);         // eeprom clock low, clock low for ACK
+	mgwrite4data(ADC4_SDA1);         // eeprom data high, master release data line
+	mgwrite4data(ADC4_SCL1);         // eeprom clock high, clock high for ACK
+	
+	if(mgread0() & 0x04) return 1;   // return ACK from slave
+	else return 0;
+}
+
+// Clocks out eeprom header or slave identification data.
+// Returns with ACK low (0) from the slave EEPROM.
+// Returns with ACK high (1) or timeout is EEPROM is busy or not ready.
+nodebug
+int mgadc4_eehdr(int adr)
+{
+	int ee_k, ee_j;
+
+	mgwrite4data(ADC4_SCL1);          // eeprom clock high
+	
+	ee_k = mgadc4eemap[*((char *)&adr+1)&0x07];
+	for(ee_j=0; ee_j<10; ee_j++)                 // try ten times  
+	{
+		mgwrite4data(ADC4_SDA0);                  // eeprom data low, start condition
+		if(!mgadc4_eedata_ack(ee_k))return 0;     // get EEPROM to acknowledge header
+	}
+	return 1;                                    // timeout, return error
+}
+
+// Waits for EEPROM data line to be clear.
+// Returns 0 if the eeprom data line is no longer busy.
+// Returns 1 if the eeprom data line remains busy after 10 attempts to
+// established communication.
+nodebug
+int mgadc4_eeinit()
+{
+	int ee_k;
+	for(ee_k=0; ee_k<10; ee_k++)           // try ten times 
+	{
+		mgwrite4data(ADC4_SCL0);            // eeprom clock low
+		mgwrite4data(ADC4_SDA1);            // eeprom data high
+		if(mgread0() & 0x04) return 0;      // busy or not, try until timeout
+		mgwrite4data(ADC4_SCL1);            // eeprom clock high
+	}
+	return 1;                              // timeout, return 1
+}
+
+/*** BeginHeader mgread0 */
+int mgread0();
+/*** EndHeader */
+// int mgread0()
+// Reads data from BUSRD0 of a PLCBUS device. This function assumes that
+// the address of the PLCBUS device has been previously set with 
+// mgset12adr() or its equivalent.
+#asm nodebug
+mgread0::
+		ld    a, (PIOCAShadow)  ; save the configuration of the PIOA port
+		ld    c, a              ; to register c
+		in0   b, (PIODA)        ; save the state of PIOA data
+
+		ld    a, 0xcf           ; ready for set up
+		out0  (PIOCA), a
+		ld    a, c
+		or    0x1e              ; set data bits 4 to 1 as inputs
+		out0  (PIOCA), a        ; set the PIOA port
+		ld    (PIOCAShadow), a  ; also save to shadow
+
+		in0   a, (PIODA)        ; 
+		and   00011111b         ; set to BUSRD0, bits 5 to 7
+		out0  (PIODA), a        ; send data out
+
+		or    00000001b         ; strobe data to PLCBUS device
+		out0  (PIODA), a        ; out high
+		and   11111110b
+		out0  (PIODA), a        ; out low
+
+		in0   a, (PIODA)        ; read in data from bits 4-1
+		rra                     ; rotate right one to start at bit0
+		and   0x0f
+		ld    l, a              ; return data in hl
+		ld    h, 0
+
+		ld    a, 0xcf           ; restore configuration of PIOA
+		out0  (PIOCA), a
+		ld    a, c
+		out0  (PIOCA), a
+		ld    (PIOCAShadow), a
+		out0  (PIODA), b
+		ret
+#endasm
+
+/************************************************************************
+LCD drivers through the PIOA port of the MicroG. 4 bit data mode is 
+used. The LCD is also hardwired for write only. The following wiring 
+is adopted:
+
+		PA0      not used
+		PA1      not used
+		PA2      LCD RS
+		PA3(PB7) LCD EN (DC-EZ)
+		PA4      LCD DB4
+		PA5      LCD DB5
+		PA6      LCD DB6
+		PA7      LCD DB7
+
+		Vcc      LCD Vcc
+		Gnd      LCD Vss
+
+		Gnd      LCD RD/WR
+		Gnd      LCD Vo      (for better contrast, connect Vo to 0.30V)
+
+Only the LCD EN line should be exclusive to the LCD. RS and the other data
+lines can be shared with other devices.
+*************************************************************************/
+
+/*** Beginheader lc_init , lc_printf, lc_char, lc_ctrl */
+void lc_char(char data);   // write a display data to the LCD port
+void lc_ctrl(char cmd);    // write a control cmd to the LCD port
+void lc_init();            // Initialize the PIOA to talk to the LCD port
+void lc_wait();
+void lc_nl();              // Next line on the LCD
+void lc_pos(int row, int col);   
+									// Go to specified line and col on the LCD
+void lc_printf(char *fmt, ...);
+void lc_putc(char x);
+/*** Endheader */
+char lc_state, lc_blink, lc_cur, lc_line, lc_col;
+
+#ifndef LK_COLS
+#define LK_COLS 20
+#endif
+
+#ifndef LK_LINES
+#define LK_LINES 2
+#endif
+
+/* _START FUNCTION DESCRIPTION**********************************************
+lc_wait                      <bl14_15.lib>
+
+SYNTAX: void lc_wait();
+
+KEYWORDS: lcd, PIO driver 
+
+DESCRIPTION: Approximately 40us busy wait to make sure the LCD is ready 
+to receive data.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+
+#define LCD_FREEPA 00001011b
+#asm nodebug
+lc_wait::
+		push  bc
+		ld    b, 42
+wait:
+		djnz  wait
+		pop   bc
+		ret
+#endasm
+
+/* START FUNCTION DESCRIPTION ********************************************
+lc_char                      <bl14_15.lib>
+
+SYNTAX: int lc_char(char data);
+
+KEYWORDS: lcd, PIO driver 
+
+DESCRIPTION: Write character "data" to the LCD.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+#asm nodebug
+lc_strobe_en::
+#ifdef ESSTART_NOTINPUT
+	set   7,b
+	out0  (PIODB), b
+	res   7,b
+	out0  (PIODB), b
+#else
+	or    00001000b            ; set EN bit high
+	out0  (PIODA), a
+	and   11110111b            ; set EN bit low
+	out0  (PIODA), a
+#endif
+	ret
+	
+lc_char::
+	call  lc_wait              ; wait to make sure LCD is ready
+
+#ifndef LcdPioNoLock
+	ld    a, i              ; save the state of the ei flag
+	push  af
+	di                      ; disable interrupt
+#endif
+	
+	in0   a, (PIODA)
+	push  af                   ; save output state of PIOA
+#ifdef ESSTART_NOTINPUT
+	in0   b, (PIODB)
+	push  bc
+#endif
+
+	or    00000100b            ; set RS bit
+
+	and   00001111b            ; clear the upper nibble
+	
+	ld    h, a
+	ld    a, l
+	and   11110000b            ; mask lower nibble
+	or    h                    ; get rest of the data
+	out0  (PIODA), a           ; send out data bits and RS
+
+	call  lc_strobe_en
+	
+	and   00001111b            ; clear upper nibble for next data
+	
+	ld    h, a                 ; save to h
+	ld    a, l                 ; get the lower nibble data
+	rla
+	rla
+	rla
+	rla
+	and   11110000b            ; mask to get the upper nibble only
+	or    h                    ; get the rest of the data
+	out0  (PIODA), a           ; send out the data
+
+	call  lc_strobe_en
+	
+	and   11111011b            ; set RS low
+	out0  (PIODA), a
+
+#ifdef ESSTART_NOTINPUT
+	pop   bc
+	out0  (PIODB),b
+#endif
+	pop   af
+	out0  (PIODA), a           ; restore state of PIOA
+
+#ifndef LcdPioNoLock
+	pop   af                ; get back the state of the ei flag
+	ret   po                ; just return if not set
+	ei                      ; enable interrupt
+#endif
+	
+	ret
+#endasm
+	
+/* START FUNCTION DESCRIPTION ********************************************
+lc_ctrl                      <bl14_15.lib>
+
+SYNTAX: int lc_ctrl(char cmd);
+
+KEYWORDS: lcd, PIO driver 
+
+DESCRIPTION: Write a control "cmd" to the LCD.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+#asm nodebug
+lc_ctrl::
+	call  lc_wait           ; make sure LCD is ready to receive
+
+#ifndef LcdPioNoLock
+	ld    a, i              ; save the state of the ei flag
+	push  af
+	di                      ; disable interrupt
+#endif
+
+	in0   a, (PIODA)
+	push  af                ; save state of PIOA
+#ifdef ESSTART_NOTINPUT
+	in0   b, (PIODB)
+	push  bc
+#endif
+	
+	and   00001011b         ; clear the upper nibble
+									; make sure RS is also low
+	ld    h, a
+	ld    a, l
+	and   11110000b         ; mask lower nibble
+	or    h                 ; get rest of the data
+	out0  (PIODA), a        ; send out data bits and RS
+
+	call  lc_strobe_en
+	
+	and   00001111b         ; clear upper nibble for next data
+	
+	ld    h, a              ; save to h
+	ld    a, l              ; get the lower nibble data
+	rla
+	rla
+	rla
+	rla
+	and   11110000b         ; mask to get the upper nibble only
+	or    h                 ; get the rest of the data
+	out0  (PIODA), a        ; send out the data
+
+	call  lc_strobe_en
+
+#ifdef ESSTART_NOTINPUT
+	pop   bc
+	out0  (PIODB), b
+#endif
+	pop   af
+	out0  (PIODA), a        ; restore state of PIOA
+	
+#ifndef LcdPioNoLock
+	pop   af                ; get back the state of the ei flag
+	ret   po                ; just return if not set
+	ei                      ; enable interrupt
+#endif
+
+	ret
+#endasm
+
+/* START FUNCTION DESCRIPTION ********************************************
+lc_init                      <bl14_15.lib>
+
+SYNTAX: void lc_init();
+
+KEYWORDS: lcd, PIO driver 
+
+DESCRIPTION: Initialize the LCD and accessory variables. LCD port is
+driven via the PIOA port of the MicroG. The following wiring is
+used:  PA2 to LCD RS, PA3 to LCD EN, PA4 to LCD DB4, PA5 to LCD DB5,
+PA6 to LCD DB6, PA7 to LCD DB7, Vcc to LCD Vcc, Gnd to LCD Vss, Gnd to     
+LCD RD/WR and Gnd to LCD Vo (for better contrast, connect Vo to 0.30V).
+The LCD driver is compatible with the keypad driver.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug
+void lc_init()
+{
+	int i,j;
+
+#ifdef ESSTART_NOTINPUT
+	resPIOCA(0xf4);         // Bit 2-7 has to be outputs
+	resPIODA(0xf4);         // zero all outputs
+	resPIOCB(0x80);
+	resPIODB(0x80);
+#else
+	resPIOCA(0xfc);         // Bit 2-7 has to be outputs
+	resPIODA(0xfc);         // zero all outputs 
+#endif
+	
+	lc_ctrl(0x03);
+	
+	for(i=0;i<600;i++);
+	
+	for(j=0;j<2;j++)
+	{
+		lc_ctrl(0x03);
+		for(i=0;i<8;i++);
+	}
+
+	lc_ctrl('\B00000010');        // 4 bit mode
+	
+	lc_ctrl('\B00101000');        // function set
+	
+	lc_ctrl('\B00001000');        // lcd off
+	
+	lc_ctrl('\B00001100');        // lcd on
+	
+	lc_ctrl('\B00000110');        // entry mode set
+	
+	lc_ctrl('\B00000001');        // clear display memory
+	for(i=0;i<400;i++);
+
+	lc_ctrl('\B00000010');        // home cursor
+	for(i=0;i<400;i++);   
+
+	lc_cur = lc_state = lc_blink = lc_line = lc_col = 0;
+	lc_printf("\x1be");
+}
+
+/* _START FUNCTION DESCRIPTION *********************************************
+lc_putc                      <bl14_15.lib>
+
+SYNTAX: void lc_putc(char x);
+
+KEYWORDS: lcd 
+
+DESCRIPTION: Decodes char x for special command/sequence for writing to 
+the LCD command or data registers.  This function serves as the driver 
+for lc_printf().
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+indirect void lc_putc(char x)
+{
+	 static int k, j, nl, nc;
+	 auto int l;
+
+	 switch (lc_state)
+	 {
+
+		  case 0:             // output a normal character 
+				if (x == 27)
+				{                // escape received
+					 lc_state = 1;
+				}
+				else if (x == 0xa)
+					 lc_nl();
+				else
+				{
+					 lc_char(x);
+					 lc_col++;
+					 if (lc_col >= LK_COLS)
+						  lc_nl();
+				}
+				return;
+
+		  case 1:             // character after escape
+				if (x == 'p')
+				{
+					 lc_state = 2;
+					 return;
+				}
+				else if (x == '1')
+				{
+					lc_cur = 2;
+					lc_ctrl(0x0c + lc_blink + lc_cur); // enable cursor
+				}
+				else if (x == '0')
+				{
+					lc_cur = 0;
+					lc_ctrl(0xc + lc_blink + lc_cur); // disable cursor
+				}
+				else if (x == 'n')
+				{                // blink off
+					 lc_blink = 0;
+					 lc_ctrl(0x0c + lc_blink + lc_cur);
+				}
+				else if (x == 'b')  // blink on 
+				{
+					 lc_blink = 1;
+					 lc_ctrl(0x0c + lc_blink + lc_cur);
+				}
+				else if (x == 'c')  // erase to eol 
+				{
+					 for (k = lc_col; k < LK_COLS; k++)
+						  lc_char(' ');
+					 lc_pos(lc_line, lc_col);
+				}
+				else if (x == 'e')
+				{
+					for (l = 0; l < LK_LINES; ++l) {
+						lc_pos(l,0);
+						for(j=0;j<LK_COLS;j++) lc_char(' ');
+					}
+					lc_pos(0,0);
+					lc_line = lc_col = 0;
+				}
+				lc_state = 0;
+				return;
+
+		  case 2:             // get row number 
+				nl = x - '0';
+				lc_state = 3;
+				return;
+
+		  case 3:             // get tens digit for column 
+				nc = 10 * (x - '0');
+				lc_state = 4;
+				return;
+
+		  case 4:             // and position cursor
+				lc_pos(nl, nc + (x - '0'));
+				lc_state = 0;
+				return;
+	 }
+
+}
+
+/* _START FUNCTION DESCRIPTION**********************************************
+lc_nl                <bl14_15.lib>
+
+SYNTAX: void lc_nl(void);
+
+KEYWORDS: lcd
+
+DESCRIPTION: Move the LCD cursor to the first column of the next line. 
+If the current line is the last LCD line, then the cursor position is 
+only moved to column 0 of the current line.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void lc_nl(void)
+{
+	 if (++lc_line >= LK_LINES)
+		  lc_line = LK_LINES - 1;
+	 lc_col = 0;
+	 lc_pos(lc_line, 0);
+}
+
+/* _START FUNCTION DESCRIPTION**********************************************
+lc_pos            <bl14_15.lib>
+
+SYNTAX: void lc_pos(int line, int col);
+
+KEYWORDS: lcd
+
+DESCRIPTION: Position LCD cursor at the specified line (0-3) and col 
+(0-19).
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void lc_pos(int line, int col)
+{
+	 static int k, j, n;
+
+	 n = (line & 1) * 0x40 + col;
+	 lc_line = line;
+	 lc_col = col;
+
+	 if (line < 2)
+			lc_ctrl(0x80 + n);
+	 else
+			lc_ctrl(0x94 + n); 
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+lc_printf         <bl14_15.lib>
+
+SYNTAX: void lc_printf(char *fmt, ...);
+
+KEYWORDS: lcd
+
+DESCRIPTION: Printf analogue for the LCD. The following escape sequence are
+also implemented: ESC 1 (\x1b1) to turn cursor on; ESC 0 (\x1b0) to turn off 
+cursor; ESC c (\x1bc) to erase from current cursor position to the end of 
+line; ESC b (\x1bb) to enable blinking cursor; ESC n (\x1bn) to disable
+blinking cursor; ESC e (\x1be) to erase display and home cursor and
+ESC p n mm (\x1bpnmm) to position cursor to line n and column mm.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+void lc_putc();
+nodebug void lc_printf(char *fmt, ...)
+{
+	doprnt(lc_putc, fmt, (char *)( (char *)&fmt + sizeof(fmt) ), NULL );
+}
+
+/*** BeginHeader lc_cgram */
+
+void lc_cgram(char *p);      // special character generator for the LCD
+
+/*** EndHeader lc_cgram */
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+lc_cgram                     <bl14_15.lib>
+
+
+SYNTAX: void lc_cgram(char *p);
+
+KEYWORDS: lcd
+
+DESCRIPTION: Load up to 8 special characters to the character generator of 
+the LCD from the byte array pointed to by *p. First character of the byte 
+array is the number of bytes to store (8 bytes per char) with a maximum of 64 
+for 8 characters. Special characters are accessed as bytes 0, 1, 2, to 7. 
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void lc_cgram(char *p)
+{
+	 static int k, n;
+
+
+	 n = *p++;                // get count
+	 if (n > 64) 
+		  n = 64;              // max is 64
+	 for (k = 0; k < n; k++)
+	 {
+		  lc_ctrl(0x040 + k);
+		  lc_char(*p);
+		  p++;
+	 }
+
+	 lc_pos(0, 0);            // reposition cursor to 0,0
+
+}
+
+
+/**************************************************************************
+Keypad driver via the PIOA and PIOB port of the MicroG. The following
+wiring is used:
+
+		KeyRead1    to    PA0
+		KeyRead2    to    PA1
+		KeyRead3    to    PB4
+		KeyRead4    to    PB5
+		KeyRead5    to    PB6
+		KeyRead6    to    PB7
+
+		Drvr1       to    PA4
+		Drvr2       to    PA5
+		Drvr3       to    PA6
+		Drvr4       to    PA7
+
+The keys are scanned by driving the Drvr's line low one at a time. The 
+KeyRead's line are read in. A low correspond to a key pressed. 
+The function lc_keyscan() should be called periodically to scan the keypad.
+Debouncing is done by making sure a key is pressed for DebounceCount times
+that lc_keyscan() is called. Change the debouncing number by redefining
+DebounceCount in bl14_15.lib. If lc_keyscan() is called every 25 ms and
+DebounceCount is 30, then a key has to be pressed for 30x25ms = 750 ms to
+be valid.
+*************************************************************************/
+
+/*** BeginHeader lc_kxinit, lc_kxget */
+void lc_kxinit();
+int lc_kxget(int mode);
+void lc_keyscan();
+/*** EndHeader */
+
+#ifndef DebounceCount
+#define DebounceCount   20
+#endif
+
+//#define KEY4x6
+char lc_kxdead;   // dead time counter
+char lc_kxkey;    // previous key mask for debouncing
+char lc_keyrpt;   // number of times to stay the same
+char lc_kxbuf[16];   // 16 bytes keypad buffer
+char lc_kxinptr;
+char lc_kxoutptr;    
+unsigned int lc_keycount;
+
+/* START FUNCTION DESCRIPTION ********************************************
+lc_kxinit             <bl14_15.lib>
+
+SYNTAX: void lc_kxinit();
+KEYWORDS:   Keypad, PIO.
+DESCRIPTION: Initialize the keypad driver and accessory variables. The
+following wiring is used:  PA0 is ReadKey1, PA1 is ReadKey2, PB4 is
+ReadKey3, PB5 is ReadKey4, PB6 is ReadKey5, PB7 is ReadKey6, PA4 is
+DRV1, PA5 is DRV2, PA6 is DRV3 and PA7 is DRV4. Keypad driver is compatible 
+with the LCD driver. Define KEY4x6 if it is a 4x6 keypad. Otherwise, defaults
+to a 2x6 keypad.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug 
+void lc_kxinit()
+{
+	lc_kxkey = 0;
+	lc_keyrpt = DebounceCount;
+	lc_kxinptr = lc_kxoutptr = lc_kxdead = lc_keycount = 0;
+	setPIOCA(0x03);      // bits 0 and 1 has to be inputs
+	setPIOCB(0xf0);      // bits 4,5,6,7 has to be inputs
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+lc_kxget             <bl14_15.lib>
+
+SYNTAX: int lc_kxget(int mode);
+KEYWORDS:   Keypad, PIO.
+DESCRIPTION: Fetches the key value from the FIFO keypad buffers. If 
+"mode = 0", value is removed from the buffer; else value remains in the 
+buffer.
+
+RETURN VALUE: Key value or -1, if no key is available.
+END DESCRIPTION **********************************************************/
+nodebug
+int lc_kxget(int mode)
+{
+	auto char temp;
+
+	if(lc_kxinptr == lc_kxoutptr) return -1;
+
+	temp = lc_kxbuf[lc_kxoutptr];
+	if(!mode)
+		lc_kxoutptr = ++lc_kxoutptr & 0x0f; // step the circular buffer
+	return temp;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+lc_keyscan             <bl14_15.lib>
+
+SYNTAX: void lc_keyscan();
+KEYWORDS:   Keypad, PIO.
+DESCRIPTION: Scan the a 4x6 or 2x6 keypad. A valid key has to be persistent 
+for the number of DebounceCount. Call lc_keyscan in a periodic routine.
+Valid keys are put in the keypad buffer and accessed via function lc_kxget().
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+#asm nodebug
+lc_keyscan::
+		ld    hl, (lc_keycount)
+		inc   hl
+		ld    a, h
+		and   0x80
+		jr    nz, maxout
+		ld    (lc_keycount), hl
+maxout:
+
+#ifndef KeyPioNoLock
+		ld    a, i                 ; save the state of the ei flag
+		push  af
+		di
+#endif
+
+		in0   a, (PIODA)
+		push  af                   ; save PIODA
+		
+		or    0xf0
+		out0  (PIODA), a           ; set all the drivers high
+		ld    b, a
+								
+#ifdef KEY4x6
+drvrow1:
+		and   11101111b
+		out0  (PIODA), a
+		
+		call  getkeys
+
+		out0  (PIODA), b
+		ld    a, 00111111b
+		cp    l
+		jr    z, drvrow2
+		ld    h, 0
+		jp    keyconvert
+		
+drvrow2:
+		ld    a, b
+		and   11011111b
+		out0  (PIODA), a
+
+		call  getkeys
+		out0  (PIODA), b
+	
+		ld    a, 00111111b
+		cp    l
+		jr    z, drvrow3
+		ld    h, 6
+		jp    keyconvert
+
+#endif
+
+				
+drvrow3:
+		ld    a, b
+		and   10111111b
+		out0  (PIODA), a
+		
+		call  getkeys
+		out0  (PIODA), b
+		
+		ld    a, 00111111b
+		cp    l
+		jr    z, drvrow4
+		ld    h, 0
+
+#ifdef KEY4x6
+		ld    h, 12
+#endif
+
+		jp    keyconvert
+		
+drvrow4:
+		ld    a, b
+		and   01111111b
+		out0  (PIODA), a
+		
+		call  getkeys
+		out0  (PIODA), b
+
+		ld    a, 00111111b
+		cp    l
+		jr    z, nokey_pressed
+		ld    h, 6
+
+#ifdef   KEY4x6
+		ld    h, 18
+#endif
+
+keyconvert:             ; convert key pressed to a numeral number
+								; handle one key pressed at a time
+		ld    a, 1
+		ld    c, 1
+		ld    b, 6
+chk_bit:
+		and   l
+		jr    z, bit_is_zero
+		inc   c
+		rla
+		djnz  chk_bit
+
+		jp    nokey_pressed
+
+bit_is_zero:
+		ld    a, c
+		add   a, h
+
+		ld    hl, lc_kxkey
+		cp    (hl)
+
+		jr    nz, new_key
+		jr    same_key
+
+new_key:
+		ld    hl, lc_keyrpt
+		ld    (hl), DebounceCount
+		ld    hl, lc_kxkey
+		jr    check_key
+
+same_key:
+		ld    hl, lc_keyrpt
+		dec   (hl)
+		jr    nz, not_debounced
+		ld    c, DebounceCount
+		srl   c                    ; Debounce/2
+		ld    (hl), c              ; set to debounce new key
+		ld    hl, lc_kxkey
+		ld    (hl), 0              ; zero out previous key
+
+check_key:
+		push  af                ; save the data still in a
+		ld    a, (hl)
+		or    a
+		jr    z, put_key
+		pop   af
+		jr    nokey_pressed
+
+put_key:
+		pop   af
+		ld    (hl), a
+
+		push  af
+		ld    a, (lc_kxinptr)
+		ld    hl, lc_kxoutptr
+		inc   a
+		and   0x0f              ; mask for 16 bytes only
+		cp    (hl)
+		jr    z, kxovfl         ; if same keypad buffer is full, ignore
+		ld    h, a
+		ld    a, (lc_kxinptr)   ; get the old buffer pointer again
+		ld    l, a
+		
+		ld    a, h
+		ld    (lc_kxinptr), a   ; update to new buffer pointer
+		ld    h, 0
+		ld    bc, lc_kxbuf
+		add   hl, bc
+		pop   af                ; pop data back
+		ld    (hl), a           ; store in the data
+
+		ld    hl, 0x0000
+		ld    (lc_keycount), hl
+		ld    a, 3
+		ld    (lc_kxdead), a
+
+		jp    end_scankey       ; return a properly debounced key
+
+kxovfl:                       ; over flow buffer
+		pop   af                ; one pop to equalize
+		
+;nokey_pressed:                ; no key pressed
+not_debounced:                ; key not debounced yet
+end_scankey:                  ; end scan key after a key is found
+
+		pop   af
+		out0  (PIODA), a
+
+#ifndef KeyPioNoLock
+		pop   af                ; restore the state of the ei flag
+		ret   po
+		ei
+#endif
+		ret
+
+nokey_pressed:
+		pop   af
+		out0  (PIODA), a
+
+#ifndef KeyPioNoLock
+		pop   af                ; restore the state of the ei flag
+		jp    po, no_ei
+		ei
+no_ei:
+#endif
+
+		ld    a, (lc_kxkey)
+		or    a
+		ret   z
+
+check_deadtime:
+		ld    a, (lc_kxdead)
+		or    a
+		jr    nz, decdeadtime
+		xor   a
+		ld    (lc_kxkey), a
+		ret
+
+decdeadtime:
+		dec   a
+		ld    (lc_kxdead), a
+		ret
+
+
+getkeys:
+
+		in0   a, (PIODA)
+		and   0x03
+		ld    e, a
+
+		in0   a, (PIODB)
+		and   0xf0
+		rra
+		rra
+		and   00111100b
+		or    e
+		ld    l, a
+		ret
+
+#endasm
+		
+// 1-8-96
+// The following are drivers that are specific to the MicroG2 only.
+
+/*** BeginHeader setPIODB2, resPIODB2, setPIOCB2, resPIOCB2 */
+void setPIODB2(int mask);
+void resPIODB2(int mask);
+void setPIOCB2(int mask);
+void resPIOCB2(int mask);
+/*** EndHeader */
+extern char PIOCB2Shadow;
+
+/* START FUNCTION DESCRIPTION ***********************************************
+setPIODB1      <bl14_15.lib>
+
+SYNTAX:     setPIODB2(int byte_mask);
+
+KEYWORDS:   Set data bits, PIOB2.
+
+DESCRIPTION: Active bits (1's) of "byte_mask" are set and or'ed with the 
+current output of PIODB2. PIOB2 is in mode 3.
+
+RETURN VALUES: None.
+END DESCRIPTION ************************************************************/      
+#asm nodebug fast 
+setPIODB2::
+	  ld     a, i
+	  ex     af, af'
+	  di
+	  in0    a, (PIODB2)
+	  or     l
+	  out0   (PIODB2), a
+	  ex     af, af'
+	  ret    po
+	  ei
+	  ret
+#endasm
+
+/* START FUNCTION DESCRIPTION ***********************************************
+resPIODB2               <bl14_15.lib>
+
+SYNTAX:     resPIODB2(int byte_mask);
+
+KEYWORDS:   Reset data bits, PIOB2.
+
+DESCRIPTION: Active bits (1's) of "byte_mask" are reset and and'ed with the
+current output of PIODB2. PIOB2 is in mode 3.
+
+RETURN VALUES: None.
+END DESCRIPTION ************************************************************/
+#asm nodebug fast 
+resPIODB2::
+	  ld     a, i
+	  ex     af, af'
+	  ld     a, l
+	  cpl
+	  di
+	  in0    h, (PIODB2)
+	  and    h
+	  out0   (PIODB2), a
+	  ex     af, af'
+	  ret    po
+	  ei
+	  ret
+#endasm
+
+/* START FUNCTION DESCRIPTION ***********************************************
+setPIOCB2               <bl14_15.lib>
+
+SYNTAX:     setPIOCB2(int byte_mask);
+
+KEYWORDS:   Set control bits, PIOB2.
+
+DESCRIPTION: Active bits (1's) of byte_mask are set and or'ed with 
+PIOCB2Shadow. The result is then send to PIOCB2. Active bits effectively 
+becomes input bits. PIOB2 is in mode 3.
+
+RETURN VALUES: None.
+END DESCRIPTION ************************************************************/
+#asm nodebug fast 
+setPIOCB2::
+	  ld     a, i
+	  ex     af, af'
+	  di
+	  ld     a, 0xcf           ; mode 3
+	  out0   (PIOCB2), a
+	  ld     a, (PIOCB2Shadow)
+	  or     l
+	  out0   (PIOCB2), a        ; set a bit to input
+	  ld     (PIOCB2Shadow), a
+	  ex     af, af'
+	  ret    po
+	  ei
+	  ret
+#endasm
+
+/* START FUNCTION DESCRIPTION ***********************************************
+resPIOCB2               <bl14_15.lib>
+
+SYNTAX:     resPIOCB2(int byte_mask);
+
+KEYWORDS:   Set control bits, PIOB2.
+
+DESCRIPTION: Active bits (1's) of "byte_mask" are reset and and'ed with 
+PIOCB2Shadow. The result is then send to PIOCB2. Active bits effectively 
+becomes output bits. PIOB2 is in mode 3.
+
+RETURN VALUES: None.
+END DESCRIPTION ************************************************************/
+#asm nodebug fast 
+resPIOCB2::
+	  ld     a, i
+	  ex     af, af'
+	  ld     a, 0xcf
+	  di
+	  out0   (PIOCB2), a           ; mode 3
+	  ld     a, l                  ; mask in a
+	  cpl
+	  ld     h, a                  ; complement of mask in a
+	  ld     a, (PIOCB2Shadow)
+	  and    h
+	  out0   (PIOCB2), a
+	  ld     (PIOCB2Shadow), a
+	  ex     af, af'
+	  ret    po
+	  ei
+	  ret
+#endasm
+
+/*** BeginHeader setPIODA2, resPIODA2, setPIOCA2, resPIOCA2 */
+void setPIODA2(int mask);
+void resPIODA2(int mask);
+void setPIOCA2(int mask);
+void resPIOCA2(int mask);
+/*** EndHeader */
+extern char PIOCA2Shadow;
+
+/* START FUNCTION DESCRIPTION ***********************************************
+setPIODA2               <bl14_15.lib>
+
+SYNTAX:     setPIODA2(int byte_mask);
+
+KEYWORDS:   Set data bits, PIOA2.
+
+DESCRIPTION: Active bits (1's) of "byte_mask" are set and or'ed with the 
+current output of PIODA2. PIOA2 is in mode 3.
+
+RETURN VALUES: None.
+END DESCRIPTION ************************************************************/      
+#asm nodebug fast 
+setPIODA2::
+	  ld     a, i
+	  ex     af, af'
+	  di
+	  in0    a, (PIODA2)
+	  or     l
+	  out0   (PIODA2), a
+	  ex     af, af'
+	  ret    po
+	  ei
+	  ret
+#endasm
+
+/* START FUNCTION DESCRIPTION ***********************************************
+resPIODA2               <bl14_15.lib>
+
+SYNTAX:     resPIODA2(int byte_mask);
+
+KEYWORDS:   Reset data bits, PIOA2.
+
+DESCRIPTION: Active bits (1's) of "byte_mask" are reset and and'ed with the
+current output of PIODA2. PIOA2 is in mode 3.
+
+RETURN VALUES: None.
+END DESCRIPTION ************************************************************/
+#asm nodebug fast 
+resPIODA2::
+	  ld     a, i
+	  ex     af, af'
+	  ld     a, l
+	  cpl
+	  di
+	  in0    h, (PIODA2)
+	  and    h
+	  out0   (PIODA2), a
+	  ex     af, af'
+	  ret    po
+	  ei
+	  ret
+#endasm
+
+/* START FUNCTION DESCRIPTION ***********************************************
+setPIOCA2               <bl14_15.lib>
+
+SYNTAX:     setPIOCA2(int byte_mask);
+
+KEYWORDS:   Set control bits, PIOA2.
+
+DESCRIPTION: Active bits (1's) of "byte_mask" are set and or'ed with 
+PIOCA2Shadow. The result is then send to PIOCA2. Active bits effectively 
+becomes input bits. PIOA2 is in mode 3.
+
+RETURN VALUES: None.
+END DESCRIPTION ************************************************************/
+#asm nodebug fast 
+setPIOCA2::
+	  ld     a, i
+	  ex     af, af'
+	  di
+	  ld     a, 0xcf              ; mode 3
+	  out0   (PIOCA2), a
+	  ld     a, (PIOCA2Shadow)
+	  or     l
+	  out0   (PIOCA2), a          ; set a bit to input
+	  ld     (PIOCA2Shadow), a
+	  ex     af, af'
+	  ret    po
+	  ei
+	  ret
+#endasm
+
+/* START FUNCTION DESCRIPTION ***********************************************
+resPIOCA2               <bl14_15.lib>
+
+SYNTAX:     resPIOCA2(int byte_mask);
+
+KEYWORDS:   Set control bits, PIOA2.
+
+DESCRIPTION: Active bits (1's) of "byte_mask" are reset and and'ed with 
+PIOCA2Shadow. The result is then send to PIOCA2. Active bits effectively 
+becomes output bits. PIOA2 is in mode 3.
+
+RETURN VALUES: None.
+END DESCRIPTION ************************************************************/
+#asm nodebug fast 
+resPIOCA2::
+	  ld     a, i
+	  ex     af, af'
+	  ld     a, 0xcf
+	  di
+	  out0   (PIOCA2), a          ; mode 3
+	  ld     a, l                 ; mask in a
+	  cpl
+	  ld     h, a                 ; complement of mask in a
+	  ld     a, (PIOCA2Shadow)
+	  and    h
+	  out0   (PIOCA2), a
+	  ld     (PIOCA2Shadow), a
+	  ex     af, af'
+	  ret    po
+	  ei
+	  ret
+#endasm
+
+/*** BeginHeader */
+#if BOARD_TYPE==MicroG2
+//MG2 rev2
+#define ADCLKPort      PIODB2
+#define ADDINPort      PIODB2
+#define ADDOUTPort     PIODB2
+#define ADEOCPort      PIODB2
+#define ADDOUTBit      2
+#define ADEOCBit       3
+#define CLKMSKHi       0x01
+#define CLKMSKLo       0xfe
+#define DATMSKHi       0x02
+#define DATMSKLo       0xfd
+
+//MG2 rev1
+//#define ADCLKPort       PIODB
+//#define ADDINPort       PIODB
+//#define ADDOUTPort      PIODB2
+//#define ADEOCPort       PIODB2
+//#define ADDOUTBit       1                 
+//#define ADEOCBit        0                 
+//#define CLKMSKHi        0x08
+//#define CLKMSKLo        0xf7
+//#define DATMSKHi        0x04
+//#define DATMSKLo        0xfb      
+#endif
+
+struct mg2adccoeff
+		{
+			int zero_offset;
+			float invgain;
+		};
+
+/*** EndHeader */
+
+/*** BeginHeader mg2adc_reset */
+
+void mg2adc_reset();
+
+/*** EndHeader */
+
+#asm
+mg2adc_reset::
+	ld		hl,00000001b	;	P1B0 as output
+	push	hl
+	call	resPIOCB
+	pop	hl
+	push	hl
+	call	resPIODB			;	low
+	pop	hl
+	push	hl
+	call	setPIODB			;	high
+	pop	hl
+	push	hl
+	call	resPIODB			;	low
+	pop	hl
+	ret
+#endasm
+
+/*** Beginheader mg2adc_read */
+int mg2adc_read(int chan);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ******************************************
+mg2adc_read                <bl14_15.lib>
+
+SYNTAX: int mg2adc_read(int chan);
+
+DESCRIPTION: Sets and reads the A/D data conversion for the specified
+"chan". "Chan" is 0-10 for the 11 A/D channels; "Chan" is 11 for
+(Vref+ - Vref-)/2; "Chan" is 12 for Vref-; "Chan" is 13 for Vref+. All
+data defaults to 12 bits unipolar mode with MSB first. This function
+reads an ADC chan in approximately 366 usec if AdcPioNoLock is defined.
+If AdcPioNoLock is not defined, an ADC channel is read in approximately
+436 usec. The lock is necessary to prevent change in the states of the
+shared PIO port when being used by the ADC. If the other PIO bits are being
+used as input ports, then the lock is not necessary and the user should
+have the following define: "#define AdcPioNoLock 1" in the application.
+
+RETURN VALUES: 0 to 4095.  
+END DESCRIPTION *******************************************************/
+#if BOARD_TYPE==MicroG2
+
+ASM_NOIX int mg2adc_read(int chan) {
+	auto unsigned spin;
+	auto int result;
+	
+#asm xmemok
+wait_eoc1:
+		in0   a, (ADEOCPort)    ; make sure the ADC is not converting
+		bit   ADEOCBit, a
+		jr    z, wait_eoc1
+#endasm
+	BEG_LOCK_P1B0
+		mg2adc_reset();
+#asm xmemok
+		ld		hl,@SP+chan
+		add	hl,sp
+		ld		l,(hl)
+		
+		ld    a, l
+		and   0x0f
+		ld    l, a
+		ld    b, 12             ; get the number of ADC bits used      
+										; and clock out as many clock as the bits
+loop1:                     
+#ifndef AdcPioNoLock
+		ld    a, i
+		ex    af, af'           ; switch to alternate
+		di
+#endif
+
+		in0   a, (ADCLKPort)    ; read in the state of clock and data out
+		bit   3, l              ; check command bit
+		jr    z, data_lo1       ; if low, jump to data_lo1
+data_hi1:
+		or    DATMSKHi          ; set high the data out
+		out0  (ADDINPort), a    ; output to ADC DATAIN
+		jr    next_clk1         ; clock out the data
+data_lo1:   
+		and   DATMSKLo          ; set low the data out
+		out0  (ADDINPort), a    ; output to ADC DATAIN
+next_clk1:
+		or    CLKMSKHi          ; clock high
+		out0  (ADCLKPort), a    ; 
+		and   CLKMSKLo          ; clock low
+		out0  (ADCLKPort), a
+
+#ifndef AdcPioNoLock
+		ex    af, af'           ; back to regular
+		jp    po, no_ei1
+		ei
+#endif
+
+no_ei1:
+		rlc   l                 ; left shift command 
+		djnz  loop1             ; loop back until done           
+
+wait_eoc2:                    ; wait for the end of conversion
+		in0   a, (ADEOCPort)
+		bit   ADEOCBit, a
+		jr    z, wait_eoc2
+
+#ifndef AdcPioNoLock
+		ld    a, i
+		ex    af, af'           ; switch to alternate
+		di
+#endif
+
+		in0   a, (ADDINPort)    ; 2-2-96, make sure data is low
+		and   DATMSKLo          ; 2-2-96, to avoid switching to
+		out0  (ADDINPort), a    ; 2-2-96, none 12 bit setting
+
+#ifndef AdcPioNoLock
+		ex    af, af'           ; back to regular
+		jp    po, no_ei3
+		ei
+#endif
+no_ei3:
+		ld    b, 12             ; loop counter
+		ld    hl, 0x0000        ; zero hl for data in
+
+loop2:                        
+#ifndef AdcPioNoLock
+		ld    a, i
+		ex    af, af'           ; switch to alternate
+		di
+#endif
+		in0   a, (ADCLKPort)
+		or    CLKMSKHi
+		out0  (ADCLKPort), a    ; clock high
+		
+		xor   a                 ; clear carry flag           
+		rl    l                 ; rotate left by 1
+		rl    h                 ; rotate left by 1
+		in0   e, (ADDOUTPort)   ; read data in
+		bit   ADDOUTBit, e           
+		jr    z, data_low       ; if low, no mask    
+		ld    a, l              ; if high "or" 1 to bit 0
+		or    0x01              
+		ld    l, a           
+		
+data_low:
+		in0   a, (ADCLKPort)    ;  
+		and   CLKMSKLo          ; clock low
+		out0  (ADCLKPort), a
+
+#ifndef AdcPioNoLock
+		ex    af, af'           ; back to regular
+		jp    po, no_ei2
+		ei
+#endif
+no_ei2:
+		djnz  loop2             ; loop until done
+		ex		de,hl
+		ld		hl,@SP+result
+		add	hl,sp
+		ld		(hl),e
+		inc	hl
+		ld		(hl),d
+#endasm
+	END_LOCK_P1B0
+	return result;
+}
+#endif
+
+/*** Beginheader mg2adc_set */
+int mg2adc_set(int chan);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION *********************************************
+mg2adc_set                 <bl14_15.lib>
+
+SYNTAX: int mg2adc_set(int chan);
+
+DESCRIPTION: Sets the A/D data conversion for the specified "chan".
+"Chan" is 0-10 for the 11 A/D channels; "Chan" is 11 for (Vref+ - Vref-)/2;
+"Chan" is 12 for Vref-; "Chan" is 13 for Vref+. All data defaults to 
+12 bits unipolar mode with MSB first. A previous conversion from the
+ADC is also read and returned. This function sets/reads in approximately
+258 usec if AdcPioNoLock is defined. If AdcPioNoLock is not defined,
+the ADC channel is set/read in approximately 292 usec. The lock is
+necessary to prevent change in the states of the shared PIO port when
+being used by the ADC. If the other PIO bits are being used as input ports,
+then the lock is not necessary and the user should have the following
+define: "#define AdcPioNoLock 1" in the application.
+
+RETURN VALUES: 0 to 4095.  
+END DESCRIPTION *******************************************************/
+#if BOARD_TYPE==MicroG2
+ASM_NOIX int mg2adc_set(int chan) {
+	auto unsigned spin;
+	auto int result;
+
+#asm xmemok
+wait_eoc1:                       ; make sure not converting
+		in0   a, (ADEOCPort)
+		bit   ADEOCBit, a
+		jr    z, wait_eoc1
+#endasm
+
+	BEG_LOCK_P1B0
+#asm nodebug xmemok
+		ld		hl,@SP+chan
+		add	hl,sp
+		ld		e,(hl)
+		
+		ld    b, 12          
+		ld    hl, 0x0000           ; zero the data
+										
+loop1:                           ; loop 12 times
+
+#ifndef AdcPioNoLock
+		ld    a, i
+		ex    af, af'              ; switch to alternate
+		di
+#endif
+		in0   a, (ADDINPort)       ; read in the state of clock and data out
+		bit   3, e                 ; check the command bit
+		jr    z, data_lo1          ; if low, jump to data_lo1
+data_hi1:      
+		or    DATMSKHi             ; set DATAIN to high
+		out0  (ADDINPort), a
+		jr    next_clk1            ; clocked out the data
+data_lo1:   
+		and   DATMSKLo             ; set DATAIN to low
+		out0  (ADDINPort), a           
+next_clk1:
+		or    CLKMSKHi            
+		out0  (ADCLKPort), a        ; clock high
+		xor   a
+		rl    l
+		rl    h
+		in0   c, (ADDOUTPort)      ; read in previous conversion
+		bit   ADDOUTBit, c
+		jr    z, data_low          ; if low, no mask    
+		ld    a, l                 ; if high, "or" 1 to bit0
+		or    0x01                 ; 
+		ld    l, a                 ; 
+		
+data_low:
+		in0   a, (ADCLKPort)       ; 
+		and   CLKMSKLo             ; clock low
+		out0  (ADCLKPort), a
+
+#ifndef AdcPioNoLock
+		ex    af, af'              ; switch to regular
+		jp    po, no_ei
+		ei
+#endif
+no_ei:
+		rlc   e                    ; left shift for command
+		djnz  loop1                ; loop until no more           
+		ex		de,hl
+		ld		hl,@SP+result
+		add	hl,sp
+		ld		(hl),e
+		inc	hl
+		ld		(hl),d
+;		ret
+#endasm
+	END_LOCK_P1B0
+	return result;
+}
+#endif
+
+/*** BeginHeader mg2adc_sample */
+int mg2adc_sample(int chan, int count, int *buf, unsigned int divider );
+/*** EndHeader */
+ 
+/* START FUNCTION DESCRIPTION ********************************************
+mg2adc_sample                 <bl14_15.lib>
+
+SYNTAX: int mg2adc_sample(int chan, int count, int *buf,
+								unsigned int divider);
+
+DESCRIPTION: Samples data from an A/D "chan" at uniform intervals in
+time. "Chan" is 0-11 for the 11 A/D channels; "Chan" is 11 for
+(Vref+ - Vref-)/2; "Chan" is 12 for Vref-; "Chan" is 13 for Vref+.
+"Count" specifies the number of samples to collect. "buf" points to
+a buffer where the samples will be stored. "Divider" specifies the
+sample rate based on the formula: rate = sysclock()/(20 * divider).
+All data defaults to 12 bits unipolar mode with MSB first.
+The minimum value for "divider" is  dependent on the clock speed, number
+of IO wait states and number of memory wait states. With the default
+setting of MicroG2, "divider" is as low as 105 or about  228 usec.
+Note that the interrupts are turn off during the whole sampling period.
+
+RETURN VALUE: 0 if successful; -2 if the sampling rate is too fast for
+A/D conversion. Data are not collected if the sampling rate is too fast.
+END DESCRIPTION ********************************************************/
+#if BOARD_TYPE==MicroG2
+ASM_IX int mg2adc_sample(int chan, int count, int *buf, unsigned int divider) {
+	auto unsigned spin;
+	auto int result;
+	
+	++_P1B0SpinLock;
+#asm nodebug xmemok
+		ld    a, i
+		di                   ;  disable interrupt
+		push  af             ;  save interrupt state
+
+		in0   a, (TCR)       ; read status of timers
+		and   0x22           ; keep setting for timer1
+		out0  (TCR), a
+		ld    a, (ix+divider)      ; get divider least
+		out0  (TMDR0L), a
+		out0  (RLDR0L), a
+		ld    a, (ix+divider+1)      ; get divider most
+		out0  (TMDR0H), a
+		out0  (RLDR0H), a
+
+wait_eoc1:
+		in0   a, (ADEOCPort)
+		bit   ADEOCBit, a
+		jr    z, wait_eoc1
+
+		exx                  ; use alternate                           
+		ld    e, (ix+count)      ; number of count, least
+		ld    d, (ix+count+1)      ; number of count, most
+		ld    l, (ix+buf)      ; char buffer, least
+		ld    h, (ix+buf+1)      ; char buffer, most
+		exx                  ; back to regular                           
+
+		in0   a, (TCR)
+		and   0x22
+		or    0x01           ; enable timer0
+		out0  (TCR), a       ; start timer0
+		in0   a, (TCR)       ; reset timer0
+		in0   a, (TMDR0L)    ; reset timer0
+
+		ld    e, (ix+chan)
+		ld    d, 12
+		ld    c, e
+				
+; clock out first command word
+		ld    b, d
+		in0   a, (ADDINPort)
+loop1:
+		bit   3, c           ; check command bit
+		jr    z, data_lo1    ; 
+data_hi1:
+		or    DATMSKHi      
+		out0  (ADDINPort), a
+		jr    next_clk1      ; 
+data_lo1:   
+		and   DATMSKLo
+		out0  (ADDINPort), a
+next_clk1:                 
+		rlc   c              ; left shift for command
+		or    CLKMSKHi       ; clock high   
+		out0  (ADCLKPort), a
+		and   CLKMSKLo       ; clock low
+		out0  (ADCLKPort), a
+		djnz  loop1          ;            
+
+timer_loop:
+		in0   a, (TCR)
+		bit   6, a           ; not ready
+		jr    z, not_ready
+overrun:
+		ld    hl, -2         ; return -2 if the sampling rate is too fast
+		jp    the_end
+not_ready:
+		in0   a, (TCR)
+		bit   6, a
+		jr    z, not_ready
+
+		in0   a, (TCR)       ; reset timer0
+		in0   a, (TMDR0L)    ; reset timer0
+		
+		ld    b, d           ;      
+		ex    af, af'        ; use alternate for data in
+		exx
+		xor   a              ; clear a
+		ld    c, a           ; copy to c
+		exx                  ; back to regular
+		ex    af, af'        ; back to regular
+		
+		ld    c, e
+		in0   a, (ADDINPort) ; get state of PIO
+data_loop:
+		bit   3, c           ; command bit
+		jr    z, data_low    ; 
+data_high:
+		or    DATMSKHi       ; data high
+		out0  (ADDINPort), a
+		jr    next_clk       ; 
+data_low:
+		and   DATMSKLo       ; data low
+		out0  (ADDINPort), a
+next_clk:
+		rlc   c              ; left shift for command word
+		or    CLKMSKHi       ; clock high
+		out0  (ADCLKPort), a
+		ex    af, af'        ; use alternate
+		exx                  ; use alternate
+		or    a
+		rla
+		rl    c
+		in0   b, (ADDOUTPort)
+		bit   ADDOUTBit, b
+		jr    z, datain_low  ;     
+datain_high:
+		or    0x01
+		
+datain_low:
+		ex    af, af'        ; back to regular
+		exx                  ; back to regular
+		and   CLKMSKLo       ; clock low
+		out0  (ADCLKPort), a
+		djnz  data_loop      ; back to loop back           
+
+		exx
+		ex    af, af'
+		ld    (hl), a
+		ex    af, af'
+		inc   hl
+		ld    (hl), c
+		inc   hl
+									
+		dec   de             ; decrement counter
+		ld    a, e           ; 
+		or    d              ; 
+		exx                  ; regular
+		jr    nz, timer_loop ; for count number of data
+			
+		ld    hl, 0x0000     ; return 0 for successful operation
+the_end:      
+		in0   a, (TCR)
+		and   0x22           ; make sure channel 0 is off
+		out0  (TCR), a
+		in0   a, (TCR)       ; reset one last time
+		in0   a, (TMDR0L)    ; reset one last time
+		pop   af
+		jp    po, add1
+		ei
+add1:
+		ld		(ix+result),l
+		ld		(ix+result+1),h
+;		ret
+		
+#endasm
+	return result;
+}
+#endif
+
+/*** BeginHeader mg2adc_convert */
+float mg2adc_convert(int data, struct mg2adccoeff *cnvrsn);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION *****************************************
+mg2adc_convert               <bl14_15.lib>
+
+SYNTAX: float mg2adc_convert(unsigned int data, struct mg2adccoeff *cnvrsn);
+
+DESCRIPTION: Converts A/D "data" read with function mg2adc_read(...)
+or mg2adc_set(...) into its voltage equivalent. Conversion constants are
+stored in an mg2adccoeff structure pointed to by "cnvrsn". The voltage is
+computed as: voltage = cnvrsn->invgain * ( cnvrsn->zero_offset - data).   
+
+RETURN VALUE: Voltage equivalent of raw A_to_D data.
+END DESCRIPTION *******************************************************/
+#if BOARD_TYPE==MicroG2
+nodebug
+float mg2adc_convert(int data, struct mg2adccoeff *cnvrsn)
+{
+	return ( cnvrsn->invgain * (cnvrsn->zero_offset - data));
+}
+#endif
+
+/*** BeginHeader mg2adc_writecoef */
+int mg2adc_writecoeff(int ee_base, struct mg2adccoeff *cnvrsn);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ******************************************
+mg2adc_writecoef               <bl14_15.lib>
+
+SYNTAX: int mg2adc_writecoef(int ee_base, struct mg2adccoeff *cnvrsn );
+
+DESCRIPTION: Stores the constants for converting A/D data to voltages.
+ "ee_base" is the starting location of the simulated eeprom in the
+ flash to store the calibration coefficient. Six (6) consecutive bytes
+ from "ee_base" to "ee_base+5" are used for storage.
+
+RETURN VALUE: 0 if the data is successfully stored in the eeprom. -1 if
+non-flash eprom is used and therefore no simulated eeprom is available.
+END DESCRIPTION ********************************************************/
+#if BOARD_TYPE==MicroG2
+nodebug
+int mg2adc_writecoef(int ee_base, struct mg2adccoeff *cnvrsn)
+{
+	extern char OPMODE;
+	char *pdata;
+	int ee_address;
+	int ercode;
+
+	if(!(OPMODE & 0x80)) return -2; // non-flash eprom
+	
+	ee_address = ee_base;
+
+	pdata = (char *)(cnvrsn);
+
+	if((ercode = ee_wr(ee_address++,    *(pdata++))) < 0)
+			return ercode;
+	if((ercode = ee_wr(ee_address++,    *(pdata++))) < 0)
+			return ercode;
+	if((ercode = ee_wr(ee_address++,    *(pdata++))) < 0)
+			return ercode;
+	if((ercode = ee_wr(ee_address++,    *(pdata++))) < 0)
+			return ercode; 
+	if((ercode = ee_wr(ee_address++,    *(pdata++))) < 0)
+			return ercode;
+	if((ercode = ee_wr(ee_address,      *(pdata))) < 0)
+			return ercode;
+	return 0;
+}  
+#endif
+
+#if BOARD_TYPE==MicroG2
+/*** BeginHeader mg2adc_readcoef */
+int mg2adc_readcoef(int ee_base, struct mg2adccoeff *cnvrsn);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ******************************************
+mg2adc_readcoef               <bl14_15.lib>
+
+SYNTAX: int mg2adc_readcoef(int ee_base, struct mg2adccoeff *cnvrsn );
+
+DESCRIPTION: Reads the constants for converting A/D data to voltages.
+"ee_base" is the starting location of the simulated eeprom in the
+flash to retrieve the calibration coefficient. Six (6) consecutive bytes
+from "ee_base" to "ee_base+5" are used for storage.
+
+RETURN VALUES: 0 if the data are successfully read from the eeprom; -1
+if non-flash eprom is used and no coeffiecnt is read. 
+END DESCRIPTION ********************************************************/
+#if BOARD_TYPE==MicroG2
+nodebug
+int mg2adc_readcoef(int ee_base, struct mg2adccoeff *cnvrsn)
+{
+	extern char OPMODE;
+	char *pdata;
+	int ee_address;
+	int ercode;
+
+	
+	if(!(OPMODE & 0x80)) return -2; // non-flash eprom
+
+	ee_address = ee_base;
+
+	pdata = (char *)(cnvrsn);
+
+	if((ercode = ee_rd(ee_address++)) < 0) return ercode;
+	*(pdata++) = ercode;  // get the data
+	if((ercode = ee_rd(ee_address++)) < 0) return ercode;
+	*(pdata++) = ercode;
+	if((ercode = ee_rd(ee_address++)) < 0) return ercode;
+	*(pdata++) = ercode;
+	if((ercode = ee_rd(ee_address++)) < 0) return ercode;
+	*(pdata++) = ercode;
+	if((ercode = ee_rd(ee_address++)) < 0) return ercode;
+	*(pdata++) = ercode;
+	if((ercode = ee_rd(ee_address)) < 0) return ercode;
+	*(pdata)   = ercode;
+
+	return 0;
+}
+#endif
+
+/*** BeginHeader mg2adc_compute */
+int mg2adc_compute(struct mg2adccoeff *cnvrsn, int data1, float volt1,
+						int data2, float volt2);
+/*** Endheader */
+
+/* START FUNCTION DESCRIPTION ****************************************
+mg2adc_compute               <bl14_15.lib>
+
+SYNTAX: int mg2adc_compute(struct mg2adccoeff *cnvrsn, int data1, 
+			float volt1, int data2, float volt2);
+
+DESCRIPTION: Computes the "zero_offset" and "invgain" for the mg2adccoeff 
+structure pointed to by cnvrsn. The constants "zero_offset" and "invgain" 
+are used to convert A/D data to voltage using the following equation:
+volts = invgain *( zero_offset - A/D data). "data1" is the raw A/D reading 
+for known input voltage "volt1". "data2" is the raw A/D reading for the 
+known input volatge "volt2".
+
+RETURN VALUE: 0 if the constants are successfully computed; -1 if the
+data used resulted in divide the zero to compute the constants.  
+END DESCRIPTION *******************************************************/
+#if BOARD_TYPE==MicroG2
+nodebug
+int mg2adc_compute(struct mg2adccoeff *cnvrsn, int data1, float volt1,
+			int data2, float volt2)
+{
+	float tmp;
+	
+	if( (volt1 == volt2) || (data1 == data2) ) return -1;
+	cnvrsn->zero_offset = tmp = ( volt2*data1 - volt1*data2)/ (volt2-volt1);
+	if( cnvrsn->zero_offset == data1)
+		cnvrsn->invgain = volt2 / ( tmp - data2);
+	else
+		cnvrsn->invgain = volt1 / ( tmp - data1);
+	
+	return 0;
+}
+#endif
+
+/*** BeginHeader sysIsRunWithDC */
+
+int sysIsRunWithDC();
+extern char OPMODE;
+
+/*** EndHeader */
+
+int sysIsRunWithDC() {
+	return (OPMODE & 0x8) == 0;
+}
+
+/*** BeginHeader _sysZIfPwrFail */
+
+/*** EndHeader */
+
+#asm
+_sysZIfPwrFail::
+#if BOARD_TYPE==BL15xx
+			ld    a, 0xcf
+			out0  (PIOCB2),a
+			ld		a,0xff
+			out0  (PIOCB2), a       ; make sure bit 3 is input
+			in0   a, (PIODB2)       ; read NMI bit
+			bit   3, a              ;
+#else
+			;the microg has no power fail detection
+			or		1
+#endif
+			ret
+#endasm
+

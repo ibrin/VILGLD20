@@ -1,0 +1,10 @@
+/*** BeginHeader */
+
+/*
+The contents originally in this file is now moved to
+bl16xx.lib
+*/
+
+#use bl16xx.lib
+
+/*** EndHeader */

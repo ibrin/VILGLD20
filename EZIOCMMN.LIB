@@ -1,0 +1,352 @@
+/*** BeginHeader */
+
+#ifndef __EZIOCMMN_LIB
+#define __EZIOCMMN_LIB
+
+struct _eioAdcCalib {
+	int zeroOffset;
+	float invGain;
+};
+
+#define EIO_SET_SAFE 0x1
+#define EIO_INIT_PBUS 0x2
+
+#define EIO_DO_ONBRD_B 0x00
+#define EIO_DO_RELAY6_B 0x40
+#define EIO_DO_RELAY6_BM 0x7
+#define EIO_DO_RELAY6_BS 3
+#define EIO_DO_RELAY6_PM 7
+#define EIO_DO_UIO_B 0x80
+#define EIO_DO_UIO_BM 0x1
+#define EIO_DO_UIO_BS 3
+#define EIO_DO_UIO_PM 7
+#define EIO_DO_UIO_X 0x10
+#define EIO_DO_XP81_B 0x90
+#define EIO_DO_XP81_BM 0x0
+#define EIO_DO_XP81_BS 0x5
+#define EIO_DO_XP81_PM 0x1f
+#define EIO_DO_XP81_X 0x20
+#define EIO_DO_SYS_B 0xc0
+
+#define EIO_DI_ONBRD_B 0x00
+#define EIO_DI_UIO_B 0x40
+#define EIO_DI_UIO_X 0x20
+#define EIO_DI_UIO_BM 0x1
+#define EIO_DI_UIO_BS 4
+#define EIO_DI_UIO_PM 0xf
+#define EIO_DI_UIODB_B 0x60
+#define EIO_DI_UIODB_X 0x20
+#define EIO_DI_UIODB_BM 0x1
+#define EIO_DI_UIODB_BS 4
+#define EIO_DI_UIODB_PM 0xf
+#define EIO_DI_XP81_X 0x20
+#define EIO_DI_XP81_B 0x80
+#define EIO_DI_XP81_BM 0x0
+#define EIO_DI_XP81_BS 5
+#define EIO_DI_XP81_PM 0x1f
+#define EIO_DI_SYS_B 0xc0
+
+#define EIO_AO_ONBRD_B 0x00
+#define EIO_AO_XP86_B 0x10
+#define EIO_AO_XP86_X 0x10
+#define EIO_AO_XP86_BM 0x7
+#define EIO_AO_XP86_BS 0x1
+#define EIO_AO_XP86_PM 0x1
+#define EIO_AO_SYS_B 0xc0
+
+#define EIO_AI_ONBRD_B 0x00
+
+//	earlier boards, esp. the pk2300, uses other offset.
+#ifndef EIO_AI_ONBRD_X
+#define EIO_AI_ONBRD_X 0x10
+#define EIO_AI_ONBRDR_B 0x10
+#define EIO_AI_ONBRDR_X 0x10
+#endif
+
+#define EIO_AI_ADC4_B 0x20 		//	was 0x10
+#define EIO_AI_ADC4_BM 0x3
+#define EIO_AI_ADC4_BS 0x4
+#define EIO_AI_ADC4_PM 0xf
+#define EIO_AI_ADC4_X 0x40
+#define EIO_AI_ADC4R_B 0x60		//	was 0x50
+#define EIO_AI_ADC4R_BM 0x3
+#define EIO_AI_ADC4R_BS 0x4
+#define EIO_AI_ADC4R_PM 0xf
+#define EIO_AI_ADC4R_X 0x40
+#define EIO_AI_SYS_B 0xc0
+
+#ifndef EIOUSEPLC
+#define EIOUSEPLC 0
+#endif
+
+#ifndef EIO_SAFEST
+#define EIO_SAFEST 0
+#endif
+
+/*** EndHeader */
+
+/*** BeginHeader eioBrdAICalib */
+
+#ifdef EIO_BRD_NUM_ADC
+
+extern struct _eioAdcCalib eioBrdAICalib[EIO_BRD_NUM_ADC];
+
+#endif
+
+/*** EndHeader */
+
+#ifdef EIO_BRD_NUM_ADC
+
+struct _eioAdcCalib eioBrdAICalib[EIO_BRD_NUM_ADC];
+
+#endif
+
+/*** beginHeader eioAdcDigitize */
+
+long int eioAdcDigitize(float f, struct _eioAdcCalib *pCalib);
+
+/*** endHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+eioAdcDigitize
+
+SYNTAX:			long int eioAdcDigitize(float f,
+						struct _eioAdcCalib *pCalib);
+
+DESCRIPTION:	This function converts an "analog" value to the digital
+number according to some calibration coefficients. This function is used
+to convert an analog value (such as voltage) to the actual digital number
+for a DAC device.
+
+PARAMETER1:		This is the analog value to output.
+
+PARAMETER2:		This pointer points to a structure that stores the
+calibration coefficients.
+
+RETURN VALUE:	This function returns a long integer that corresponds to
+the number to send to a DAC device.
+
+END DESCRIPTION **********************************************************/
+
+long int eioAdcDigitize(float f, struct _eioAdcCalib *pCalib) {
+	return (long)pCalib->zeroOffset - (long)(f/pCalib->invGain);
+}
+
+/*** BeginHeader eioAdcConvert */
+
+float eioAdcConvert(unsigned d, struct _eioAdcCalib *pCalib);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ***********************************************
+eioAdcConvert			<EZIOCMMN.LIB>
+
+SYNTAX: 		float eioAdcConvert(unsigned d, struct _eioAdcCalib *pCalib);
+
+DESCRIPTION: This function converts a "raw" analog input value to a
+calibrated value.
+
+PARAMETER1:		the "raw" digital value returned by an analog input device
+
+PARAMETER2:		pointer to a calibration structure
+
+RETURN VALUE:	returns the calibrated value corresponding to the raw input
+value "d".
+END DESCRIPTION *************************************************************/
+
+nodebug float eioAdcConvert(unsigned d, struct _eioAdcCalib *pCalib) {
+	return ( pCalib->invGain * ((long)pCalib->zeroOffset - (long)d));
+}
+
+/*** BeginHeader eioErrorCode */
+
+extern int eioErrorCode;
+
+/*** EndHeader */
+
+int eioErrorCode;
+
+/*** BeginHeader eioAdcMakeCoeff */
+
+int eioAdcMakeCoeff(struct _eioAdcCalib *cnvrsn,
+		unsigned d1, unsigned d2, float f1, float f2);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ***********************************************
+eioAdcMakeCoeff			<EZIOCMMN.LIB>
+
+SYNTAX: 		int eioAdcMakeCoeff(struct _eioAdcCalib *cnvrsn,
+					unsigned d1, unsigned d2, float f1, float f2);
+
+DESCRIPTION: This function takes the raw values and actual values of two
+data points and compute the calibration coefficients (assuming linearity).
+
+PARAMETER1:		Pointer to a calibration structure that stores the
+coefficients.
+
+PARAMETER2:		raw value of the first data point.
+
+PARAMETER3:		raw value of the second data point.
+
+PARAMETER4:		actual value of the first data point.
+
+PARAMETER5:		actual value of the second data point.
+
+RETURN VALUE:	returns -1 if it is impossible to compute the calibration
+coefficients, return 0 otherwise.
+END DESCRIPTION *************************************************************/
+
+int eioAdcMakeCoeff(struct _eioAdcCalib *cnvrsn,
+		unsigned d1, unsigned d2, float f1, float f2)
+{
+	float tmp;
+	
+	if( (f1 == f2) || (d1 == d2) ) return -1;
+	cnvrsn->zeroOffset = tmp = ( f2*d1 - f1*d2)/ (f2-f1);
+	if( cnvrsn->zeroOffset == d1)
+		cnvrsn->invGain = f2 / ( tmp - d2);
+	else
+		cnvrsn->invGain = f1 / ( tmp - d1);
+	
+	return 0;
+}
+
+/*** BeginHeader eioBrdACalib */
+
+int eioBrdACalib(unsigned int eioaddr, unsigned d1,
+	unsigned d2, float f1, float f2);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ***********************************************
+eioBrdACalib			<EZIOCMMN.LIB>
+
+SYNTAX: 		int eioBrdACalib(unsigned int eioaddr, unsigned d1,
+					unsigned d2, float f1, float f2)
+
+DESCRIPTION: This function calibrates the A/D conversion constants for one
+ADC channel. The conversion assumes the relationship between the digital
+(ADC reading) value and the actual analog value is linear.
+
+PARAMETER1:		the channel to be calibrated, 0 for PK23xx, 0 to 9 for BL17xx
+
+PARAMETER2:		digital (ADC) value for the first data point
+
+PARAMETER3:		digital (ADC) value for the second data point
+
+PARAMETER4:		analog (real) value for the first data point
+
+PARAMETER5:		analog (real) value for the second data point
+
+RETURN VALUE:	returns -1 if the channel is out of range.
+END DESCRIPTION *************************************************************/
+
+int eioBrdACalib(unsigned int eioaddr, unsigned d1, unsigned d2, float f1, float f2) {
+	auto int i;
+	auto char *pChar;
+	
+	if (eioaddr < EIO_BRD_NUM_ADC) {
+		eioAdcMakeCoeff(&eioBrdAICalib[eioaddr],d1,d2,f1,f2);
+		for (	i=0, pChar = (char*)&eioBrdAICalib[eioaddr];
+				i < sizeof(struct _eioAdcCalib);
+				++i, ++pChar)
+			ee_wr(EIO_EE_ACAL_B+(pChar-(char*)eioBrdAICalib),*pChar);
+		return 0;
+	} else {
+		return -1;
+	}
+}
+
+/*** BeginHeader eioBrdAI */
+
+float eioBrdAI(unsigned eioAddr);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ***********************************************
+eioBrdAI				EZIOCMMN.LIB
+
+SYNTAX: 		float eioBrdAI(unsigned eioaddr)
+
+DESCRIPTION: This function reads the analog to digital input. Note that this
+function checks the validity of the channel and reference voltages on
+certain ADC chips are not considered valid channels. To access these
+channels, use the board specific _eioBrdAI function instead.
+
+PARAMETER1:		The channel to read. Assume N is the number of available
+analog channels. Read channel 0 to N-1 for a converted
+value (using the calibration coefficients factory installed or set up by
+eioBrdACalib). Read 16 to 16+N-1 for the "raw" value (the actual integer
+returned by the ADC device).
+
+RETURN VALUE:	returns 0xffff (in floating point value) if the channel is
+invalid.
+
+END DESCRIPTION *************************************************************/
+
+float eioBrdAI(unsigned eioAddr) {
+	if (eioAddr<EIO_BRD_NUM_ADC) {
+		return eioAdcConvert(_eioBrdAI(eioAddr),&eioBrdAICalib[eioAddr]);
+	} else if (eioAddr < EIO_BRD_NUM_ADC+EIO_AI_ONBRDR_B) {
+		return _eioBrdAI(eioAddr-EIO_AI_ONBRDR_B);
+	} else {
+		eioErrorCode |= EIO_NODEV; return 0xffff;
+	} 
+}
+
+/*** BeginHeader eioBrdInit */
+
+void eioBrdInit(int flags);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ***********************************************
+eioBrdInit				<EZIOCMMN.LIB>
+
+SYNTAX: 		void eioBrdInit(int flags)
+
+DESCRIPTION: 	If the board support ADC, this function reads the calibration
+constants from the EEPROM or flash EPROM.
+
+PARAMETER1:		This flag is not used for non-EasyStart products, always pass
+0.
+
+RETURN VALUE:	N/A.
+
+END DESCRIPTION *************************************************************/
+
+void eioBrdInit(int flags) {
+	auto int i;
+	auto int cnt, bitcnt;
+	auto char *pcalib;
+
+	eioErrorCode = 0;
+	_eioBrdInit(flags);		//	board dependent initialization
+#ifdef EIO_BRD_NUM_ADC
+	eioBrdAdcInit();
+	for (pcalib = (char*)eioBrdAICalib, i = 0;
+			i < sizeof(eioBrdAICalib);
+			++i) {
+		*pcalib++ = ee_rd(EIO_EE_ACAL_B+i);
+	}
+#endif
+
+#if EIO_SAFEST
+	if (flags & EIO_SET_SAFE) {
+		for (cnt = 0; cnt < 2; ++cnt)
+			i = ee_rd(EIO_EE_BRD_B+cnt);
+			for (bitcnt = 0; bitcnt < 7; ++bitcnt) {
+				eioBrdDO(cnt*8+bitcnt, i&1);
+				i >>= 1;
+			}
+		}
+#endif
+
+}
+
+/*** BeginHeader */
+
+#endif
+
+/*** endHeader */

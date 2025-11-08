@@ -1,0 +1,4829 @@
+// 1-26-95
+// Added window for virtual drivers.
+// 12-13-94
+// Added FINDFONT switch to scan the bios area for the 8x8, 8x14 and
+// 8x16 fonts. If FINDFONT is defined, the fonts are dynamically located. If
+// not defined, the font areas are the hardwire font areas.
+// Added TRIDENT8x256 switch to accomodate the 8x256 ram configuration of
+// the Trident card.
+// 8-26-94 , restructure for leaner code size.
+
+/***************************************************************************
+Z104.LIB
+Z-World Engineering   @Copyright 1994
+
+(1) Z104 and Z104_ISA Board Drivers for the VGA card.  The following VGA 
+cards are supported:
+		  AMPRO VGA Card (PC104 format)
+		  Trident 8900D VGA Card (ISA format) 
+		  Boca VGA006 (Cirrus Logic 5401) (ISA format) 
+		  Acumos Card (Cirrus Logic 5401) (ISA format)
+The VGA card is automatically detected in VGAInitData(). A -1 is returned if
+the VGA card is not supported or is not detected.
+Note that a 14.318Mhz oscillator is needed on the Z104/ISA card to run the
+Boca or the Acumos Vga card.
+(2) Printer Port Driver for the Z104 and Z104_ISA boards.
+***************************************************************************/
+
+/*** BeginHeader */
+#if BOARD_TYPE!=Z104ISA
+#error "Z104/ZISA only."
+#endif
+/*** EndHeader */
+
+/*** BeginHeader FontArea8, FontArea14, FontArea16 */
+
+#define  CRTC_INDX 0x03d4         // CRT Controller Index Register
+#define  CRTC_DATA 0x03d5         // CRT Controller Data Register
+#define  SEQU_INDX 0x03c4         // Sequencer Index Register
+#define  SEQU_DATA 0x03c5         // Sequencer Data Register
+#define  ATTR_IXDA 0x03c0         // Attribute Register Index/Data Register
+#define  ATTR_RST  0x03da         // Attributr Reset Register
+#define  GRAF_INDX 0x03ce         // Graphic Controller Index Register
+#define  GRAF_DATA 0x03cf         // Graphic Controller Data Register
+#define  EXT_INDX  0x03d6         // Extension Index Register
+#define  EXT_DATA  0x03d7         // Extension Data Register
+
+#define  DAC_INDXR 0x3c7         // Color Dac index read register
+#define  DAC_INDX  0x3c8         // Color DAC Index Register
+#define  DAC_DATA  0x3c9         // Color DAC Data Register
+
+#define  VGA46e8   0x46e8           //0x86e8
+#define  VGA102    0x0102           //0x8102
+#define  VGA103    0x0103           //0x8103
+#define  VGA3c2    0x03c2           //0x83c2
+#define  VGA3c6    0x03c6           //0x83c6
+
+struct VGADATA  
+{   char port3c2;
+	 char dataSEQ[5];
+	 char dataATTR[21];
+	 char dataCRTC[25];
+	 char dataGRAF[9];
+};
+
+extern unsigned long FontArea8;
+extern unsigned long FontArea14;
+extern unsigned long FontArea16;
+
+/*** EndHeader */
+
+unsigned long FontArea8;
+unsigned long FontArea14;
+unsigned long FontArea16;
+
+
+/*** BeginHeader SetCRTCReg, SetGRAFReg, SetATTRReg, SetSEQReg, SetEXTReg,
+					 SetVideoOn, SetVideoOff */
+
+void    SetCRTCReg(int, int);
+void    SetGRAFReg(int, int);
+void    SetATTRReg(int, int);
+void    SetSEQReg(int, int);
+void    SetEXTRReg(int, int);
+void    SetVideoOn();
+void    SetVideoOff();
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+SetCRTCReg               <z104.lib>
+
+SYNTAX:         void SetCRTCReg(int index, int data);
+
+KEYWORDS:       Z104, Z104_ISA, VGA
+
+DESCRIPTION:    Writes data to the indexed CRCT register of the VGA card. 
+
+RETURN VALUES:  None.
+END DESCRIPTION **********************************************************/
+#asm nodebug
+SetCRTCReg::
+				ld      iy, 2
+				add     iy, sp
+				ld      bc, HIADDR
+				xor     a
+				out     (c), a              ; set high address
+				ld      (SHHiAddr), a       ; shadow high address
+				ld      bc, CRTC_INDX  
+				ld      a, b
+				or      PCPortMask
+				ld      b, a
+				ld      e, (iy)             ; load the index  
+				out     (c),e
+				ld      e, (iy+2)           ; load the data
+				inc     bc
+				out     (c),e
+				ret
+#endasm
+
+/* START FUNCTION DESCRIPTION *********************************************
+SetGRAFReg      <z104.lib>
+
+SYNTAX:         void SetGRAFReg(int index, int data)
+
+KEYWORDS:       Z104, Z104_ISA, VGA
+
+DESCRIPTION:    Writes data to the indexed Graphics register of the VGA Card. 
+
+RETURN VALUES:  None.
+END DESCRIPTION **********************************************************/
+#asm nodebug 
+SetGRAFReg::
+				ld      iy, 2
+				add     iy, sp
+				ld      bc, HIADDR
+				xor     a
+				out     (c), a                  ; set high address
+				ld      (SHHiAddr), a           ; shadow high address
+				ld      bc,GRAF_INDX  
+				ld      a, b
+				or      PCPortMask
+				ld      b, a
+				ld      e, (iy)                 ; load the index
+				out     (c),e
+				ld      e, (iy+2)               ; load the data
+				inc      bc
+				out     (c),e
+  
+				ret
+#endasm
+
+/* START FUNCTION DESCRIPTION *********************************************
+SetATTRReg      <z104.lib>
+
+SYNTAX:         void SetATTRReg(int index, int data);
+
+KEYWORDS:       Z104, Z104_ISA, VGA      
+
+DESCRIPTION:    Writes data to the indexed attribute register of the VGA Card. 
+					 The caller has to read the ATTR_RST to reset the ATTR indexer.
+
+RETURN VALUES:  None.
+END DESCRIPTION **********************************************************/
+#asm nodebug
+SetATTRReg::
+				ld      iy, 2
+				add     iy, sp
+				ld      bc, HIADDR
+				xor     a
+				out     (c), a              ; set high address
+				ld      (SHHiAddr), a       ; shadow high address
+				ld      bc, ATTR_IXDA  
+				ld      a, b
+				or      PCPortMask
+				ld      b, a
+				ld      e, (iy)             ; load the index
+				out     (c), e
+				ld      e, (iy+2)           ; load the data
+				out     (c), e
+				ret
+#endasm
+
+/* START FUNCTION DESCRIPTION **********************************************
+SetSEQFReg      <z104.lib>
+
+SYNTAX:         SetSEQReg(int index, int data)
+
+KEYWORDS:       Z104, Z104_ISA, VGA      
+
+DESCRIPTION:    Writes data to the indexed Sequence register of the VGA Card. 
+
+RETURN VALUES:  None.
+END DESCRIPTION **********************************************************/
+#asm nodebug
+SetSEQReg::
+				ld      iy, 2
+				add     iy, sp
+				ld      bc, HIADDR
+				xor     a
+				out     (c), a              ; set high address
+				ld      (SHHiAddr), a       ; shadow high address
+				ld      bc, SEQU_INDX  
+				ld      a, b
+				or      PCPortMask
+				ld      b, a
+				ld      e, (iy)             ; load the index
+				out     (c), e
+				ld      e, (iy+2)           ; load the data
+				inc     bc
+				out     (c),e
+				ret
+#endasm
+
+/* START FUNCTION DESCRIPTION **********************************************
+SetEXTReg       <z104.lib>
+
+SYNTAX:         void SetEXTReg(int index, int data)
+
+KEYWORDS:       Z104, Z104_ISA, VGA      
+
+DESCRIPTION:    Writes data to the indexed EXTERNAL register of the VGA Card. 
+
+RETURN VALUES:  None.
+END DESCRIPTION **********************************************************/
+#asm nodebug
+SetEXTReg::
+				ld      iy, 2
+				add     iy, sp
+				ld      bc, HIADDR
+				xor     a
+				out     (c), a              ; set high address
+				ld      (SHHiAddr), a       ; shadow high address 
+				ld      bc, EXT_INDX  
+				ld      a, b
+				or      PCPortMask
+				ld      b, a
+
+				ld    e, (iy)               ; load the index
+				out   (c), e
+				ld    e, (iy+2)             ; load the data
+				inc   bc
+				out   (c), e
+				ret
+#endasm
+
+/* START FUNCTION DESCRIPTION ***********************************************
+SetVideoOff     <z104.lib>
+
+SYNTAX:         void SetVideoOff();
+
+KEYWORDS:       Z104, Z104_ISA, VGA      
+
+DESCRIPTION:    Turns off the VGA card by writing 0 to the Attribute Register. 
+
+RETURN VALUES:  None.
+END DESCRIPTION **********************************************************/
+#asm nodebug
+SetVideoOff::
+				ld      bc, HIADDR
+				xor     a
+				out     (c), a              ; set high address
+				ld      (SHHiAddr), a       ; shadow high address
+				ld      bc, ATTR_RST  
+				ld      a, b
+				or      PCPortMask
+				ld      b, a
+				in      a,(c)
+				ld      bc, ATTR_IXDA 
+				ld      a, b
+				or      PCPortMask
+				ld      b, a
+				xor     a                   ; write 0 out to the port
+				out     (c),a
+				ret
+#endasm
+
+/* START FUNCTION DESCRIPTION ***********************************************
+SetVideoOn      <z104.lib>
+
+SYNTAX:         void SetVideoOn()
+
+KEYWORDS:       Z104, Z104_ISA, VGA      
+
+DESCRIPTION:    Turns on the VGA card by writing 0x20 to the Attribute 
+					 Register. 
+
+RETURN VALUES:  None.
+END DESCRIPTION **********************************************************/
+#asm nodebug 
+SetVideoOn::
+				ld      bc, HIADDR
+				xor     a
+				out     (c), a                  ; set high address
+				ld      (SHHiAddr), a           ; shadow high address
+				ld      bc, ATTR_RST  
+				ld      a, b
+				or      PCPortMask
+				ld      b, a
+				in      a, (c)
+				ld      bc, ATTR_IXDA 
+				ld      a, b
+				or      PCPortMask
+				ld      b, a
+				ld      a, 0x20                 ; write out 0x20 to the port
+				out     (c),a
+				ret
+#endasm
+
+
+/*** BeginHeader VGAInit */
+int  VGAInit(int mode);
+
+extern char VGAGFonts[];
+extern struct VGADATA _vgamode3;
+extern struct VGADATA _vgamodee;
+extern struct VGADATA _vgamode10;
+extern struct VGADATA _vgamode12;
+
+extern char SHVGAMode;              // VGA shadow registers
+extern char SHVGA_N_Segs;
+extern char SHVGABase;
+extern char SHVGAPalette;
+
+extern char color[]; 
+extern char VGApagetemp[];
+extern char savefontsize[];
+
+extern unsigned long FontArea8;
+extern unsigned long FontArea14;
+extern unsigned long FontArea16;
+
+
+/*** EndHeader */
+
+char VGAGFonts[2048];
+struct VGADATA _vgamode3 ={ 0x63,
+									  
+									 0x03, 0x01, 0x03, 0x00, 0x02,
+
+									 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
+									 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
+									 0x88, 0x00, 0x0f, 0x00, 0x00,
+
+									 0x5f, 0x4f, 0x50, 0x82, 0x55, 0x81, 0xbf, 0x1f,
+									 0x00, 0xc7, 0x26, 0x07, 0x00, 0x00, 0x00, 0x59,
+									 0x9c, 0x8e, 0x8f, 0x28, 0x1f, 0x96, 0xb9, 0xa3,
+									 0xff,
+
+									 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x0e, 0x00,
+									 0xff};
+ 
+struct VGADATA _vgamodee ={ 
+									 0x63, 
+									 
+									 0x03, 0x01, 0x0f, 0x00, 0x06,
+
+									 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
+									 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
+									 0x81, 0x00, 0x0f, 0x00, 0x00,
+									 
+									 0x5f, 0x4f, 0x50, 0x82, 0x54, 0x80, 0xbf, 0x1f,
+									 0x00, 0xc0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x59,
+									 0x9c, 0x8e, 0x8f, 0x28, 0x00, 0x96, 0xb9, 0xe3,
+									 0xff,
+
+									 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x05, 0x0f,
+									 0xff};
+
+
+struct VGADATA _vgamode10 ={ 
+									 0xa3,
+
+									 0x03, 0x01, 0x0f, 0x00, 0x06, 
+									 
+									 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
+									 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
+									 0x81, 0x01, 0x0f, 0x00, 0x00,
+
+									 0x5f, 0x4f, 0x50, 0x82, 0x54, 0x80, 0xbf, 0x1f,
+									 0x00, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+									 0x83, 0x85, 0x5d, 0x28, 0x0f, 0x63, 0xba, 0xe3,
+									 0xff,
+
+									 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x05, 0x0f,
+									 0xff};
+
+ 
+struct  VGADATA _vgamode12 ={
+									 0xe3,
+											  
+									 0x03, 0x01, 0x0f, 0x00, 0x06,
+
+									 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
+									 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
+									 0x81, 0x01, 0x0f, 0x00, 0x00,
+
+									 // 9-16-94, make setup more conventional
+									 //0x65, 0x4f, 0x50, 0x88, 0x59, 0x9a, 0x09, 0x3e,
+									 0x5f, 0x4f, 0x50, 0x82, 0x54, 0x80, 0x0b, 0x3e,
+									 0x00, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 
+									 0xe8, 0x8b, 0xdf, 0x28, 0x00, 0xe7, 0x04, 0xe3,
+									 0xff,
+
+									 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x05, 0x0f,
+									 0xff};
+
+
+char SHVGAMode;
+char SHVGA_N_Segs;
+char SHVGABase;
+char color[] =
+	 {   
+		  00, 00, 00,     // black 
+		  00, 00, 63,     // blue
+		  00, 63, 00,     // green
+		  00, 63, 63,     // cyan
+		  63, 00, 00,     // red
+		  63, 00, 63,     // magenta 
+		  16, 00, 00,     // brown
+		  48, 48, 48,     // light gray
+		  32, 32, 32,     // dark gray  
+		  00, 32, 63,     // light blue
+		  00, 63, 32,     // light green
+		  32, 63, 63,     // light cyan
+		  32, 00, 63,     // purple  
+		  63, 32, 63,     // light magenta
+		  63, 63, 00,     // yellow 
+		  63, 63, 63      // white     
+	 };
+
+
+char VGApagetemp[160];
+char savefontsize[8];
+extern unsigned long FontArea8;
+extern unsigned long FontArea14;
+extern unsigned long FontArea16;
+
+/* START FUNCTION  DESCRIPTION *********************************************
+VGAInit         <z104.lib>
+
+SYNTAX:         Void VGAInit(int mode);
+
+KEYWORDS:       Z104, Z104_ISA, VGA  
+
+DESCRIPTION:    Initializes the VGA to any of the following mode: 
+					 (0x03) - sixteen color text
+					 (0x0e) - sixteen color 640x200 mode
+					 (0x10) - sixteen color 640x350 mode
+					 (0x12) - sixteen color 640x480 mode. 
+					 Defaults to mode 0x03 if mode is out of range.
+RETURN VALUES:  None.
+END DESCRIPTION ***********************************************************/
+nodebug root 
+int VGAInit(int mode)
+{
+	 int ivga;
+	 switch(mode)
+	 {
+		  case 0x0e:  ivga = VGAInitData(_vgamodee);  
+						  SHVGA_N_Segs    = 4;
+						  break;
+		  case 0x10:  ivga = VGAInitData(_vgamode10);
+						  SHVGA_N_Segs = 8;
+						  break;
+		  case 0x12:  ivga = VGAInitData(_vgamode12);
+						  SHVGA_N_Segs = 10;
+						  break;
+		  case 0x03:
+		  default:    mode = 0x03;
+						  ivga = VGAInitData(_vgamode3);  
+						  break;
+	 }
+	 if(ivga == -1) return -1;       // did not find supported VGA cards
+	 SHVGAMode = mode;      // shadow the mode 
+	 VGASelectPage(0);               // select Page 0 after Init
+	 VGALoadPalette(color,0);        // Load default color
+	 VGAClearScrn();                 // 12-13-94
+	 if(mode==3)
+	 {
+		  VGASelectPalette( 0, 1);
+		  VGALoadFont((char *) 0,  8, 0, 0);
+		  //12-13-94 VGALoadFont((char *) 0, 14, 1, 0);
+		  //12-13-94 VGALoadFont((char *) 0, 16, 2, 0);
+		  VGASelectFont(0);
+	 }
+	 else
+	 {
+		  VGASelectPalette(0, 0);
+		  VGALoadFont(VGAGFonts, 8, 0, 0);
+	 }
+// 12-13-94    VGAClearScrn();
+	 return ivga;
+}
+
+/*** BeginHeader VGAInitData */
+int  VGAInitData(struct VGADATA vdata);
+void VGAAmpro( int mode3c2);
+void VGACirrus(int mode3c2);
+void VGATrident(int mode3c2);
+void oldmode();
+void newmode();
+
+extern unsigned long FontArea8;
+extern unsigned long FontArea14;
+extern unsigned long FontArea16;
+
+/*** EndHeader */
+	
+/**********************************************************************
+VgaInitData     <z104.lib>
+
+SYNTAX:         Void VgaInitData(struct VGADATA vdata);
+
+KEYWORDS:       Z104, Z104_ISA, VGA  
+
+DESCRIPTION:    Called by VGAInit() to write mode values to the VGA ports.
+
+RETURN VALUES:  None.
+END DESCRIPTION ********************************************************/
+nodebug 
+int VGAInitData(struct VGADATA vdata)
+{
+	 int i, ivga;
+	 ivga = VGALocate();
+	 switch(ivga)
+	 {
+		  case 1: VGATrident(vdata.port3c2);
+					 break;
+		  case 2: VGAAmpro(vdata.port3c2);
+					 break;
+		  case 3: VGACirrus(vdata.port3c2);
+					 break;
+		  default:    
+					 return -1;
+	 }
+	 WritePCPort(VGA3c6, 0xff);      // Color Palette Pixel Mask
+	 WritePCPort(ATTR_RST, 0x00);    // disable video
+
+//  Load Sequencer Registers
+	 for(i=0;i<5;i++) 
+		  SetSEQReg(i, vdata.dataSEQ[i]);
+
+//  Load Attribute Registers 
+
+	 SetVideoOff();
+	 ReadPCPort(ATTR_RST);    // Reset Address FF for Attributes Contr.
+	 for(i=0;i<21;i++) 
+		  SetATTRReg(i, vdata.dataATTR[i]);
+	 SetVideoOn();
+
+// Load CRTC Registers
+	 SetCRTCReg(0x11,0x00);      // remove write protect for register 0-7
+	 for(i=0;i<25;i++) 
+		  SetCRTCReg(i, vdata.dataCRTC[i]);
+
+// Load Graphic Controller Registers 
+	 for(i=0;i<9;i++)
+		  SetGRAFReg(i, vdata.dataGRAF[i]);
+	 return ivga;
+}
+
+/* START FUNCTION DESCRIPTION *********************************************
+VGALocate       <z104.lib>
+
+SYNTAX:         int VGALocate();
+
+DESCRIPTION:    Detects the VGA card.
+
+RETURN VALUES:  -1 if no VGA card is detected or VGA card is not supported.
+					 1 for Trident 8900D VGA card.
+					 2 for AMPRO PC/104 VGA card.
+					 3 for BOCA or ACUMOS VGA Card with Cirrus Logic 5401.
+END DESCRIPTION ***********************************************************/
+nodebug
+int VGALocate()
+{
+
+	WritePCPort(0x46e8, 0x0e);       // check for Trident VGA Card
+	WritePCPort(0x3c4, 0x0b);
+	if(ReadPCPort(0x3c5) == 0x33) 
+	{
+		  FontArea8   =   0xc5084;
+		  FontArea14  =   0xc5884;
+		  FontArea16  =   0xc6794;
+		  return 1;   // Trident VGA Card
+	 }  
+	
+	VGAAmpro(0x63);                  // check for AMPRO VGA Card
+	WritePCPort(0x3d6, 0x00);
+	if(ReadPCPort(0x3d7) == 0x23) 
+	{
+		  FontArea8  =    0xc4f20;
+		  FontArea14 =    0xc5720;
+		  FontArea16 =    0xc6630;
+		  return 2;   // AMPRO VGA Card
+	}
+
+	VGACirrus(0x63);                   // Check for Cirrus Logic 5401
+	WritePCPort(0x3d4, 0x27);
+	if(ReadPCPort(0x3d5)==0x18) 
+	{
+		  FontArea8   =   0xc2da2;
+		  FontArea14  =   0xc35a2;
+		  FontArea16  =   0xc44cf;
+		  return 3;
+	 } 
+	return -1;
+}
+
+/* START FUNCTION DESCRIPTION **********************************************
+VGAAmpro        <z104.lib>
+
+SYNTAX:         void VGAAmpro(int mode3c2);
+
+KEYWORDS:       Z104, Z104_ISA, VGA  
+
+DESCRIPTION:    Initializes the Ampro VGA's external or setup registers.
+
+RETURN VALUES:  None.
+END DESCRIPTION **********************************************************/
+nodebug 
+void VGAAmpro(int mode3c2)   
+{
+
+	 WritePCPort(VGA46e8, 0x1e);   // enter setup mode
+	 WritePCPort(VGA102, 0x01);                       
+						  // Turn on global enable (Ampro/C&T p.21)
+	 WritePCPort(VGA103, 0x80);                          
+									 // Enable access to Extension Registers
+									 //   at addr 3d6/7 (Ampro/C&T p.22)
+	 WritePCPort(VGA46e8, 0x0e);     // Exit setup mode.  
+									 //   Ferraro listing 16.4 says 0x0e.  
+									 //   Wilton p. 43 says 0x06.
+
+	 WritePCPort(VGA3c2, mode3c2);                        
+									 // Miscellaneous Output Register 
+									 //   Select 3Bx for some I/O addresses.
+									 //   Also controls Sync Polarity which
+									 //   partially determines vertical
+									 //   resolution.  This setting is:
+									 //   VS = +, HS = - (400 lines).
+									 //   See Ferraro p. 344.
+
+/*  Load Extension Registers  ------------------------------------------ */
+/*      Except for the first four entries, these values were taken from  */
+/*      the Chips & Technologies documentation in the Ampro Manual       */
+/*      See page 86, for CRT displays.                                   */ 
+
+	 SetEXTReg(0x02, 0x20);    // Enable 10 Bit I/O addressing
+	 //SetEXTReg(0x02, 0x00);
+	 SetEXTReg(0x03, 0x00);    // Disable the Bios since we cannot use it
+	 SetEXTReg(0x28, 0x00);
+	 SetEXTReg(0x2b, 0x00);
+		  // These last three are by trial and error and may not be needed.
+	 SetEXTReg(0x08, 0x02);
+	 SetEXTReg(0x09, 0x02);
+
+	 SetEXTReg(0x18, 0x00);
+	 SetEXTReg(0x19, 0x00);
+	 SetEXTReg(0x1a, 0x00);
+	 SetEXTReg(0x1b, 0x00);
+	 SetEXTReg(0x1c, 0x00);
+	 SetEXTReg(0x1d, 0x00);
+	 SetEXTReg(0x1e, 0x00);
+
+	 SetEXTReg(0x50, 0x00);
+	 SetEXTReg(0x51, 0x04);
+	 SetEXTReg(0x52, 0x00);
+	 SetEXTReg(0x53, 0x00);
+	 SetEXTReg(0x54, 0x00);
+	 SetEXTReg(0x55, 0x10);
+	 SetEXTReg(0x56, 0x10);
+	 SetEXTReg(0x57, 0x10);
+
+	 SetEXTReg(0x58, 0x00);
+	 SetEXTReg(0x59, 0x00);
+	 SetEXTReg(0x5a, 0x00);
+	 SetEXTReg(0x5b, 0x00);
+	 SetEXTReg(0x5c, 0x00);
+	 SetEXTReg(0x5d, 0x00);
+	 SetEXTReg(0x5e, 0x00);
+	 SetEXTReg(0x5f, 0x4e);
+
+	 SetEXTReg(0x60, 0x88);
+	 SetEXTReg(0x61, 0x00);
+	 SetEXTReg(0x62, 0x00);
+	 SetEXTReg(0x63, 0x20);
+	 SetEXTReg(0x64, 0x00);
+	 SetEXTReg(0x65, 0x00);
+	 SetEXTReg(0x66, 0x00);
+	 SetEXTReg(0x67, 0x00);
+
+	 SetEXTReg(0x68, 0x00);
+	 SetEXTReg(0x69, 0x00);
+	 SetEXTReg(0x6a, 0x00);
+	 SetEXTReg(0x6b, 0x00);
+	 SetEXTReg(0x6c, 0x00);
+}
+
+/*START DESCRIPTION ******************************************************
+VGACirrus       <z104.lib>
+
+SYNTAX:         void VGACirrus(int mode3c2);
+
+KEYWORDS:       Z104, Z104_ISA, VGA  
+
+DESCRIPTION:    Initializes the Cirrus Logic 5401 on the Boca VGA006 card
+					 or Acumos VGA card.
+
+RETURN VALUES:  None.
+END DESCRIPTION **********************************************************/
+nodebug 
+void VGACirrus(int mode3c2)   
+{
+
+	 WritePCPort(VGA46e8, 0x1e);   // enter setup mode
+	 WritePCPort(0x46e9, 0x00);
+	 WritePCPort(0x102, 0x01);
+	 WritePCPort(0x4ae8, 0x00);
+	 WritePCPort(0x4ae9, 0x00);
+
+	 WritePCPort(VGA103, 0x0);                          
+	 WritePCPort(0x3c2, 0x01);
+	 WritePCPort(0x3b8, 0x01);
+	 WritePCPort(0x3b4, 0x0f);
+	 WritePCPort(0x3b5, 0x55);
+	 WritePCPort(0x3b5, 0xaa);
+	 WritePCPort(0x3c2, 0x00);
+	 WritePCPort(0x3d8, 0x01);
+	 WritePCPort(0x3d4, 0x0f);
+	 WritePCPort(0x3d5, 0x55);
+	 WritePCPort(0x3d5, 0xaa);
+	 WritePCPort(0x102, 0x01);
+	 WritePCPort(0x46e8, 0x0e);
+	 WritePCPort(0x46e9, 0x00);
+
+
+	 WritePCPort(VGA3c6, 0xff);      // 7-17-94 Color Palette Pixel Mask
+	 WritePCPort(ATTR_RST, 0x00);    // 7-17-94 disable video
+	 
+	 ReadPCPort(0x3da);              // 7-17-94
+	 ReadPCPort(0x3ba);              // 7-17-94
+	 WritePCPort(0x3c0, 0x00);       // 7-17-94
+
+	 WritePCPort(VGA3c2, mode3c2);   // 7-17-94                       
+}
+
+/* START FUNCTION  DESCRIPTION *********************************************
+VGATrident      <z104.lib>
+
+SYNTAX:         Void VGATrident(int mode3c2);
+
+KEYWORDS:       Z104, Z104_ISA, VGA                                       
+
+DESCRIPTION:    Initializes the Trident 8900d used in the JAX VGA card.
+					 Only the VGA mode is supported. 
+RETURN VALUES:  None.
+END DESCRIPTION *********************************************************/
+nodebug 
+void VGATrident(int mode3c2)
+{
+
+	 int i;
+	 long  itest;
+	 int data, data2, data3;
+	 
+	 WritePCPort(0x46e8,  0x00);  // disable display adapter
+	 WritePCPort(0x3c3,   0x00);  // disable micro channel 
+	 WritePCPort(0x46e8,  0x16);  // set up
+	 WritePCPort(0x46e9,  0x00);  // undocumented
+	 WritePCPort(0x102,   0x01);  // undocumented, standard vga set
+	 WritePCPort(0x103,   0x00);  // undocumented, standard vga set
+	 WritePCPort(0x46e8,  0x0e);  // enable display adapter
+	 WritePCPort(0x46e9,  0x00);  // undocumented 
+	 WritePCPort(0x4ae8,  0x00);  // undocumented 
+	 WritePCPort(0x4ae9,  0x00);  // undocumented 
+
+	 newmode();
+	 WritePCPort(0x3c4, 0x0e);
+	 i = ReadPCPort(0x3c5);
+	 WritePCPort(0x3c5, i | 0x80);   // unprotect
+	 
+	 WritePCPort(0x3c4, 0x0f);
+	 WritePCPort(0x3c5, 0x70);   // enable bios rom, 8 bit ISA bus
+
+	 WritePCPort(0x3ce, 0x0f);   
+	 
+#ifndef TRIDENT8x256            // 12-13-94
+	 WritePCPort(0x3cf, 0x10);   // four dram cas; one dram write, std vga
+#else  
+	 WritePCPort(0x3cf, 0x00);   // 8x256 DRAM setting
+#endif
+	 
+	 WritePCPort(0x3c4, 0x0c);
+	 WritePCPort(0x3c5, 0x4e);   // 16 bit dram, 46e8 control, 32K ram,  
+										  // 32 state machine, slow decode
+
+	 WritePCPort(0x3c4, 0x0e);
+	 WritePCPort(0x3c5, i);      // protect
+	 
+	 oldmode();
+
+	 WritePCPort(0x3c2, 0x23);   // trident bios
+		
+	 newmode();
+	 WritePCPort(0x3c4, 0x0e);
+	 WritePCPort(0x3c5, 0x02);   // select bank 1
+	 
+	 oldmode();
+	 WritePCPort(0x3c4, 0x0d);
+	 WritePCPort(0x3c5, 0x00);   // std vga, disable dram clock
+	 WritePCPort(0x3c4, 0x0e);
+	 WritePCPort(0x3c5, 0xa0);   // 8 bit, clock output function, bank0
+	 // WritePCPort(0x3c5, 0xa8);
+
+	 newmode();
+	 WritePCPort(0x3c4, 0x0e);    
+	 WritePCPort(0x3c5, 0x02);   // select page for 64k access (not used)
+	 WritePCPort(0x3c4, 0x0d);
+	 WritePCPort(0x3c5, 0x00);   // normal clock, frequency selection
+
+	 WritePCPort(0x3d4, 0x1e);
+	 WritePCPort(0x3d5, 0x00);   // normal, disable bit 16 address
+
+//* w7
+	 newmode();
+	 WritePCPort(0x3d4, 0x20);
+	 WritePCPort(0x3d5, 0x1c);   // enable 16 bit planar, ZWS can be generated
+										  // enable FIFO
+//w7 */
+
+	 WritePCPort(0x3d4, 0x29);
+	 WritePCPort(0x3d5, 0x44);   // reserved, Trident Bios
+
+///* w5
+	 oldmode();
+	 WritePCPort(0x3b4, 0x0e);   // Trident Bios
+	 WritePCPort(0x3b5, 0xff);   //  
+	 WritePCPort(0x3b4, 0x0f);
+	 WritePCPort(0x3b5, 0xff);
+	 WritePCPort(0x3b4, 0x0e);
+	 WritePCPort(0x3b4, 0x0f);
+	 WritePCPort(0x3b4, 0x0e);
+	 WritePCPort(0x3b5, 0xaa);
+	 WritePCPort(0x3b4, 0x0f);
+	 WritePCPort(0x3b5, 0xaa);
+	 WritePCPort(0x3b4, 0x0e);
+
+		
+	 WritePCPort(0x3c2, 0xa6);   // select 0x3bx port
+	 WritePCPort(0x3d4, 0x0e);   // Trident Bios
+	 WritePCPort(0x3d5, 0xff);
+	 WritePCPort(0x3d4, 0x0f);
+	 WritePCPort(0x3d5, 0xff);
+	 WritePCPort(0x3d4, 0x0e);
+	 WritePCPort(0x3d4, 0x0f);
+	 WritePCPort(0x3d4, 0x0e);
+	 WritePCPort(0x3d5, 0xaa);
+	 WritePCPort(0x3d4, 0x0f);
+	 WritePCPort(0x3d5, 0xaa);
+	 WritePCPort(0x3d4, 0x0e);
+
+//w5 */      
+	 
+	 WritePCPort(0x3c2, 0x23);
+
+	 WritePCPort(0x3d4, 0x20);
+	 WritePCPort(0x3d5, 0x18);   // forced PC values, enable 16 bit planar
+										  // ZWS can be generated
+
+	 ReadPCPort(0x3da);          // disable video
+	 WritePCPort(0x3c0, 0x00);
+	 ReadPCPort(0x3da);
+
+	 WritePCPort(0x3ce, 0x10);   // Trident Bios
+	 WritePCPort(0x3cf, 0x00);
+
+	 newmode();
+	 WritePCPort(0x3c4, 0x0e);
+	 WritePCPort(0x3c5, 0x82);   // disable write protect 
+
+	 WritePCPort(0x3d8, 0x00);   // needed by 64k configuration
+	 WritePCPort(0x3d9, 0x00);   // not used
+		
+	 newmode();
+	 WritePCPort(0x3c4, 0x0e);
+	 WritePCPort(0x3c5, 0x02);   // enable write protect
+
+	 ReadPCPort(0x3da);          // disable video
+	 WritePCPort(0x3c0, 0x00);
+	 ReadPCPort(0x3da);
+
+
+	 WritePCPort(0x3c4, 0x00);   // set SEQUENTIAL registers
+	 WritePCPort(0x3c5, 0x01);   // Asynchronous reset
+	 WritePCPort(0x3c4, 0x01);
+	 WritePCPort(0x3c5, 0x01);   // 8 dot characters
+	 WritePCPort(0x3c4, 0x02);
+	 WritePCPort(0x3c5, 0x03);   // enable map 0 and map 1
+	 WritePCPort(0x3c4, 0x03);
+	 WritePCPort(0x3c5, 0x00);   // map 0 select
+	 WritePCPort(0x3c4, 0x04);
+	 WritePCPort(0x3c5, 0x02);   // enable 256K memory access
+		
+	 WritePCPort(0x3c2, 0xa3);   // Trident Bios     
+
+	 WritePCPort(0x3ce, 0x10);   // undocumented, Trident Bios
+	 WritePCPort(0x3cf, 0x00);
+	 WritePCPort(0x3ce, 0x0f);   
+	 data3 = ReadPCPort(0x3cf);
+	 WritePCPort(0x3cf, data3 | 0x04);   // enable extended graphics mode
+
+	 data3 = ReadPCPort(0x3cc);  // Trident Bios
+	 data3 = data3 | 0x01;
+	 WritePCPort(0x3c2, data3);  
+	 WritePCPort(0x3db, 0x01);   // undocumented, Trident Bios
+	 WritePCPort(0x3c2, data3);
+		
+/* w4
+	 newmode();
+	 oldmode();
+	 WritePCPort(0x3c4, 0x0d);
+	 data3 = ReadPCPort(0x3c5);
+	 WritePCPort(0x3c5, data3);
+	 
+	 newmode();                  // Trident Bios
+	 WritePCPort(0x3d4, 0x21);
+	 data3 = ReadPCPort(0x3d5);  // read memory boundary
+	 WritePCPort(0x3ce, data3);  // weird ????
+	 data = ReadPCPort(0x3cf);
+	 WritePCPort(0x3cf, data);
+w4 */      
+
+///* w3
+	 WritePCPort(0x3d8, 0x00);   // Trident Bios
+	 WritePCPort(0x3d9, 0x00);
+	 
+	 newmode();
+	 WritePCPort(0x3c4, 0x0e);
+	 WritePCPort(0x3c5, 0x02);   // write protect on
+//w3 */
+
+	 ReadPCPort(0x3da);          // video off
+	 WritePCPort(0x3c0, 0x00);
+	 ReadPCPort(0x3da);
+/* w2    
+	 // Trident Bios Test
+	 for(itest=0x2000L;itest>0;itest--)
+	 {
+		  if( ReadPCPort(0x3da)==0x08)break;
+	 }
+	 for(itest=0x2000L;itest>0;itest--)
+	 {
+		  if( ReadPCPort(0x3da)==0x00)break;
+	 }
+	 for(itest=0x2000L;itest>0;itest--)
+	 {
+		  if( ReadPCPort(0x3da)==0x08)break;
+	 }
+w2 */
+	 // Trident Bios, Set DAC registers
+	 
+	 ReadPCPort(0x3c8);
+	 for(i=0;i<5;i++)
+		  ReadPCPort(0x3c6);
+
+	 ReadPCPort(0x3c8);
+	 for(i=0;i<4;i++)
+		  ReadPCPort(0x3c6);
+	 WritePCPort(0x3c6, 0x10);
+
+	 WritePCPort(0x3c7, 0x08);
+	 WritePCPort(0x3c8, 0x00);
+	 WritePCPort(0x3c6, 0x00);
+
+	 ReadPCPort(0x3c8);
+	 for(i=0;i<5;i++)
+		  ReadPCPort(0x3c6);
+		 
+	 ReadPCPort(0x3c8);
+	 for(i=0;i<4;i++)
+			ReadPCPort(0x3c6);
+	 WritePCPort(0x3c6, 0x0);
+	 WritePCPort(0x3c6, 0xff);
+		 
+	 ReadPCPort(0x3da);              // video on
+	 WritePCPort(0x3c0, 0x20);
+	 ReadPCPort(0x3da);
+
+///* w1
+	 WritePCPort(0x3c2, 0x67);       // forced PC values
+	 WritePCPort(0x3ce, 0x0f);
+	 WritePCPort(0x3cf, 0x17);
+	 WritePCPort(0x3d4, 0x1f);
+	 WritePCPort(0x3d5, 0x8b);
+	 WritePCPort(0x3d4, 0x20);
+	 WritePCPort(0x3d5, 0x18);
+	 WritePCPort(0x3d4, 0x22);
+	 WritePCPort(0x3d5, 0x2c);
+	 WritePCPort(0x3d8, 0xbc);
+	 WritePCPort(0x3d9, 0x00);
+//w1 */
+	 WritePCPort(0x3c2, mode3c2);
+	 newmode();
+	 i = 0;
+	 WritePCPort(0x3c4, 0x0e);
+	 WritePCPort(0x3c5, i ^ 2);  // set write bank
+}
+
+/* START FUNCTION DESCRIPTION ***********************************************
+oldmode         <z104.lib>
+
+SYNTAX:         void oldmode();
+
+KEYWORDS:       Z104, Z104_ISA, VGA      
+
+DESCRIPTION:    Ready registers (3c5,d) and (3c5,e) of Trident 8900d for
+					 old configuration mode access.
+RETURN VALUES:  None.
+END DESCRIPTION ***********************************************************/
+nodebug 
+void oldmode()
+{
+	 WritePCPort(0x3c4, 0x0b);
+	 WritePCPort(0x3c5, 0x00);
+}
+
+/* START FUNCTION DESCRIPTION ***********************************************
+newmode             <z104.lib>
+
+SYNTAX:         void newmode();
+
+KEYWORDS:       Z104, Z104_ISA, VGA      
+
+DESCRIPTION:    Ready registers (3c5,d) and (3c5,e) of Trident 8900d for
+					 new configuration mode access.
+RETURN VALUES:  None.
+END DESCRIPTION ***********************************************************/
+nodebug 
+void newmode()
+{
+	 WritePCPort(0x3c4, 0x0b);
+	 ReadPCPort(0x3c5);
+}
+
+/*** BeginHeader VGALoadPalette, VGASelectPalette, VGASelectBdColor,
+	 VGASelectBkColor */
+void VGALoadPalette(char *buf, int palette);                
+void VGASelectPalette(int palette, int blink);    
+void VGASetBdColor(int color);
+void VGASetBkColor(int color);
+
+extern char SHVGAPalette;
+/*** EndHeader */
+
+char SHVGAPalette;          
+
+/* START FUNCTION DESCRIPTION **********************************************
+VgaLoadPalette  <z104.lib>
+
+SYNTAX:         Void VgaLoadPalette(char *buf, int palette);
+
+KEYWORDS:       Z104, Z104_ISA, VGA             
+
+DESCRIPTION:    Loads a 48 bytes of RGB color data to any of the 16 color 
+					 palette location.
+RETURN VALUES:  None.
+END DESCRIPTION **********************************************************/
+nodebug 
+void VGALoadPalette(char *buf, int palette)
+{
+	 int i;
+	 if(palette>15) return; 
+	 WritePCPort(DAC_INDX, palette * 16);
+	 for(i = 0;i < 48;i++) 
+		  WritePCPort(DAC_DATA, buf[i]);
+}
+
+/* START FUNCTION DESCRIPTION **********************************************
+VGASelectPalette    <z104.lib>
+
+SYNTAX:         void VGASelectPalette(int palette, int blink);
+
+KEYWORDS:       Z104, Z104_ISA, VGA             
+
+DESCRIPTION:    Select one of 16 color palette to be active. Select blink 
+					 option if in text mode.
+RETURN VALUES:  None.
+END DESCRIPTION ***********************************************************/
+nodebug 
+void VGASelectPalette(int palette, int blink)
+{
+		SetVideoOff();
+		SHVGAPalette = palette;
+		if(SHVGAMode==3)
+		{
+			ReadPCPort(ATTR_RST);    // read to index attribute register
+			if(blink) 
+				SetATTRReg(0x10, 0x88);
+			else      
+				SetATTRReg(0x10, 0x80);
+	 
+		}  
+		ReadPCPort(ATTR_RST);
+		SetATTRReg(0x14, (palette) & 0x0f);
+		SetVideoOn();
+}
+
+
+
+/* START FUNCTION DESCRIPTION ***********************************************
+VGASetBdColor   <z104.lib>
+
+SYNTAX:         void VGASetBdColor(int color);
+
+KEYWORDS:       Z104, Z104_ISA, VGA             
+
+DESCRIPTION:    Sets the border color relative to the current color palette.
+
+RETURN VALUES:  None.
+END DESCRIPTION ************************************************************/
+nodebug 
+void VGASetBdColor(int color)
+{
+	 SetVideoOff();
+	 ReadPCPort(ATTR_RST);   
+	 SetATTRReg(0x11, color);
+	 SetVideoOn();
+}
+
+/* START FUNCTION DESCRIPTION ***********************************************
+VGASetBkColor   <z104.lib>
+
+SYNTAX:         void VGASetBkColor(int color);
+
+KEYWORDS:       Z104, Z104_ISA, VGA             
+
+DESCRIPTION:    Sets the background color relative to the current color 
+					 palette.
+RETURN VALUES:  None.
+END DESCRIPTION ************************************************************/
+nodebug 
+void VGASetBkColor(int color)
+{
+	 int colorbase;
+	 int red, green, blue;
+	 colorbase = color;
+
+	 if(colorbase!=0)
+	 {
+
+		colorbase = colorbase + SHVGAPalette*16;
+		WritePCPort(DAC_INDXR, colorbase);
+		red = ReadPCPort(DAC_DATA);      // read the indexed colors
+		green = ReadPCPort(DAC_DATA); 
+		blue = ReadPCPort(DAC_DATA);  
+	 }
+	 else                        
+	 {                           // if zero, default to color black
+		red = green = blue = 0;
+	 }
+	 
+	 WritePCPort(DAC_INDX, SHVGAPalette*16); 
+	 WritePCPort(DAC_DATA, red); 
+	 WritePCPort(DAC_DATA, green); 
+	 WritePCPort(DAC_DATA, blue); 
+	
+}
+
+/*** BeginHeader VGALoadFont, VGASelectFont */
+void VGALoadFont(char *buf, int fontsize, int font, int nfonts); 
+void VGASelectFont(int font);    
+unsigned long VGAFind8x8();             // 12-13-94
+unsigned long VGAFind8x14();            // 12-13-94
+unsigned long VGAFind8x16();            // 12-13-94
+/*** EndHeader */
+char fontdata[16];
+unsigned long dbase;
+
+/* START FUNCTION DESCRIPTION ***********************************************
+VgaLoadFont     <z104.lib>
+
+SYNTAX:         void VGALoadFont(char *buf, int fontsize, int font, 
+					 int nfonts);
+
+KEYWORDS:       Z104, Z104_ISA, VGA             
+
+DESCRIPTION:    Loads a nfonts characters to the specified fontarea. Use the 
+					 default font in the rom Bios if nfonts is 0. row_size is the 
+					 height of the font character. If graphics mode, then the 8x8 
+					 font in the bios area is read to VGAGFonts[].
+RETURN VALUES:  None.
+END DESCRIPTION ************************************************************/
+nodebug root 
+void VGALoadFont(char *buf, int fontsize, int font, int nfonts)
+{
+	 unsigned long fontaddr;
+	 unsigned long biosfontaddr;
+	 int i;
+	 char fontbase[] = {0xa0,0xa4,0xa8,0xac,0xa2,0xa6,0xaa,0xae};
+
+	 if(SHVGAMode==0x03)
+	 {
+	 if(font>7) 
+		  return;
+	 fontaddr =  ((long)fontbase[font])<<12;
+	 
+	 SetSEQReg(0x02, 0x04);              // set up the SEQR registers
+	 SetSEQReg(0x04, 0x07);
+	 SetGRAFReg(0x04, 0x02);             // set up the GRAF register
+	 SetGRAFReg(0x05, 0x00);
+	 SetGRAFReg(0x06, 0x04);
+
+	 if(nfonts) // nfonts is not zero, load users own font
+	 {
+		  for(i=0;i<nfonts;i++)  
+		  {
+				WritePCMem( fontaddr, buf, fontsize);
+				buf   += fontsize;
+				fontaddr += 32L;
+		  }
+	 }
+	 else
+	 {   // nfont ==0, use font in the BIOS
+		  switch(fontsize)
+			{
+				case 8:
+						  biosfontaddr = FontArea8;
+#ifdef FINDFONT
+						  biosfontaddr = VGAFind8x8();    //12-13-94
+#endif
+						  break;
+				case 14:
+						  biosfontaddr = FontArea14;
+#ifdef FINDFONT
+						  biosfontaddr = VGAFind8x14();   //12-13-94
+#endif
+						  break;
+				case 16:
+						  biosfontaddr = FontArea16;
+#ifdef FINDFONT
+						  biosfontaddr = VGAFind8x16();   //12-13-94
+#endif
+						  break;
+			}
+			
+
+			for(i=0;i<256;i++)  // copy 256 character fonts
+			{
+				 
+				  ReadPCMem(biosfontaddr, VGApagetemp, fontsize);
+				  WritePCMem(fontaddr, VGApagetemp, fontsize);
+				  fontaddr +=32L;
+				  biosfontaddr += (long)fontsize;
+			}
+	 }
+
+		  savefontsize[font] = fontsize;
+		  SetSEQReg(0x02, 0x03);      // restore the default SEQR registers
+		  SetSEQReg(0x04, 0x02);
+		  SetGRAFReg(0x04, 0x00);     // restore the default GRAF registers
+		  SetGRAFReg(0x05, 0x10);
+		  SetGRAFReg(0x06, 0x0e);
+	 }
+	 else    // graphics mode only support the 8x8 font
+	 {
+		  biosfontaddr = FontArea8;
+#ifdef FINDFONT
+		  biosfontaddr = VGAFind8x8();    //12-13-94
+#endif
+		  ReadPCMem( biosfontaddr, buf, 2048);
+	 }
+}
+
+/* START FUNCTION DESCRIPTION ***********************************************
+VGASelectFont   <z104.lib>
+
+SYNTAX:         void VGASelectFont(int font);
+
+KEYWORDS:       Z104, Z104_ISA, VGA             
+
+DESCRIPTION:    Select one of 16 fonts that has been previoulsy loaded with
+					 VGALoadFont. The fontmap variables are set to allow for higher 
+					 intensity color when bit3 of the attibute byte is set.            
+RETURN VALUES:  None.
+END DESCRIPTION **********************************************************/
+nodebug 
+void VGASelectFont(int font)
+{
+	char fontmap[] = {  0x00, 0x05, 0x0a, 0x0f, 0x30, 0x35, 0x3a, 0x3f};
+							// font0 to font7
+	SetSEQReg(0x03, fontmap[font]);
+	SetCRTCReg(0x09, 0xc0+savefontsize[font]-1);
+}
+
+/* START FUNCTION DESCRIPTION ***********************************************
+VGAFind8x8      <z104.lib>
+
+SYNTAX:         unsigned long VGAFind8x8;
+
+KEYWORDS:       Z104, Z104_ISA, VGA             
+
+DESCRIPTION:    Scan the Bios area for the location of the 8x8 font.           
+RETURN VALUES:  None.
+END DESCRIPTION **********************************************************/
+nodebug
+unsigned long VGAFind8x8()
+{
+	 char f8x8[] = { 0x7e, 0x81, 0xa5, 0x81, 0xbd, 0x99, 0x81, 0x7e};
+	 dbase = 0xc2000L;
+	 while( dbase < 0xc9000L)
+	 {
+		  ReadPCMem( dbase, fontdata, 8);
+		  if( !memcmp(fontdata, f8x8, 8)) break;
+		  ++dbase;
+	 }
+	 return dbase - 8L;
+}
+
+/* START FUNCTION DESCRIPTION ***********************************************
+VGAFind8x14     <z104.lib>
+
+SYNTAX:         unsigned long VGAFind8x14;
+
+KEYWORDS:       Z104, Z104_ISA, VGA             
+
+DESCRIPTION:    Scan the Bios area for the location of the 8x14 font.           
+RETURN VALUES:  None.
+END DESCRIPTION **********************************************************/
+nodebug
+unsigned long VGAFind8x14()
+{
+	 char f8x14[] = {    0x00, 0x00, 0x7e, 0x81, 0xa5, 0x81, 0x81, 
+								0xbd, 0x99, 0x81, 0x7e, 0x00, 0x00, 0x00};
+	 dbase = 0xc3000L;
+	 while( dbase < 0xc9000L)
+	 {
+		  ReadPCMem( dbase, fontdata, 14);
+		  if( !memcmp(fontdata, f8x14, 14)) break;
+		  ++dbase;
+	 }
+	 return dbase - 14L;
+}
+
+/* START FUNCTION DESCRIPTION ***********************************************
+VGAFind8x16     <z104.lib>
+
+SYNTAX:         unsigned long VGAFind8x16;
+
+KEYWORDS:       Z104, Z104_ISA, VGA             
+
+DESCRIPTION:    Scan the Bios area for the location of the 8x16 font.           
+RETURN VALUES:  None.
+END DESCRIPTION **********************************************************/
+nodebug
+unsigned long VGAFind8x16()
+{
+	 char f8x16[] = {    0x00, 0x00, 0x7e, 0x81, 0xa5, 0x81, 0x81, 0xbd, 
+								0x99, 0x81, 0x81, 0x7e, 0x00, 0x00, 0x00, 0x00};
+	 dbase = 0xc4000L;
+	 while( dbase < 0xc9000L)
+	 {
+		  ReadPCMem( dbase, fontdata, 16);
+		  if( !memcmp( fontdata, f8x16, 16)) break;
+		  ++dbase;
+	 }
+	 return dbase - 16L;
+}
+
+/*** BeginHeader VGACurType, VGACurPos, VGAReadCur */
+void VGACurType(int start, int end, int onoff);
+void VGACurPos(int row, int col);
+void VGAReadCur(int *row, int *col);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ***********************************************
+VGACurType      <z104.lib>
+
+SYNTAX:         void VGACurType(int start, int end, int onoff);
+
+KEYWORDS:       Z104, Z104_ISA, VGA             
+
+DESCRIPTION:    Sets the Text cursor height. start is the starting location 
+					 of the cursor counting from 0 (top to bottom). End is the end 
+					 location of the cursor. If onoff is 1, cursor is turned on. 
+					 If onoff = 0, cursor is turned off.
+RETURN VALUES:  None.
+END DESCRIPTION ************************************************************/
+nodebug 
+void VGACurType(int start, int end, int onoff)
+{   
+	 SetCRTCReg(0x0a, (start & 0x1f)  | (( ~onoff & 0x01)<<5));
+	 SetCRTCReg(0x0b, end   & 0x1f);
+}
+
+/* START FUNCTION DESCRIPTION **********************************************
+VGACurPos       <z104.lib>
+
+SYNTAX:         void VGACurPos(int row, int col);
+
+KEYWORDS:       Z104, Z104_ISA, VGA             
+
+DESCRIPTION:    Locates the cursor to the (row,col) coordinates of the 
+					 current active display page.
+RETURN VALUES:  None.
+END DESCRIPTION ***********************************************************/
+nodebug 
+void VGACurPos(int row, int col)
+{
+	 unsigned data;
+	 data =  row*80 + col;
+	 SetCRTCReg(0x0e, data>>8);
+	 SetCRTCReg(0x0f, data);
+}
+
+/* START FUNCTION DESCRIPTION **********************************************
+VGAReadCur      <z104.lib>
+
+SYNTAX:         void VGAReadCur(int *row, int *col);
+
+KEYWORDS:       Z104, Z104_ISA, VGA             
+
+DESCRIPTION:    Reads the current cursor position.
+
+RETURN VALUES:  None.
+END DESCRIPTION **********************************************************/
+nodebug 
+void VGAReadCur(int *row, int *col)
+{
+	 int datahi, datalo;
+	 WritePCPort(CRTC_INDX, 0x0e);
+	 datahi = ReadPCPort(CRTC_DATA);
+	 WritePCPort(CRTC_INDX, 0x0f);
+	 datalo = ReadPCPort(CRTC_DATA);
+	 datahi = datahi<<8 | datalo;
+	 *row = datahi/80;
+	 *col = datahi - (*row) * 80;
+}
+
+/*** BeginHeader VGASelectPage */
+void    VGASelectPage( int page);
+extern  char SHVGABase;
+extern  char SHVGA_N_Segs;
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION **********************************************
+VGASelectPage   <z104.lib>
+
+SYNTAX:         void VGASelectPage(int page);
+
+KEYWORDS:       Z104, Z104_ISA, VGA             
+
+DESCRIPTION:    Set the active video page. Video character pages are segmented
+					 into 8 pages of 2048 bytes each. Note that setting the display 
+					 page sets the 2k block of the character page and 2k block of 
+					 the attribute page.
+					 Mode 3      text           8 pages
+					 Mode 0x0e   graph          4 pages
+					 Mode 0x10   graph          2 pages
+					 Mode 0x12   graph          1 page
+RETURN VALUES:  None.
+END DESCRIPTION ***********************************************************/
+nodebug 
+void VGASelectPage(int page)
+{
+		if(SHVGAMode ==3)
+		{
+			SHVGABase = 0xb8 + page;
+			page = 2048*page;
+		}
+		else 
+		{
+			SHVGABase = 0xa0 + page*SHVGA_N_Segs;
+			if(SHVGABase >= 0xb0) SHVGABase = 0xa0;
+			page = (SHVGABase & 0x0f)<<12;
+		}
+		SetCRTCReg( 0x0c, page >> 8);
+		SetCRTCReg( 0x0d, page);
+}
+
+
+
+/*** BeginHeader VGAWriteMode */
+void VGAWriteMode (int mode);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION **********************************************
+VGAWriteMode    <z104.lib>
+
+SYNTAX:         void VGAWriteMode(int mode);
+
+KEYWORDS:       Z104, Z104_ISA, VGA             
+
+DESCRIPTION:    Selects the VGA write mode. 0 is replace. 1 is Or. 2 is AND.
+					 3 is XOR.
+RETURN VALUES:  None.
+END DESCRIPTION ************************************************************/
+nodebug 
+void VGAWriteMode(int mode)
+{
+		char VGAmode[] = {0x00, 0x08, 0x10, 0x18};
+		SetGRAFReg(0x03, VGAmode[mode]);
+}
+
+/*** BeginHeader VGAScrollText, VGAString, VGAClearScrn  */
+void VGAScrollText (int tlrow, int tlcol, int brrow, int brcol, int nscroll);
+void VGAGraphChar(int row, int col, int data, int color);
+void VGAString(char *buf, int row, int col, int attrib);
+void VGAClearGraph();
+void VGAClearScrn();
+extern char SHVGABase;
+extern char VGAGFonts[];
+extern char VGApagetemp[];
+/*** EndHeader */
+
+
+/* START FUNCTION DESCRIPTION ***********************************************
+VGAScrollText   <z104.lib>
+
+SYNTAX:         void VGAScrollText(int tlrow, int tlcol, int brrow, 
+								int brcol, int nscroll);
+KEYWORDS:       Z104, Z104_ISA, VGA             
+
+DESCRIPTION:    Scrolls a VGA text screen window defined by (tlrow, tlcol) 
+					 and (brrow, brcol). If nscroll>0, scroll up, else if 
+					 nscroll<0, scroll down.
+RETURN VALUES:  None.
+END DESCRIPTION ************************************************************/
+nodebug root 
+void VGAScrollText(int tlrow, int tlcol, int brrow, int brcol, int nscroll)
+{
+	 int len;
+	 int i;
+	 int colbase;
+	 if( (brcol < tlcol) || (brrow < tlrow)) return; 
+								// if wrong coordinates, just return
+	 len = (brcol - tlcol + 1) << 1;
+	 colbase = tlcol << 1;
+	 tlrow = tlrow * 160;
+	 brrow = brrow * 160;
+	 nscroll = nscroll * 160;
+	 if(nscroll > 0)       // scroll up
+	 {
+		for(i= tlrow + nscroll + colbase; i <= brrow + colbase; i += 160)
+		{
+			ReadPCMem(((long)SHVGABase<<12) + i, VGApagetemp, len);
+			WritePCMem(((long)SHVGABase<<12) + i - nscroll, VGApagetemp, len);
+		}
+		for(i = 0; i < len/2; i++)
+		{
+			VGApagetemp[2 * i] = 0;
+			VGApagetemp[2 * i + 1] = 7;
+		}
+		for(i = brrow - nscroll + 160 + colbase; i <= brrow + colbase; i += 160)
+		{
+			WritePCMem(((long)SHVGABase<<12) + i, VGApagetemp, len);
+		}
+	 }
+	 else             // scroll down
+	 {
+		for(i = brrow + nscroll + colbase; i >= tlrow + colbase; i -= 160)
+		{
+			ReadPCMem(((long)SHVGABase<<12) + i, VGApagetemp, len);
+			WritePCMem(((long)SHVGABase<<12) + i - nscroll , VGApagetemp, len);
+		}
+		for(i = 0; i < len/2; i++)
+		{
+			VGApagetemp[2 * i] = 0;
+			VGApagetemp[2 * i + 1] = 7;
+		}
+		for(i = tlrow - nscroll - 160 + colbase; i >= tlrow + colbase; i -= 160)
+		{
+			WritePCMem(((long)SHVGABase<<12) + i, VGApagetemp, len);
+		}
+	 }
+}
+
+/* START FUNCTION DESCRIPTION ********************************************** 
+VGAGraphChar    <z104.lib>
+
+SYNTAX:         void VGAGraphChar(int crow, int ccol, int data, int color);
+
+KEYWORDS:       Z104, Z104_ISA, VGA             
+
+DESCRIPTION:    Writes a character font for data at character location
+					 (crow, ccol). ccol is from 0-79; crow is 0-29 for mode 0x0e,
+					 0-42 for mode 0x10 and 0-59 for mode 0x12.
+RETURN VALUES:  None.
+END DESCRIPTION **********************************************************/
+#asm fast nodebug
+VGAGraphChar::
+
+		  in0     a, (CBR)
+		  push    af                  ; push CBR into stack
+		  ld      a, 0x71
+		  out0    (CBR), a            ; new CBR out
+
+		  ld      iy, 4               ; get offset to stack
+		  add     iy, sp
+		  ld      h, 80               ; multiply row by 80
+		  mlt     hl
+		  xor     a
+		  rl      l
+		  rl      h
+		  rl      l
+		  rl      h
+		  rl      l
+		  rl      h                   ; three left shifts = x8, i.e. rowx640
+		  ld      e, (iy+2)           ; load column low byte
+		  ld      d, 0x00             ; high byte is always zero
+		  add     hl, de              ; hl has the byte address for the VGA
+		  ld      d,  0
+		  ld      a,  h               ; get the segment address
+		  rla                         ; rotate left to get high address
+		  rl      d
+		  rla
+		  rl      d
+		  rla
+		  rl      d
+		  rla 
+		  rl      d
+		  ld      a, (SHVGABase)      ; get memory base
+		  add     a, d
+		  
+		  ex      af, af'             ; use alternate a to compute
+		  
+		  ld      a, h
+		  and     0x0f
+		  or      0xe0                ; make upper nibble of h 0xe
+		  ld      h, a
+
+		  exx                         ; use alternate
+		  ld      bc, HIADDR          ; set the HiAddr to zero   
+		  xor     a                   ; to access the port
+		  out     (c), a
+		  ld      (SHHiAddr), a       ; shadow high address
+		  
+		  ld      bc,GRAF_INDX        ; Set up the Graphics Registers
+		  ld      a, b
+		  or      PCPortMask
+		  ld      b, a
+		  
+		  ld      e, 1                ; enable all color planes
+		  out     (c), e
+		  inc     bc
+		  ld      e, 0x0f
+		  out     (c), e
+
+		  ld      hl, VGAGFonts
+		  ld      e,  (iy+4)          ; get data low
+		  ld      d,  0               ; zero data high
+		  xor     a                   ; find offset in the font table
+		  rl      e
+		  rl      d
+		  rl      e
+		  rl      d
+		  rl      e
+		  rl      d                   ; three left shifts = x8
+		  
+		  add     hl, de              ; get offset in table
+												; h'l' has the table offset
+		  exx                         ; back to regular
+
+		  ld      b, 8                ; each font is 8 pixel row x 1 byte
+		  ld      de, 80
+cloop:
+		  exx                         ; use alternate
+		  push    bc                  ; zero the HiAddr to access the ports
+		  ld      bc, HIADDR
+		  xor     a
+		  out     (c), a              ; set high address
+		  ld      (SHHiAddr), a       ; shadow high address
+		  pop     bc
+		  
+		  dec     bc
+		  ld      e, 0
+		  out     (c), e
+		  inc     bc
+		  out     (c), e
+
+		  dec     bc
+		  ld      e, 0x08
+		  out     (c), e
+		  inc     bc
+		  ld      a, 0xff             ; get the mask
+		  out     (c), a              ; mask is out
+		 
+		  exx                         ; back to regular
+		  
+		  ex      af, af'             ; regular
+		 
+		  push    bc
+		  ld      bc, HIADDR          ;
+		  out     (c), a              ; set high address            
+		  ld      (SHHiAddr), a       ; shadow high address
+		  pop     bc
+		  ex      af, af'             ; alternate
+		  
+		  inc     (hl)                ; read write modify the data
+		  
+		  exx                         ; use alternate
+		  push    bc                  ; zero the HiAddr to access the ports
+		  ld      bc, HIADDR
+		  xor     a
+		  out     (c), a              ; set high address
+		  ld      (SHHiAddr), a       ; shadow high address
+		  pop     bc
+		  
+		  dec     bc
+		  ld      e, 0
+		  out     (c), e
+		  inc     bc
+		  ld      e, (iy+6)
+		  out     (c), e              ; load the color
+		  
+		  dec     bc
+		  ld      e, 0x08
+		  out     (c), e
+		  inc     bc
+		  ld      a, (hl)             ; get the mask
+		  out     (c), a              ; mask is out
+		  
+		  inc     hl                  ; update the mask
+		  
+		  exx                         ; back to regular
+		  
+		  ex      af, af'             ; regular
+		 
+		  push    bc
+		  ld      bc, HIADDR          ;
+		  out     (c), a              ; set high address            
+		  ld      (SHHiAddr), a       ; shadow high address
+		  pop     bc
+		  ex      af, af'             ; alternate
+		  
+		  inc     (hl)                ; read write modify the data
+
+		  add     hl, de              ; add 80 bytes for new row
+		  bit     4, h                ; check if High Address is changed
+		  jr      z, cokay
+		  ld      a, h                ; reset the segment address
+		  and     11101111b
+		  ld      h, a
+		  ex      af, af'             ; back to regular
+		  inc     a
+		  ex     af, af'              ; back to alternate
+cokay:  
+		  djnz    cloop
+		  ex      af, af'             ; back to regular
+							 
+		  call    VGAResetMask
+		  pop     af                  ; 
+		  out0    (CBR), a            ; restore CBR
+		  ret
+#endasm
+
+/* START FUNCTION DESCRIPTION **********************************************
+VGAString       <z104.lib>
+
+SYNTAX:         void VGAString(char *buf, int crow, int ccol, int attrib);
+
+KEYWORDS:       Z104, Z104_ISA, VGA  
+
+DESCRIPTION:    Writes a string starting at (crow,ccol) with the specified 
+					 attribute to the current active page. crow and ccol are the 
+					 character coordinates. Bit 7 of the attribute data is used 
+					 to blink the data. Blinking has to be enabled with 
+					 VGASelectPalette(...).
+RETURN VALUES:  None.
+END DESCRIPTION ************************************************************/
+nodebug root 
+void VGAString(char *buf, int crow, int ccol, int attrib)
+{
+	 int i,j,k,len;
+	 char *bufpoint;
+	 unsigned long dtemp;
+	 len = strlen(buf);
+	 bufpoint = buf;
+	 
+		do
+		{
+			if(len+ccol<80)             // correct for row overflow 
+			{     
+				j = len;
+				len = 0;
+			}
+			else
+			{
+				j = 80 - ccol;
+				len = len - j;
+			}
+	 
+			if(SHVGAMode==0x03)
+			{
+				for(i=0;i<j;i++)
+				{
+					VGApagetemp[2*i] = *(bufpoint++);
+					VGApagetemp[2*i+1] = attrib;
+				}
+				
+				WritePCMem(((long)SHVGABase<<12)+crow*160+ccol*2, VGApagetemp, 
+								2*j);
+				crow += 1;       // increment row for next 80 character
+				ccol = 0;
+			}
+			else
+			{
+				k = ccol;
+				for(i=0;i<j;i++)
+					VGAGraphChar(crow, k++, *(bufpoint++), attrib);
+				crow++;
+				ccol = 0;
+			}
+		} while(len);
+
+}
+
+/* START FUNCTION DESCRIPTION *********************************************
+VGAClearGraph   <z104.lib>
+
+SYNTAX:         void VGAClearGraph();
+
+KEYWORDS:       Z104, Z104_ISA, VGA  
+
+DESCRIPTION:    Clears the active graphics screen.
+
+RETURN VALUES:  None.
+END DESCRIPTION *********************************************************/
+#asm fast nodebug
+VGAClearGraph::
+		  in0     a, (CBR)    
+		  ex      af, af'
+		  ld      a, 0x71
+		  out0    (CBR),a
+	
+		  ld      a, (SHVGA_N_Segs)       ; get number of segments per screen
+		  ld      b, a
+		  ld      a, (SHVGABase)
+		  ld      c, a
+aloop:  
+		  push    bc
+		  ld      l,c                     ; push the loop counter
+		  call    SetHiAddr               ; set the High Address
+		  ld      hl, 0xe000              ; load start address
+		  ld      bc, 4095                ; 4095 bytes
+		  ld      a,  0x00                ; blank out the page
+		  call    write_seg_mem
+		  pop     bc
+		  inc     c
+		  djnz    aloop
+		  call    VGAResetMask
+		  ex      af, af'
+		  out0    (CBR), a
+		  ret
+
+; write_seg_mem
+; Write a bc number of byte data (in reg a) to PC104 memory location starting
+; at xxxx.
+; High address is already set before this function is called.
+; not C callable
+write_seg_mem:
+		  ld      (hl),a          
+		  ld      d, h
+		  ld      e, l
+		  inc     de
+		  ldir
+		  ret
+
+#endasm
+
+/* START FUNCTION DESCRIPTION **********************************************
+VGAClearScrn    <z104.lib>
+
+SYNTAX:         void VGAClearScrn()
+
+KEYWORDS:       Z104, Z104_ISA, VGA  
+
+DESCRIPTION:    Clears the active video page.
+
+RETURN VALUES:  None.
+END DESCRIPTION ***********************************************************/
+nodebug root void VGAClearScrn()
+{
+		int i;
+		if(SHVGAMode != 3) 
+		{
+			VGAClearGraph();
+		}
+		else
+		{
+			for(i=0;i<80;i++) 
+			{
+				VGApagetemp[2*i]=0;        // char is 0
+				VGApagetemp[2*i+1]=15;     // attrib is 15
+			}
+			for(i=0;i<25;i++) 
+				WritePCMem(((long)SHVGABase<<12)+i*160, VGApagetemp, 160);
+		}
+}
+
+/*** BeginHeader get_byte_address */
+void    get_byte_address();     // not C callable, used by other functions
+extern char SHVGABase;
+/*** EndHeader */
+// accessory program to compute the segment and offset of a VGA memory
+// specified with prow and pcol.
+#asm fast nodebug 
+; not c callable
+; hl has the row address
+; de has the column address
+; returns with hl with the offset address  (e.g. 0xe012)
+;              d  with the segment address (e.g. 0xa0)
+get_byte_address::
+		  
+		  ld      b, h            ; copy high of row address to b
+		  ld      h, 80
+		  mlt     hl              ; multiply low of row address by 80
+		  ld      c, 80
+		  mlt     bc              ; multiply high of row address by 80
+		  ld      a,b             ; swap b and c
+		  ld      b,c
+		  ld      c,a
+		  add     hl, bc          ; hl has prow*80
+										  ; e has low of start column
+		  ld      a, d            ; copy high of start column to a
+		  ld      c, e            ; copy low of start column to c
+		  rra                     ; rotate a right
+		  rr      c               ; rotate c right
+		  rra        
+		  rr      c
+		  rra    
+		  rr      c               ; three rotates equivalent to divide by 8
+		  ld      b, 0            ; upper byte is always zero
+		  add     hl, bc          ; hl has prow*80 + pcol/8
+				  
+		  ld      d, 0                ; zero d register
+		  ld      a, h                ; 
+		  rla                         ; four left rotate to get the 
+		  rl      d                   ; the most significant nibble of hl
+		  rla                         ; to d
+		  rl      d
+		  rla
+		  rl      d
+		  rla
+		  rl      d                   ; d now has the most significant nibble
+												; of the memory address in hl
+		  ld      a, (SHVGABase)      ; load base data to a
+		  add     a, d                ; add d to a
+		  ld      d, a                ; copy back to d
+		  ld      a, h
+		  and     0x0f                ; zero upper nibble
+		  or      0xe0                ; put 0xe in the upper nibble
+		  ld      h, a                ; return data to h
+												; at this point   c has the column byte 
+												;                 d has the high address
+												;                 hl has the offset
+		  ret                         ;
+#endasm
+
+
+/*** BeginHeader VGAline, VGAHline */
+void VGAline(int x1,int y1, int x2, int y2, int color);
+void VGAHline(int x1, int y1, int x2, int y2, int color);
+
+extern char rot_mask[];
+extern char pixelmask[];
+extern char frontmask[];
+extern char endmask[];
+extern unsigned int return_adr;
+extern int v_deltay, v_deltax;
+extern int Bresm_d, Bresm_A, Bresm_B;
+/*** EndHeader */
+
+char pixelmask[] = { 0x80, 0x40, 0x20, 0x10, 0x08, 0x04, 0x02, 0x01};
+// individual pixel mask
+char frontmask[] = { 0xff, 0x7f, 0x3f, 0x1f, 0x0f, 0x07, 0x03, 0x01};
+// front end pixel mask for horizontal line
+char endmask[]  = { 0x80, 0xc0, 0xe0, 0xf0, 0xf8, 0xfc, 0xfe, 0xff};
+// tail end pixel mask for horizontal line
+
+unsigned int return_adr;
+int v_deltay, v_deltax;
+int  Bresm_d, Bresm_A, Bresm_B;    
+
+/* START FUNCTION DESCRIPTION ***********************************************
+VGAline         <z104.lib>
+
+SYNTAX:         void VGAline(int x1, int y1, int x2, int y2, int color);
+
+KEYWORDS:       Z104, Z104_ISA, VGA   
+
+DESCRIPTION:    Draws a graphics line from (x1,y1) to (x2,y2) on the active 
+					 video page.
+RETURN VALUES:  None.
+END DESCRIPTION ***********************************************************/
+#asm fast nodebug 
+; VGAline (int x1, int y1, int x2, int y2, int color)
+; C callable generic line routine.
+; Calls horz_line, vert_line, xsline or ysline depending on the data passed.
+VGAline::
+		  pop     hl
+		  ld      (return_adr), hl
+		  ld      iy, 0
+		  add     iy, sp
+		  ld      e,  (iy)            ; low of x1
+		  ld      d,  (iy+1)          ; high of x1
+		  ld      l,  (iy+4)          ; low of x2
+		  ld      h,  (iy+5)          ; high of x2
+		  sbc     hl, de              ; x2 - x1
+		  jr      nz,   not_horz_line
+		  call    VGAHline
+		  jr      the_end
+
+not_horz_line:
+		  ld      (v_deltax), hl      ; keep a copy of x2 - x1
+		  ld      e, (iy+2)           ; low of y1
+		  ld      d, (iy+3)           ; high of y1
+		  ld      l, (iy+6)           ; low of y2
+		  ld      h, (iy+7)           ; high of y2 
+		  or      a                
+		  sbc     hl, de              ; y2 - y1
+		  jr      nz, not_vert_line
+		  call    vert_line
+		  jr      the_end
+							
+not_vert_line:
+		  ld      (v_deltay), hl      ; copy y2 - y1
+		  bit     7, h                ; check sign of v_deltay
+		  jr      z, dy_pos           ; 
+		  dec     hl                  ; reverse two's complement
+		  ld      a, h
+		  cpl
+		  ld      h, a
+		  ld      a, l
+		  cpl
+		  ld      l, a
+dy_pos:
+		  ld      de, (v_deltax)      ; v_deltax to de
+		  bit     7, d                ; check sign of v_deltax
+		  jr      z, dx_pos
+		  dec     de                  ; reverse two's complement
+		  ld      a, d
+		  cpl
+		  ld      d, a
+		  ld      a, e
+		  cpl
+		  ld      e, a
+dx_pos:
+		  or      a                   ; clear carry flag
+		  sbc     hl, de              ; abs(dy) - abs(dx)
+		  jr      nc, dy_slope_line
+dx_slope_line:  
+		  call    xsline
+		  jr      the_end
+
+dy_slope_line:
+		  call    ysline
+
+the_end:
+		  call    VGAResetMask
+		  ld      hl, (return_adr)
+		  jp      (hl)
+
+
+;   vert_line (int x1, int y1, int x2, int y2, int color)
+;   not c callable, call from line(x1,y1,x2,y2,color)
+;  
+vert_line::
+		  ld      hl, (v_deltax)
+
+		  bit     7, h                ; check if negative
+		  jr      z, vx2x1okay        ; no need to swap
+		  dec     hl                  ; reveres two's complement    
+		  ld      a, h
+		  cpl
+		  ld      h, a
+		  ld      a, l
+		  cpl
+		  ld      l, a
+
+		  ld      (v_deltax), hl      ; copy size of line
+			
+		  pop     hl                  ; return address
+		  exx                         ; use alternate
+		  pop     hl                  ; pop x1
+		  pop     bc                  ; pop y1
+		  pop     de                  ; pop x2
+		  push    hl                  ; x1 swap x2
+		  push    bc                  ; y1 
+		  push    de                  ; x2 swap x1
+		  exx                         ; regular
+		  push    hl                  ; push return address
+			
+vx2x1okay:
+		  
+		  in0     a, (CBR)
+		  push    af                  ; save CBR into stack
+		  ld      a, 0x71
+		  out0    (CBR), a            ; new CBR for the PC104 window
+			
+		  ld      iy, 4               ; add 4 because the CBR is pushed 
+												;    to the stack.
+		  add     iy, sp
+		  ld      l, (iy)             ; low of start row
+		  ld      h, (iy+1)           ; high of start row
+		  ld      e, (iy+2)           ; low of start column
+		  ld      d, (iy+3)           ; high of start column
+			
+		  call    get_byte_address    ;  hl has the offset address
+												;  d has the segment address 
+		  ld      bc, (v_deltax)      ;  bc has the length
+		  inc     bc                  ; add 1 for the ends
+
+		  exx                         ; alternate
+		  ld      bc, HIADDR
+		  xor     a
+		  out     (c), a              ; set the High Address for Port Access
+		  ld      (SHHiAddr), a       ; save high address
+		  ld      bc,GRAF_INDX        ; 
+		  ld      a, b
+		  or      PCPortMask
+		  ld      b, a                
+		  xor     a                   ; zero a
+		  out     (c), a              ; write color to GRAF_REG 0
+		  inc     bc
+		  ld      a, (iy+8)           ; get the color
+		  out     (c),a
+
+		  dec     bc
+		  ld      a, 1
+		  out     (c), a              ; write plane enable to GRAF_REG 1
+		  inc     bc
+		  ld      a, 0x0f
+		  out     (c), a
+			
+		  ld      a, (iy+2)           ; get low of start column                    
+		  and     00000111b           ; get 8 bit remnants
+			
+		  ld      hl, pixelmask
+		  ld      d, 0    
+		  ld      e, a
+		  add     hl, de              ; hl has the offset to table
+		  ld      a, (hl)             ; a has the mask
+			
+		  dec     bc
+		  ld      e, 0x08
+		  out     (c),e               ; write bit mask to GRAF_REG 8
+		  inc     bc
+		  out     (c),a               ; send out mask for pixel
+		  exx                         ; regular
+
+		  ld      a, d                ; get the high address
+		  exx                         ; alternate
+		  ld      bc, HIADDR          ; 
+		  out     (c), a              ; output the high address
+												; a has the high address
+		  ld      (SHHiAddr), a       ; save high address
+		  exx                         ; regular
+			
+		  ld      de, 80              ; 80 bytes increment
+		  ex      af, af'             ; use alternate
+v_loop:
+		  inc     (hl)                ; read write modify
+		  add     hl,de               ; advance one vertical row
+		  bit     4, h                ; check if boundary is crossed
+		  jr      z, v_okay
+		  ld      a, h                ; adjust HIADDR segment
+		  and     11101111b           ; and offset
+		  ld      h, a
+		  ex      af, af'             ; get regular
+		  inc     a                   ; increment the high address
+		  exx                         ; use alternate
+		  out     (c), a              ; alternate still has high address
+		  exx                         ; use regular
+		  ld      (SHHiAddr), a       ; save the High Address
+		  ex      af, af'             ; back to alternate
+
+v_okay:
+		  dec     bc
+		  ld      a, b                ; check if finish counting
+		  or      c                   ; check if zero
+		  jr      nz, v_loop
+
+		  ex      af, af'             ; bring back to regular
+
+		  pop     af                  ; restore the CBR
+		  out0    (CBR), a
+
+		  ret
+
+
+; xsline( int x1, int y1, int x2, int y2, int color)
+; generates a slanted line using x as the independent variable.
+; not C callable since (v_deltax) and (v_delaty) have to be computed by
+; the entry function line(...).
+xsline:
+
+		  ld      hl, (v_deltax)
+		  bit     7, h
+		  jr      z, sx2x1okay
+		  dec     hl                  ; reverse two's complement
+		  ld      a, h
+		  cpl    
+		  ld      h, a
+		  ld      a, l
+		  cpl
+		  ld      l, a
+		  ld      (v_deltax), hl      ; copy v_deltax
+
+		  ld      h, 0
+		  ld      l, 0
+		  ld      de, (v_deltay)
+		  or      a
+		  sbc     hl, de
+		  ld      (v_deltay), hl          ; reverse dy
+
+		  pop     hl                      ; return address
+		  pop     bc                      ; pop x1
+		  pop     de                      ; pop y1
+		  exx                             ; use alternate
+		  pop     bc                      ; pop x2
+		  pop     de                      ; pop y2
+		  exx                             ; push in from regular
+		  push    de                      ; y1 swap y2
+		  push    bc                      ; x1 swap x2
+		  exx                             ; use alternate
+		  push    de                      ; y2 swap y1
+		  push    bc                      ; x2 swap x1
+		  exx                             ; regular
+		  push    hl                      ; push back return address
+
+sx2x1okay:
+			
+		  in0     a, (CBR)
+		  push    af                      ; save CBR into stack
+		  ld      a, 0x71
+		  out0    (CBR), a                ; new CBR for the PC104 window
+			
+		  ld      iy, 4                   ; add 4 because the CBR is pushed 
+													 ; to the stack.
+		  add     iy, sp
+		  ld      l, (iy)                 ; low of start row
+		  ld      h, (iy+1)               ; high of start row
+		  ld      e, (iy+2)               ; low of start column
+		  ld      d, (iy+3)               ; high of start column
+		  call    get_byte_address        ; hl has the offset address
+													 ;  d has the segment address 
+
+		  exx                             ; use alternate
+		  ld      hl, (v_deltay)          ; get delta_y
+		  bit     7, h                    ; check for sign
+		  jr      z, sxpositive           ; if Z is set, bit is 0
+
+		  ld      (iy+9), h               ; use color high byte to store sign
+		  dec     hl                      ; reverse two's complement of dy
+		  ld      a, h
+		  cpl
+		  ld      h, a
+		  ld      a, l
+		  cpl
+		  ld      l, a
+			
+		  jr      dy_adjusted
+sxpositive: 
+		  
+		  ld      (iy+9), h               ; use color high byte to sign
+
+dy_adjusted:
+		  add     hl, hl              ; Bresm_B = 2 * dy
+		  ld      (Bresm_B), hl
+
+		  ld      de, (v_deltax)
+		  sbc     hl, de              ; d = 2dy - dx
+		  ld      (Bresm_d), hl       ; copy into Bresm_d 
+		  sbc     hl, de              ; Bresm_A = 2dy - 2dx
+		  ld      (Bresm_A), hl
+			
+		  ld      bc, HIADDR
+		  xor     a
+		  out     (c), a
+		  ld      (SHHiAddr), a       ; shadow high address
+
+		  ld      bc,GRAF_INDX        ; 
+		  ld      a, b
+		  or      PCPortMask
+		  ld      b, a
+		  xor     a
+		  out     (c), a
+		  inc     bc
+		  ld      a, (iy+8)
+		  out     (c), a
+
+		  dec     bc
+		  ld      a, 1
+		  out     (c), a
+		  inc     bc
+		  ld      a, 0x0f
+		  out     (c), a
+
+		  ex      af, af'             ; get mask into a'
+		  ld      a, (iy+2)           ; get low of start column
+		  and     00000111b           ; get 8 bit remnant
+
+		  ld      hl, pixelmask       ; get pixel mask table
+		  ld      d, 0
+		  ld      e, a
+		  add     hl, de
+		  ld      a, (hl)             ; mask is in a'
+			
+		  dec     bc
+		  ld      e, 8
+		  out     (c), e
+		  inc     bc
+		  out     (c), a              ; send mask out
+		  ld      hl, (Bresm_d)       ; h'l' has Bresm_d
+		  exx                         ; back to regular
+		  ex      af, af'             ; back to regular
+
+												; hl has the offset address
+												; d has the segment address
+			
+		  ld      bc, (v_deltax)
+		  inc     bc                  ; load number of dependent variables 
+												; add 1 for the end points
+sx_loop:
+		  ld      a, d
+		  exx                         ; use alternate push  bc
+		  ld      bc, HIADDR          ; set high address
+		  out     (c), a
+		  ld      (SHHiAddr), a       ; shadow high address
+		  exx                         ; back to regular pop   bc
+			
+		  inc     (hl)                ; read write modify
+		  exx                         ; use alternate for computation
+		  ex      af, af'             ; mask is in the alternate
+		  bit     7, h                ; check if negative
+		  jr      nz, sxnegative
+		  ld      de, (Bresm_A)
+		  add     hl, de              ; d = d + Bresm_A
+		  or      a                   ; clr carry flag
+		  bit     7, (iy+9)           ; check for sign or direction
+		  jr      nz, sxrot_left
+sxrot_right:                        ; rotate pixel to the right         
+		  rra                         ; move mask bit to the right
+		  jr      nc, sxbyte_mask_okay
+		  exx                         ; regular
+		  inc     hl                  ; move byte address
+		  exx                         ; alternate
+		  rra                         ; rotate carry into bit 7
+		  jr      sxbyte_mask_okay
+sxrot_left:                         ; rotate pixel to the left
+		  rla
+		  jr      nc, sxbyte_mask_okay
+		  exx                         ; use regular
+		  dec     hl                  ; move byte to the left
+		  exx                         ; use alternate
+		  rla                         ; rotate carry into bit 0
+sxbyte_mask_okay:
+		  ex      af, af'             ; regular
+		  ld      bc, HIADDR
+		  xor     a
+		  out     (c), a              ; set high address for IO
+		  ld      (SHHiAddr), a       ; shadow high address      
+		  ld      bc, GRAF_INDX
+		  ld      a, b
+		  or      PCPortMask
+		  ld      b, a
+		  ex      af, af'             ; alternate
+		  ld      d, 8
+		  out     (c), d
+		  inc     bc
+		  out     (c), a              ; send out the mask
+		  jr      increment_row
+sxnegative:
+		  ld      de, (Bresm_B)
+		  add     hl, de              ; d = d + Bresm_B
+increment_row:
+		  exx                         ; back to regular
+		  ex      af, af'             ; back to regular
+		  ld      a, d                ; copy d to a
+		  ld      de, 80              ; move one row
+		  add     hl, de              ; move to new row
+		  ld      d, a                ; copy a to d
+		  bit     4, h
+		  jr      z, sxseg_okay       ; check if memory cross segment     
+												; boundary
+		  ld      a, h
+		  and     11101111b
+		  ld      h, a
+		  inc     d
+sxseg_okay:
+		  dec     bc
+		  ld      a, b
+		  or      c
+		  jr      nz, sx_loop
+
+		  pop     af
+		  out0    (CBR), a            ; restore the CBR
+
+		  ret
+
+; ysline( int x1, int y1, int x2, int y2, int color)
+; generate a slanted line using y as the independent variable.
+; not C callable as v_deltay and v_deltax have to be computed by 
+ysline:
+		  ld      hl, (v_deltay)
+		  bit     7, h
+		  jr      z, sy2y1okay
+		  dec     hl                      ; reverse two's complement
+		  ld      a, h
+		  cpl    
+		  ld      h, a
+		  ld      a, l
+		  cpl
+		  ld      l, a
+		  ld      (v_deltay), hl          ; copy v_deltay
+		  
+		  ld      h, 0
+		  ld      l, 0
+		  ld      de, (v_deltax)
+		  or      a
+		  sbc     hl, de
+		  ld      (v_deltax), hl          ; reverse dx
+
+		  pop     hl                      ; return address
+		  pop     bc                      ; pop x1
+		  pop     de                      ; pop y1
+		  exx                             ; use alternate
+		  pop     bc                      ; pop x2
+		  pop     de                      ; pop y2
+		  exx                             ; push in from regular
+		  push    de                      ; y1 swap y2
+		  push    bc                      ; x1 swap x2
+		  exx                             ; use alternate
+		  push    de                      ; y2 swap y1
+		  push    bc                      ; x2 swap x1
+		  exx                             ; regular
+		  push    hl                      ; push back return address
+
+sy2y1okay:
+			
+		  in0     a, (CBR)
+		  push    af                  ; save CBR into stack
+		  ld      a, 0x71
+		  out0    (CBR),a             ; new CBR for the PC104 window
+			
+		  ld      iy, 4               ; add 4 because the CBR is pushed 
+												; to the stack
+		  add     iy, sp
+		  ld      l, (iy)             ; low of start row
+		  ld      h, (iy+1)           ; high of start row
+		  ld      e, (iy+2)           ; low of start column
+		  ld      d, (iy+3)           ; high of start column
+		  call    get_byte_address    ;  hl has the offset address
+												;  d has the segment address 
+
+		  exx                         ; use alternate
+		  ld      hl, (v_deltax)
+		  bit     7, h
+		  jr      z, sypositive
+		  ld      (iy+9), h           ; use high byte of color to store sign
+		  dec     hl                  ; reverse two's complement of dx
+		  ld      a, h
+		  cpl
+		  ld      h, a
+		  ld      a, l
+		  cpl
+		  ld      l, a
+
+		  jr      dx_adjusted
+sypositive: 
+		  ld      (iy+9), h               ; use color high byte to store sign
+
+dx_adjusted:
+		  add     hl, hl                  ; Bresm_B = 2 * dx
+		  ld      (Bresm_B), hl
+
+		  ld      de, (v_deltay)
+		  or      a                    ; clear carry flag
+		  sbc     hl, de               ; d = 2dx - dy
+		  ld      (Bresm_d), hl        ; Bresm_d = 2dx - dy
+		  or      a                    ; clear carry flag
+		  sbc     hl, de               ; Bresm_A = 2dx - 2dy
+		  ld      (Bresm_A), hl
+			
+		  ld      bc, HIADDR           
+		  xor     a
+		  out     (c), a              ; save high address
+		  ld      (SHHiAddr), a       ; shadow high address
+		  
+		  ld      bc,GRAF_INDX        ; set the color mask
+		  ld      a, b
+		  or      PCPortMask
+		  ld      b, a
+		  xor     a
+		  out     (c), a
+		  inc     bc
+		  ld      a, (iy+8)
+		  out     (c), a
+		  
+		  dec     bc                   ; enable all bit plane
+		  ld      a, 1
+		  out     (c), a
+		  inc     bc
+		  ld      a, 0x0f
+		  out     (c), a
+
+		  ex      af, af'              ; get mask into a'
+		  ld      a, (iy+2)            ; get low of start column
+		  and     00000111b            ; get 8 bit remnant
+
+		  ld      hl, pixelmask        ; get pixel mask table
+		  ld      d, 0
+		  ld      e, a
+		  add     hl, de
+		  ld      a, (hl)              ; mask is in a'
+			
+		  dec     bc
+		  ld      e, 8
+		  out     (c), e
+		  inc     bc
+		  out     (c), a                  ; send mask out
+		  exx                             ; back to regular
+		  ex      af, af'                 ; back to regular
+
+													 ; hl has the offset address
+													 ; d has the segment address
+			
+		  ld      bc, (v_deltay)
+		  inc     bc                      ; load number of dependent variables 
+													 ; increments to bc
+
+sy_loop:
+		  ld      a, d                    ; get segment address
+		  exx                             ; use alternate
+		  ld      bc, HIADDR
+		  out     (c), a                  ; set segment address
+		  ld      (SHHiAddr), a           ; shadow high address
+		  exx                             ; back to regular 
+		  inc     (hl)                    ; read write modify
+		  exx                             ; use alternate for computation
+		 
+		  ld      hl, (Bresm_d)
+		  bit     7, h                    ; check if negative
+		  jr      nz, negative
+		  ld      de, (Bresm_A)
+		  add     hl, de                  ; d = d + Bresm_A
+		  ld      (Bresm_d), hl
+		  or      a                       ; clr carry flag
+		  bit     7, (iy+9)               ; check for sign or direction
+		  jr      nz, move_up
+			
+move_down:                          
+		  exx                             ; regular
+		
+		  ld      a, d                    ; save the segment
+		  ld      de, 80                  ; move row down by adding 80 bytes
+		  add     hl, de
+		  ld      d, a
+		  bit     4, h                    ; check for 4K boundary
+		  jr      z, merge_d
+inc_row:
+		  ld      a, h                    ; readjust 4K boundary
+		  and     11101111b
+		  ld      h, a
+		  inc     d                       ; new segment 
+
+		  jr      merge_d
+
+move_up:
+		  exx                             ; regular
+		
+		  ld      a, d                    ; save segment
+		  ld      de, 80
+		  or      a                       ; move row up by subtracting 80 bytes
+		  sbc     hl, de
+		  ld      d, a
+		  bit     4, h                    ; check 4K boundary
+		  jr      z, merge_d
+dec_row:   
+		  ld      a, h                    ; readjust 4K boundary
+		  and     00001111b             
+		  or      11100000b
+		  ld      h, a                    ; new segment
+		  dec     d
+
+merge_d:
+		 
+		  exx                             ; alternate
+		  jr      increment_col
+
+negative:
+		  ld      de, (Bresm_B)
+		  add     hl, de                  ; d = d + Bresm_B
+		  ld      (Bresm_d), hl           ; copy back to memory
+
+increment_col:
+		  ex      af, af'             ; alternate
+		  or      a                   ; clear carry
+		  rra                         ; rotate bit to right
+		  jr      nc, mask_byte_okay
+		  exx                         ; regular
+		  ex      af, af'             ; regular
+		  inc     hl                  ; move offset one to right
+		  bit     4, h                ; check 4K boundary
+		  jr      z, byte_okay
+		  ld      a, h                ; adjust 4K boundary
+		  and     11101111b
+		  ld      h, a
+		  inc     d                   ; new segment
+
+byte_okay:         
+		  exx                         ; use alternate            
+		  ex      af, af'             ; alternate
+		  rra                         ; rotate carry to bit 7
+
+mask_byte_okay:
+		  ex      af, af'             ; regular
+		  ld      bc, HIADDR
+		  xor     a
+		  out     (c), a
+		  ld      (SHHiAddr), a
+		  ld      bc,GRAF_INDX
+		  ld      a, b
+		  or      PCPortMask
+		  ld      b, a
+		  ld      e, 8
+		  out     (c), e
+		  inc     bc
+		  ex      af, af'                 ; alternate
+		  out     (c), a                  ; send mask out
+
+seg_okay:
+		  exx                             ; use regular 
+		  ex      af, af'                 ; use regular
+		  dec     bc
+		  ld      a, b
+		  or      c
+		  jp      nz, sy_loop
+
+		  pop     af
+		  out0    (CBR),a                 ; restore CBR
+
+		  ret
+
+#endasm
+
+
+/* START FUNCTION DESCRIPTION **********************************************
+VGAHline        <z104.lib>
+
+SYNTAX:         void VGAHline(int x1, int y1, int x2,int y2, int color);
+
+KEYWORDS:       Z104, Z104_ISA, VGA   
+
+DESCRIPTION:    Draws a horizontal line from (x1,y1) to (x1,y2) to the 
+					 current active page with the requested color.
+RETURN VALUES:  None.
+END DESCRIPTION *********************************************************/
+#asm fast nodebug
+VGAHline::
+			ld    iy, 2                ; make sure y2>y1
+			add   iy, sp
+			ld    l, (iy+2)            ; low of y1
+			ld    h, (iy+3)            ; high of y1
+			ld    e, (iy+6)            ; low of y2
+			ld    d, (iy+7)            ; high of y2
+			or    a                    ; clear carry flag
+			sbc   hl, de
+			jr    c, hy2y1okay
+			pop   hl                   ; return address
+			exx                        ; use alternate
+			pop   hl                   ; pop x1
+			pop   bc                   ; pop y1
+			pop   hl                   ; x1==x2
+			pop   de                   ; pop y2
+			push  bc                   ; y1 swap y2
+			push  hl                   ; x2 
+			push  de                   ; y2 swap y1
+			push  hl
+			exx                        ; regular
+			push  hl                   ; push return address
+
+hy2y1okay:
+			in0   a, (CBR)
+			push  af                ; push CBR to stack
+			ld    a, 0x71
+			out0  (CBR),a           ; new CBR for the PC104 window
+			
+			ld    iy, 4             ; add 4 because the CBR
+											; is also pushed to the stack.
+			add   iy, sp
+			ld    l, (iy)           ; low of start row
+			ld    h, (iy+1)         ; high of start row
+			ld    e, (iy+2)         ; low of start column
+			ld    d, (iy+3)         ; high of start column
+			call  get_byte_address
+											; at this point  d has the high address
+											;                c has the column offset
+											;                hl has the offset
+			
+											; get the number of bytes per line
+			ld     e, (iy+6)        ; low of end column         
+			ld     a, (iy+7)        ; high of end column
+			rra
+			rr     e
+			rra    
+			rr     e
+			rra
+			rr     e               ; three rotates is equivalent to divide by 8
+			ld     a, e
+			sub    c               ; a has the len
+			jr     nz, h_not_one_byte
+
+h_just_one_byte:
+			ld    a,(iy+2)          ; get low of start column                    
+			and    00000111b        ; get 8 bit remnants
+			
+			exx                     ; use alternate
+			ld     hl, frontmask
+			ld     d, 0    
+			ld     e, a
+			add    hl, de          ; hl has the offset to table
+			ld     a, (hl)         ; a has the mask
+			exx
+			ld     e, a
+						
+			ld     a, (iy+6)       ; get low of end column
+			and    00000111b       ; get 8 bit remnants
+
+			exx                    ; use alternate
+			ld     hl, endmask
+			ld     d, 0    
+			ld     e, a
+			add    hl, de           ; hl has the offset to table
+			ld     a, (hl)          ; a has the mask
+			exx                     ; back to regular
+
+			and    e                ; a has the combine front and end mask
+
+			ex     af, af'          ; use alternate
+			ld     bc, HIADDR
+			xor    a
+			out    (c), a           ; set the High Address
+			ld     (SHHiAddr), a    ; save the high address
+
+			ld     bc,GRAF_INDX      ; set the color mask
+			ld     a, b    
+			or     PCPortMask
+			ld     b, a
+			ex     af, af'              ; regular
+			ld     e,0                  ; zero a
+			out    (c),e
+			inc    bc
+			ld     e, (iy+8)           ; get the color
+			out    (c),e
+
+			dec    bc                  ; enable all the bit planes
+			ld     e, 1
+			out    (c),e
+			inc    bc
+			ld     e, 0x0f
+			out    (c),e
+			
+			dec    bc                  ; set the data mask
+			ld     e, 0x08
+			out    (c),e
+			inc    bc
+			out    (c),a               ; send out mask for front end
+
+			ld     a, d                ; get the high address
+			ld     bc, HIADDR          ; set the high address
+			out    (c), a
+			ld     (SHHiAddr), a       ; save high address
+			inc    (hl)                ; read/write modify
+			jp     h_no_more
+
+h_not_one_byte:
+			inc    a                   ; add 1 for the boundary
+			ld     e,a                 ; e has the len
+
+			ld     bc, HIADDR
+			xor    a
+			out    (c), a              ; set High Address
+			ld     (SHHiAddr), a       ; save high address
+			
+			ld     bc,GRAF_INDX       ;
+			ld     a, b
+			or     PCPortMask
+			ld     b, a
+			xor    a                    ; zero a
+			out    (c),a
+			inc    bc
+			ld     a, (iy+8)            ; get the color
+			out    (c),a
+
+			dec    bc                   ;   enable all bit planes
+			ld     a, 1
+			out    (c),a
+			inc    bc
+			ld     a, 0x0f
+			out    (c),a
+
+h_check_back:
+			ld     a, (iy+6)           ; get low of end column
+			and    00000111b           ; get 8 bit remnants
+			push   af                  ; save a copy
+			xor    00000111b           ; check if there is end residue
+			jr     z, h_check_front
+			dec    e                   ; decrement len by one
+
+h_check_front:
+			ld     a,(iy+2)            ; get low of start column                    
+			and    00000111b           ; get 8 bit remnants
+			jr     z, h_byte_line      ; 
+			
+			exx                        ; use alternate
+			ld     hl, frontmask
+			ld     d, 0    
+			ld     e, a
+			add    hl, de              ; hl has the offset to table
+			ld     bc, HIADDR
+			xor    a
+			out    (c), a
+			ld     (SHHiAddr), a
+			ld     bc,GRAF_INDX
+			ld     a, b
+			or     PCPortMask
+			ld     b, a
+			ld     e, 0x08
+			out    (c),e
+			inc    bc
+			ld     a, (hl)             ; get the mask
+			out    (c),a               ; send out mask for front end
+			exx                        ; use regular
+
+			ld     a, d                ; get the high address
+			ld     bc, HIADDR
+			out    (c), a
+			ld     (SHHiAddr), a       ; save high address
+			inc    (hl)                ; read write modify
+			inc    hl                  ; increment video memory address
+			dec    e                   ; decrement length
+			bit    4,h                 ; check for new segment
+			jr     z, h_byte_line
+			inc    d                   ; update the new segment
+			ld     hl, 0xe000          ; update the new offset
+
+h_byte_line:         
+			exx                        ; alternate
+			ld     bc, HIADDR
+			xor    a
+			out    (c), a              ; set the high address
+			ld     (SHHiAddr), a       ; save high address
+			exx                        ; regular
+			ld     bc,GRAF_INDX
+			ld     a, b
+			or     PCPortMask
+			ld     b, a
+			ld     a, 0x08
+			out    (c),a
+			inc    bc
+			ld     a, 0xff
+			out    (c),a
+			
+		  ld      a, d                    ; get the high address
+		  exx                             ; alternate 
+		  out     (c),a                   ; output the high address
+													 ; a has the high address
+		  ld      (SHHiAddr), a           ; save high address
+		  exx                             ; regular   
+		  ld      a, e                    ; check if zero byte
+		  or      a
+		  ld      a, d
+		  jr      z, h_do_end_byte        ; if e is zero do end byte
+	 
+		  ld      b, e
+h_loop:
+		  inc     (hl)                    ; read/write modify
+		  inc     hl                      ; increment video memory
+		  bit     4, h
+		  jr      z, h_okay
+		  ld      hl, 0xe000
+		  inc     a
+		  exx                             ; alternate
+		  out     (c), a
+		  exx                             ; regular
+		  ld      (SHHiAddr), a           ; shadow the bus
+h_okay: 
+		  djnz    h_loop
+		  ld      d, a                    ; save segment address to d
+h_do_end_byte:
+		  pop     af                      ; now do the end
+		  cp      00000111b               ; is it 8 bits
+		  jr      z, h_no_more            ; if zero, no more
+
+		  exx                             ; use alternate
+		  ld      hl, endmask
+		  ld      d, 0
+		  ld      e, a
+		  add     hl, de
+		  ld      bc, HIADDR
+		  xor     a
+		  out     (c), a                  ; set high address
+		  ld      (SHHiAddr), a           ; shadow high address
+		  ld      bc,GRAF_INDX
+		  ld      a, b   
+		  or      PCPortMask
+		  ld      b, a
+		  ld      e, 0x08
+		  out     (c),e
+		  inc     bc
+		  ld      a, (hl)                 ; get the mask
+		  out     (c),a                   ; send out mask for back end
+		  exx                             ; back to regular
+		  ld      bc, HIADDR
+		  ld      a, d
+		  out     (c), a
+		  ld      (SHHiAddr), a
+		  inc     (hl)                    ; read write modify
+h_no_more:
+		  call    VGAResetMask
+		  pop     af
+		  out0    (CBR),a                 ; restore CBR
+
+		  ret
+
+#endasm
+
+/*** BeginHeader VGAPutPixel */
+void    VGAPutPixel( int prow, int pcol, int color);
+extern char ppixelmask[];
+/*** EndHeader */
+char ppixelmask[] = { 0x80, 0x40, 0x20, 0x10, 0x08, 0x04, 0x02, 0x01};
+// individual pixel mask
+/* START FUNCTION DESCRIPTION ***********************************************
+VGAPutPixel     <z104.lib>
+
+SYNTAX:         void VGAPutPixel(int prow, int pcol, int color);
+
+KEYWORDS:       Z104, Z104_ISA, VGA   
+
+DESCRIPTION:    Puts a pixel at pixel location (prow, pcol) with the color
+					 passed.
+RETURN VALUES:  None.
+END DESCRIPTION ************************************************************/
+#asm fast nodebug
+VGAPutPixel::
+		  ld      iy, 2             
+		  add     iy, sp
+		  ld      l, (iy)             ; low of row
+		  ld      h, (iy+1)           ; high of row
+		  ld      e, (iy+2)           ; low of column
+		  ld      d, (iy+3)           ; high of column
+		  call    get_byte_address
+												; hl has the offset address
+												; d has the segment address
+		  in0     a, (CBR)
+		  ex      af, af'             ; save CBR in af'
+		  ld      a, 0x71
+		  out0    (CBR), a            ; new CBR for the PC104 window
+		 
+				 
+		  ld      a, (iy+2)           ; get low of column
+		  and     00000111b           ; get the bit location in a
+		  exx                         ; use alternate 
+		  ld      hl, ppixelmask       ; get table
+		  ld      b, 0
+		  ld      c, a
+		  add     hl, bc              ; get location in table
+		  ld      e, (hl)             ; mask is in e
+
+		  ld      bc, HIADDR
+		  xor     a
+		  out     (c), a
+		  ld      (SHHiAddr), a
+		  ld      bc, GRAF_INDX     ;
+		  ld      a, b
+		  or      PCPortMask
+		  ld      b, a
+		  xor     a                 ; zero a
+		  out     (c), a
+		  inc     bc
+		  ld      a, (iy+4)         ; get the color
+		  out     (c), a
+
+		  dec     bc                ; set plane enable      
+		  ld      a, 1
+		  out     (c), a
+		  inc     bc
+		  ld      a, 0x0f
+		  out     (c), a
+
+		  dec     bc                ; set mask
+		  ld      a, 0x08
+		  out     (c), a
+		  inc     bc
+		  out     (c), e
+
+		  exx                             ; regular
+		  ld      a, d
+		  ld      bc, HIADDR              ;  
+		  out     (c), a                  ; output the high address
+		  ld      (SHHiAddr), a           ; shadow high address
+		  inc     (hl)                    ; read write modify
+
+		  call    VGAResetMask
+		  ex      af, af'                 ; restore CBR
+		  out0    (CBR), a
+
+		  ret
+#endasm
+
+/*** BeginHeader VGAPutImage, VGAGetImage */ 
+void VGAPutImage(int prow, int pcol, char *buf, int mrow, int ncol, 
+					  int color);
+void VGAGetImage(int prow, int pcol, char *buf, int mrow, int ncol,
+					 int color);
+extern char rot_times;
+/*** EndHeader */
+
+char rot_times;
+/* START FUNCTION DESCRIPTION ***********************************************
+VGAPutImage     <z104.lib>
+
+SYNTAX:         void VGAPutImage(int prow, pcol, char *buf, int mrow, int
+									 ncol, int color);
+KEYWORDS:       Z104, Z104_ISA, VGA   
+
+DESCRIPTION:    Puts a mrow bytes x ncol bit map image starting at the pixel
+					 location (prow, pcol).
+END DESCRIPTION ***********************************************************/
+#asm fast nodebug
+VGAPutImage::
+				
+		  in0     a, (CBR)
+		  push    af                  ; save CBR to stack
+		  ld      a, 0x71
+		  out0    (CBR),a             ; new CBR for the PC104 window
+		  
+		  ld      iy, 4               ; add 4 because the CBR is pushed
+												; to the stack.
+		  add     iy, sp
+		  ld      l, (iy)             ; low of row
+		  ld      h, (iy+1)           ; high of row
+		  ld      e, (iy+2)           ; low of column
+		  ld      d, (iy+3)           ; high of column
+		  call    get_byte_address
+												; hl has the offset address
+												; d has the segment address
+		  
+				
+		  ld      a, (iy+2)         ; get low of column
+		  and     00000111b         ; get the bit location in a
+		  exx                       ; use alternate 
+		  ld      (rot_times), a    ; remember the number of rotate times
+		  
+		  ld      bc, HIADDR
+		  xor     a
+		  out     (c), a
+		  ld      (SHHiAddr), a
+		  ld      bc, GRAF_INDX     ;
+		  ld      a, b
+		  or      PCPortMask
+		  ld      b, a
+		  xor     a                 ; zero a
+		  out     (c), a
+		  inc     bc
+		  ld      a, (iy+10)        ; get the color
+		  out     (c), a
+		  dec     bc                ; set plane enable      
+		  ld      a, 1
+		  out     (c), a
+		  inc     bc
+		  ld      a, 0x0f
+		  out     (c), a
+		  dec     bc                ; set mask
+  
+		  ld      a, 0x08
+		  out     (c), a
+		  xor     a
+		  inc     bc
+		  out     (c), a          ; first mask is 0
+		  
+		  ld      l, (iy+4)       ; h'l' has the address of the data
+		  ld      h, (iy+5)
+		  ld      de, 0           ; zero accessory word
+		  exx                     ; regular
+		  
+		  ld      c, (iy+6)        ; number of rows
+		  push    hl               ; keep a copy of hl in the stack
+		  push    de               ; keep a copy of de in the stack
+rowloop:
+		  ld      b, (iy+8)        ; number of columns
+colloop:
+		  exx                     ; use alternate
+		  ld      c, (hl)         ; get data        
+		  inc     hl              ; point to next data
+		  
+		  ld      e, 0
+		  ld      a, (rot_times)
+		  ld      b, a
+		  or      a               ; clear carry
+		  jr      z, no_rotate      
+rloop:  
+		  rr      c   
+		  rr      e
+		  djnz    rloop           ; rotate this number of times
+no_rotate:
+		  ld      a, c
+		  or      d
+		  ld      d, e            ; mask for next time
+		  ex      af, af'         ; use alternate 
+		  xor     a
+		  ld      bc, HIADDR
+		  out     (c), a
+		  ld      (SHHiAddr), a
+		  ld      bc, GRAF_INDX
+		  ld      a, b
+		  or      PCPortMask
+		  ld      b, a
+		  ex      af, af'         ; back to regular
+		  ld      e, 8
+		  out     (c), e          ; mask register
+		  inc     bc
+		  out     (c), a          ; out the mask
+		  
+		  exx                     ; back to regular
+		  ld      a, d
+		  exx                     ; alternate
+		  ld      bc, HIADDR
+		  out     (c), a
+		  ld      (SHHiAddr), a
+		  exx                     ; regular
+		
+		  inc     (hl)            ; read write modify the VGA memory
+		  inc     hl
+		  
+		  bit     4, h
+		  jr      z, colokay
+		  ld      hl, 0xe000
+		  inc     d
+colokay: 
+		  djnz    colloop
+		  exx                     ; use alternate
+		  ld      bc, HIADDR
+		  xor     a
+		  out     (c), a
+		  ld      (SHHiAddr), a
+		  ld      bc,GRAF_INDX
+		  ld      a, b
+		  or      PCPortMask
+		  ld      b, a
+		  ld      e, 8
+		  out     (c), e              ;  mask register
+		  inc     bc
+		  out     (c), d              ;  last column mask
+		  ld      de, 0               ;  zero accessory word
+		  exx                         ;   back to regular
+	  
+		  ld      a, d
+		  exx                         ; alternate
+		  ld      bc, HIADDR
+		  out     (c), a
+		  ld      (SHHiAddr), a
+		  exx                         ; regular
+		  
+		  inc     (hl)
+		  pop     de                  ;  restore the segment
+		  pop     hl                  ;  get starting hl to advance the row
+		  ld      a, d
+		  ld      de, 80
+		  add     hl, de              ; hl has the new address
+		  ld      d, a                ; back segment address
+		  bit     4, h
+		  jr      z, rowokay
+		  ld      a, h
+		  and     11101111b
+		  ld      h, a
+		  inc     d
+rowokay:
+		  push    hl                  ; keep starting hl again
+		  push    de                  ; keep the segment 
+		  dec     c
+		  ld      a, c
+		  or      a
+		  jp      nz, rowloop
+
+		  pop     de                  ; one last pop to equalize
+		  pop     hl                  ; one last pop to equalize
+
+		  call    VGAResetMask    ; reset mask to normal
+		  pop     af
+		  out0    (CBR), a
+
+		  ret
+#endasm
+
+/* START FUNCTION DESCRIPTION ***********************************************
+VGAGetImage     <z104.lib>
+
+SYNTAX:         void VGAGetImage(int prow, pcol, char *buf, int mrow, int
+									 ncol, int color);
+KEYWORDS:       Z104, Z104_ISA, VGA   
+
+DESCRIPTION:    Gets the pixel mask for a (mrow x ncol) image starting at  
+					 (prow, pcol). Pixels that matched the color is set (1),  
+					 otherwise reset to (0). Image is returned in char *buf.
+RETURN VALUES:  None. 
+END DESCRIPTION ***********************************************************/
+#asm fast nodebug
+VGAGetImage::
+		  in0     a, (CBR)
+		  push    af                  ; save CBR to stack
+		  ld      a, 0x71
+		  out0    (CBR),a             ; new CBR for the PC104 window
+		  
+		  ld      iy, 4               ; add 4 because the CBR is pushed
+												; to the stack.
+		  add     iy, sp
+		  ld      l, (iy)             ; low of row
+		  ld      h, (iy+1)           ; high of row
+		  ld      e, (iy+2)           ; low of column
+		  ld      d, (iy+3)           ; high of column
+		  call    get_byte_address
+												; hl has the offset address
+												; d has the segment address
+		  ld      a, (iy+2)           ; get low of column
+		  and     00000111b           ; get the bit location in a
+		  ld      (rot_times), a      ; store the number of pixel rotate
+
+		  exx                         ; use alternate
+		  ld      bc, HIADDR
+		  xor     a
+		  out     (c), a
+		  ld      (SHHiAddr), a
+		  ld      bc, GRAF_INDX       ;
+		  ld      a, b
+		  or      PCPortMask
+		  ld      b, a
+		  ld      a, 2                ; color compare register
+		  out     (c), a
+		  inc     bc
+		  ld      a, (iy+10)          ; get the color
+		  out     (c), a              ; set the color compare register color
+		  dec     bc
+		  ld      a, 5
+		  out     (c), a
+		  inc     bc
+		  ld      a, 0x08         ; read mode 1, 0x18
+		  out     (c), a
+		  ld      l, (iy + 4)     ; h'l' has the address of data
+		  ld      h, (iy + 5)     ;
+		  ld      de, 0           ; zero accessory word
+		  exx                     ; regular
+
+		  ld      c, (iy+6)       ; number of rows
+		  push    hl              ; keep a copy of hl in stack
+		  push    de              ; keep a copy of de in stack
+
+rowloop:
+		  ld      a, d            ; set high address for memory read
+		  push    bc
+		  ld      bc, HIADDR
+		  out     (c), d
+		  pop     bc
+		  ld      (SHHiAddr), a
+		  ld      a, (hl)         ; read data to a
+		  exx                     ; use alternate
+		  ld      d, a            ; copy data to accessory
+		  exx                     ; use regular
+		  inc     hl              ; advanced vga memory
+		  bit     4, h
+		  jr      z, not_boundary
+		  ld      hl, 0xe000
+		  inc     d
+not_boundary:
+		  ld      b, (iy+8)       ; number of columns
+colloop:
+		  ld      a, d            ; set high address for memory read
+		  push    bc
+		  ld      bc, HIADDR
+		  out     (c), d
+		  pop     bc
+		  ld      (SHHiAddr), a
+		  ld      a, (hl)         ; read data to a
+		  inc     hl              ; advanced vga memory
+		  bit     4, h            ; check for boundary crossing
+		  jr      z, colokay
+		  ld      hl, 0xe000
+		  inc     d
+colokay:        
+		  exx                     ; use alternate
+		  ld      c, a
+		  ld      e, a
+		  ld      a, (rot_times)
+		  ld      b, a
+		  or      a
+		  jr      z, no_rotate
+rloop:                          ; rotate the data into its proper place
+		  rl      c
+		  rl      d
+		  djnz    rloop
+no_rotate:
+		  ld      (hl), d
+		  inc     hl
+		  ld      d, e            ; keep next copy
+		  exx                     ; use regular
+		  djnz    colloop
+		  pop     de
+		  pop     hl
+		  ld      a, d            ; keep segment
+		  ld      de, 80          ; advance to the next row
+		  add     hl, de
+		  ld      d, a
+		  bit     4, h            
+		  jr      z, rowokay
+		  ld      a, h
+		  and     11101111b       ; adjust memory if needed   
+		  ld      h, a
+		  inc     d               ; adjust segment if needed
+rowokay:
+		  push    hl              ; keep copies of hl and de
+		  push    de
+		  dec     c               ; decrement the number of byte rows
+		  ld      a, c
+		  or      a
+		  jp      nz, rowloop     ; if not zero, do again
+
+		  pop     de              ; pop to equalize the loop
+		  pop     hl
+		  call    VGAResetMask    ; reset the color registers
+		  pop     af
+		  out0    (CBR), a            ; restore the CBR
+		  ret
+#endasm
+
+
+/*** BeginHeader VGALargeChar */
+void VGALargeChar( char data, int prow, int pcol, int magnify, int color);
+extern char VGAGFonts[];
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION **********************************************
+VGALargeChar    <z104.lib>
+
+SYNTAX:         void VGALargeChar(char data, int prow, int pcol, int magnify,     
+					 int color);
+
+KEYWORDS:       Z104, Z104_ISA, VGA   
+
+DESCRIPTION:    Draws an 8 by 8 pixel character font into 64 x magnify by 
+					 64 x magnify pixel character. For example, if magnify is 1,
+					 an 64x64 character is generarted. If magnify is 2, a 128x128
+					 character is generated. (prow,pcol) is the pixel location of
+					 the top left point of the font image. 
+RETURN VALUES:  None.
+END DESCRIPTION ***********************************************************/
+nodebug
+void VGALargeChar(char data, int prow, int pcol, int magnify, int color)
+{
+	 int i, j, k;
+	 int ii, jj;
+	 int iprow, ipcol;
+	 int iiprow, iipcol;
+	 char *fontbase;
+	 int  *dumbase;
+	 char dumfont[8];                // 8x1 image font
+	 i = data;
+	 fontbase = VGAGFonts + (i << 3);    // get the character font image
+	 iprow = prow;
+	 ipcol = pcol;
+	 for( i = 0; i < 8; i++)
+	 {
+		  k = 0x80;                   // bit 7 of row byte first
+		  dumbase = (int*)dumfont;
+		  for(j = 0;j < 8;j++)
+		  {
+				dumbase = (int*)dumfont;
+				if( *(fontbase) & (char)k) 
+				{
+					 for(ii = 0;ii < 4;ii++)
+						  *dumbase++ = 0xffff; 
+				}
+				else 
+				{    
+					 for(ii=0;ii<4;ii++)
+							*dumbase++ = 0x0000;
+				}
+				iiprow = iprow;
+				for(ii = 0;ii < magnify; ii++)
+				{
+					 iipcol = ipcol;
+					 for(jj = 0;jj < magnify; jj++)
+					 {    
+						  VGAPutImage(iiprow, iipcol, dumfont, 8, 1, color);
+						  iipcol = iipcol + 8;              
+					 }
+					 iiprow = iiprow + 8;
+				}    
+				ipcol = ipcol + 8 * magnify;
+				k = k >> 1;     // shift right one
+		  }
+		  fontbase++;
+		  ipcol = pcol;
+		  iprow = iprow + 8 * magnify;
+	 }
+}
+
+/*** BeginHeader VGAResetMask */
+void    VGAResetMask();
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION **********************************************
+VGAResetMask    <z104.lib>
+
+SYNTAX:         void VGAResetMask();
+
+KEYWORDS:       Z104, Z104_ISA, VGA   
+
+DESCRIPTION:    Resets the color masks of the VGA Graphics register to the
+					 default.
+RETURN VALUES:  None.
+END DESCRIPTION *********************************************************/
+#asm fast nodebug
+VGAResetMask::
+
+			ld     bc, HIADDR
+			xor    a
+			out    (c), a
+			ld     (SHHiAddr), a
+			ld     bc,GRAF_INDX        ;
+			ld     a, b
+			or     PCPortMask
+			ld     b, a
+			xor    a                   ; zero a
+			out    (c),a
+			inc    bc
+			out    (c),a
+
+			dec    bc
+			ld     d, 1
+			out    (c),d
+			inc    bc
+			out    (c),a
+
+			dec    bc
+			ld     a, 0x08
+			out    (c),a
+			inc    bc
+			ld     e, 0xff
+			out    (c),e
+			ret
+
+#endasm
+
+/*** BeginHeader VGAPolygon */
+void  VGAPolygon(int *points, int npoint, int color, int nfill);
+
+extern int BresmdL1, BresmAL1, BresmBL1;
+extern int xxpoint[];
+extern int xx1, xx2, yy1, yy2;
+extern int xstart, xend;
+/*** EndHeader */
+
+int BresmdL1, BresmAL1, BresmBL1;
+int xxpoint[960];
+int xx1, yy1, xx2, yy2;
+int xstart , xend;
+
+/* START FUNCTION DESCRIPTION ***********************************************
+VGAPolygon      <z104.lib>
+
+SYNTAX:         void VGAPolygon(int *points, int npoint, int color, 
+								int nfill);
+KEYWORDS:       Z104, Z104_ISA, VGA   
+
+DESCRIPTION:    Draws a npoint closed polygon with the points defined by
+					 the int *points, i.e. {x1,y1, x2,y2, x3, y3 ....}. If
+					 nfill is 0, the inside of the polygon is not filled. If
+					 nfill is 1, the inside of the polygon is filled and the
+					 polygon has to be convex.
+RETURN VALUES:  None.
+END DESCRIPTION ************************************************************/
+#asm root nodebug  
+VGAPolygon::
+
+				ld      iy, 2
+				add     iy, sp                                    
+				
+				ld      l, (iy)
+				ld      h, (iy+1)           ; pointer in hl to line
+				ld      b, (iy+2)           ; number of points, max is 255
+
+				ld      a, (iy+6)           ; fill or no fill
+				cp      1
+				jr      z, fill_polygon
+
+line_polygon:            
+				
+				dec     b                   ; loop n-1 times
+
+				ld      de, 7
+				add     hl, de              ; point to yn+1
+poly_loop:  
+				push    iy
+				push    hl
+				push    bc
+				ld      e, (iy+4)                   ; get color
+				push    de                          ; push color
+				ld      d, (hl)                     ; y2 high    
+				dec     hl
+				ld      e, (hl)                     ; y2 low
+				dec     hl
+				push    de
+				ld      d, (hl)                     ; x2 high
+				dec     hl
+				ld      e, (hl)                     ; x2 low        
+				dec     hl
+				push    de
+				ld      d, (hl)                     ; y1 high
+				dec     hl
+				ld      e, (hl)                     ; y1 low
+				dec     hl
+				push    de      
+				ld      d, (hl)                     ; x1 high
+				dec     hl
+				ld      e, (hl)                     ; x1 low
+				dec     hl                  
+				push    de
+				call    VGAline                     ; draw a line
+				pop     de                          ; pop to restore the stack
+				pop     de
+				pop     de
+				pop     de
+				pop     de                          ; five pops to equalize
+				pop     bc                          ; pop counter
+				pop     hl                          ; pop pointer
+				pop     iy                          ; pop other pointer
+				dec     b
+				ld      de, 4
+				add     hl, de
+				ld      a, b
+				cp      0
+				jr      nz, poly_loop
+
+				ld      de, 4
+				or      a
+				sbc     hl, de                  ; hl point to high of last y
+
+				ld      e, (iy+4)
+				push    de                      ; push color
+				ld      d, (hl)                 ; y2 high
+				dec     hl
+				ld      e, (hl)                 ; y2 low
+				dec     hl
+				push    de
+				ld      d, (hl)                 ; x2 high
+				dec     hl
+				ld      e, (hl)                 ; x2 low 
+				push    de                  
+				ld      l, (iy)
+				ld      h, (iy+1)
+				ld      c, (hl)                 ; low of x1
+				inc     hl
+				ld      b, (hl)                 ; high of x1
+				inc     hl
+				ld      e, (hl)                 ; low of y1
+				inc     hl
+				ld      d, (hl)                 ; high of y1
+				push    de                      ; push y1
+				push    bc                      ; push x1
+				call    VGAline
+				pop     de                      ; pop to restore the stack
+				pop     de
+				pop     de
+				pop     de
+				pop     de
+				ret
+
+
+fill_polygon:
+				push    hl                  ; keep a copy of hl    (1)
+				push    hl                  ; keep two copies of hl (2)
+				
+				exx                         ; use alternate
+; get the smallest x
+				ld      bc, 479
+				exx                         ; regular     
+smallest:             
+				ld      e, (hl)             ; low byte
+				inc     hl
+				ld      d, (hl)             ; high byte 
+				inc     hl
+				inc     hl
+				inc     hl
+				push    de                  ; push data
+				exx                         ; alternate
+				pop     de                  
+				ld      l, c                ; bc' has the current smallest
+				ld      h, b
+				xor     a
+				sbc     hl, de
+				jr      c, small_okay
+				ld      c, e
+				ld      b, d                ; copy new smaller to bc'
+small_okay:
+				exx                         ; back to regular
+				djnz    smallest
+				exx                         ; alternate
+				ld      (xstart), bc        ; xstart has the smallest x
+				exx                         ; regular
+
+				pop     hl                  ; pop the address again    (2)
+				ld      b, (iy+2)           ; get count again
+
+largest:    ld      e, (hl)
+				inc     hl
+				ld      d, (hl)
+				inc     hl
+				inc     hl
+				inc     hl
+				push    de
+				exx                         ; use alternate
+				pop     de
+				ld      l, c                ; bc' has the current largest
+				ld      h, b
+				xor     a
+				sbc     hl, de
+				jr      nc, large_okay
+				ld      c, e
+				ld      b, d                ; copy new largest to bc'
+large_okay:
+				exx                         ; back to regular
+				djnz    largest
+				exx                         ; alternate
+				ld      (xend), bc          ; xend has the largest x
+				exx                         ; regular
+
+init_data:            
+				ld      bc, 1919              ; total of 1920 bytes points
+				ld      hl, xxpoint
+				ld      de, xxpoint
+				inc     de
+				ld      (hl), 0xff
+				ldir                        ; initialize all data to 0xff
+
+				pop     hl                  ; pointer to the points (1)
+				push    hl                  ; keep one more         (3)
+				push    hl                  ; keep one more copy
+				ld      b, (iy+2)           ; number of points
+				
+main_loop:
+
+				ld      (iy+5), 0
+		 
+				pop     hl                  ; pop the next point address
+				ld      e, (hl)             ; low of xi
+				inc     hl
+				ld      d, (hl)             ; high of xi
+				inc     hl                  
+				ld      (xx1),  de
+				ld      e, (hl)             ; low of yi
+				inc     hl
+				ld      d, (hl)             ; high of yi
+				inc     hl
+				ld      (yy1), de
+				
+				ld      a, b
+				cp      1                   ; check if last line
+				jr      nz, not_last
+				pop     hl                  ; 
+
+not_last:   ld      e, (hl)
+				inc     hl
+				ld      d, (hl)
+				inc     hl
+				ld      (xx2), de
+				ld      e, (hl)
+				inc     hl
+				ld      d, (hl)
+				ld      (yy2), de
+				ld      de, 3
+				or      a
+				sbc     hl, de              ; point to next 
+				push    hl                  ; keep a copy for next loop 
+				
+				exx                         ; use alternate
+				ld      de, (xx1)
+				ld      hl, (xx2)
+				xor     a
+				sbc     hl, de              ;
+				jr      nc, no_swap         ; if x2 >= x1, okay
+				ld      hl, (xx2)
+				ld      (xx1), hl
+				ld      (xx2), de
+				ld      de, (yy1)
+				ld      hl, (yy2)
+				ld      (yy1), hl
+				ld      (yy2), de
+
+no_swap:
+				xor     a
+				ld      hl, (xx2)
+				ld      de, (xx1)
+				sbc     hl, de              ; hl has x2 - x1
+				ld      b, h               ; keep a copy of the len -1
+				ld      c, l               ; bc has x2-x1
+
+				ld      hl, (yy2)
+				ld      de, (yy1)
+				sbc     hl, de              ; hl has y2-y1
+				
+				jr      nc, not_neg         ; if negative, take the reverse
+													 ; two's complement
+				set     7, (iy+5)           ; if set, negative direction
+				dec     hl
+				ld      a, h
+				cpl
+				ld      h, a
+				ld      a, l
+				cpl
+				ld      l, a
+
+not_neg:    ld      d, h
+				ld      e, l                ; abs(y2-y1) is in de
+				xor     a
+				sbc     hl, bc              ; abs(y2-y1) - (x2-x1)
+				jr      c, find_xslope
+
+find_yslope:            
+				set     6, (iy+5)           ; bit 6 indicate slope y (set)
+													 ; or slope x (not set)
+				ld      h, b                ; hl has dx
+				ld      l, c
+				add     hl, hl              ; 2dx
+				ld      (BresmBL1), hl      ; 
+				sbc     hl, de              ; 2dx - dy
+				ld      (BresmdL1), hl
+				or      a                   ; clear carry flag
+				sbc     hl, de              ; 2dx - 2dy
+				ld      (BresmAL1), hl
+				jr      slope_found
+
+find_xslope:     
+				ld      l, e
+				ld      h, d
+				add     hl, hl              ; 2dy
+				ld      (BresmBL1), hl
+				sbc     hl, bc              ; 2dy - dx
+				ld      (BresmdL1), hl
+				or      a                   ; clear carry
+				sbc     hl, bc              ; 2dy - 2dx
+				ld      (BresmAL1), hl
+
+slope_found:                            ; bc still has dx
+				
+				ld      de, xxpoint
+				ld      hl, (xx2)
+				add     hl, hl              ; initialize x2,y2 end point
+				add     hl, hl              ; 4x
+				add     hl, de
+				ld      de, (yy2)
+				inc     hl                  ; point to high byte 
+				ld      a, (hl)
+				dec     hl                  ; back to low byte
+				cp      0xff                ; is it negative?
+				jr      nz, yy20tag
+				ld      (hl), e
+				inc     hl
+				ld      (hl), d
+				inc     hl
+				jr      test2yy1
+yy20tag:    inc     hl
+				inc     hl
+
+test2yy1:   inc      hl                 ; point to high byte
+				ld      a, (hl)
+				dec      hl                 ; back to low byte
+				cp      0xff                ; is it negative
+				jr      nz, yy21tag 
+				ld      (hl), e
+				inc     hl
+				ld      (hl), d
+yy21tag:
+
+				ld      de, xxpoint
+				ld      hl, (xx1)
+				add     hl, hl              ; initialize x1,y1 end point
+				add     hl, hl
+				add     hl, de
+				ld      de, (yy1)
+				inc     hl                  ; point to high byte
+				ld      a, (hl)
+				dec     hl                  ; back to low byte
+				cp      0xff                ; is it negative?
+				jr      nz, yy10tag
+				ld      (hl), e
+				inc     hl
+				ld      (hl), d
+				inc     hl
+				jr      test1yy1
+yy10tag:    inc     hl
+				inc     hl
+
+test1yy1:   inc     hl                  ; point to high byte
+				ld      a, (hl)
+				dec     hl                  ; back to low byte
+				cp      0xff                ; is it negative
+				jr      nz, yy11tag 
+				ld      (hl), e
+				inc     hl
+				ld      (hl), d
+yy11tag:
+				ld      hl, (xx1)
+				add     hl, hl
+				add     hl, hl              ; 4x
+				ld      de, xxpoint
+				add     hl, de              ; hl' has xxpoint 
+				ld      de, 4
+				add     hl, de              ; point to xxpoint[xx1+1][0]
+
+
+				dec     bc                  ; dx - 1
+				ld      a, b                ; check for adjacent x1 and x2
+				or      c
+				jp      z, merge_slope      ; two adjacent horizontal line
+				bit     7, b
+				jp      nz, merge_slope     ; horizontal line
+
+				exx                         ; regular
+				
+
+				bit     6, (iy+5)           ; xslope or yslope
+				jp      nz, yslope
+xslope:            
+				ld      hl, (BresmdL1)
+				exx                         ; alternate
+xminor_loop:     
+				exx                         ; regular
+				bit     7, h
+				jr      nz, xBresmB
+xBresmA:    ld      de, (BresmAL1)
+				add     hl, de
+				ld      de, (yy1)
+				bit     7, (iy+5)
+				jr      z, xsdypos
+				dec     de
+				ld      (yy1), de
+				jr      xm_end
+xsdypos:
+				inc     de
+				ld      (yy1), de
+				jr      xm_end
+xBresmB:    ld      de, (BresmBL1)
+				add     hl, de              ; hl has BresmdL1    
+xm_end:
+
+				call    update_end_points
+endminorx:  
+				dec   bc
+				ld    a, b
+				or    c
+				jp    nz, xminor_loop
+				jp    merge_slope
+
+yslope:            
+				ld      hl, (BresmdL1)
+				exx                         ; alternate
+
+yminor_loop:     
+				exx                         ; regular
+				bit     7, h
+				jr      z, yBresmA
+yBresmB:    ld      de, (BresmBL1)
+				add     hl, de              ; hl has BresmdL1    
+				ld      de, (yy1)
+				bit     7, (iy+5)
+				jr      z, y2sdypos
+				dec     de
+				ld      (yy1), de
+				bit     7, h
+				jr      nz, yBresmB
+				jr      yBresmA
+y2sdypos:   inc     de
+				ld      (yy1), de
+				bit     7, h
+				jr      nz, yBresmB
+
+yBresmA:    ld      de, (BresmAL1)
+				add     hl, de
+				ld      de, (yy1)
+				bit     7, (iy+5)
+				jr      z, ysdypos
+				dec     de
+				ld      (yy1), de
+				jr      ym_end
+ysdypos:
+				inc     de
+				ld      (yy1), de
+			 
+ym_end:
+
+				call  update_end_points
+
+endminory:  
+				dec   bc
+				ld    a, b
+				or    c
+				jp    nz, yminor_loop
+
+
+merge_slope:
+
+				exx                     ; regular
+				dec     b
+				ld      a, b
+				or      a
+				jp      nz, main_loop    
+				pop     hl              ; one last pop to equalize
+
+
+data_made: 
+				 
+				ld      hl, (xend)    
+				ld      bc, (xstart)
+				xor     a
+				sbc     hl, bc
+				inc     hl
+				ld      b, h
+				ld      c, l
+				ld      hl, (xstart)
+				add     hl, hl
+				add     hl, hl
+				ld      de, xxpoint
+				add     hl, de
+				
+				ld      de, 3
+				add     hl, de              ; point to top high of y1
+
+show_loop:  
+				push    iy
+				push    hl
+				push    bc
+				ld      e, (iy+4)
+				push    de              ; push color
+				ld      d, (hl)         ; y1 high
+				dec     hl
+				ld      e, (hl)         ; y1 low
+				dec     hl
+				push    de
+				ld      de, (xstart)
+				push    de              ; x
+				ld      d, (hl)         ; y0, high
+				dec     hl
+				ld      e, (hl)         ; y0 low
+				push    de
+				ld      de, (xstart)
+				push    de
+				inc     de
+				ld      (xstart), de
+				call    VGAHline        ;   draw a horizontal line to fill area
+				pop     de              ;   restore the stack
+				pop     de
+				pop     de
+				pop     de
+				pop     de
+
+				pop     bc
+				dec     bc
+				pop     hl
+				pop     iy
+				ld      de, 4
+				add     hl, de
+
+				ld      a, b
+				or      c
+				jr      nz, show_loop
+				ret
+
+update_end_points:
+				exx                         ; alternate
+				inc     hl                  ; point to high byte
+				ld      a, (hl)
+				dec     hl                  ; back to low byte
+				cp      0xff                ; is it negative
+				jr      nz, xy0okay
+				ld      de, (yy1)
+				ld      (hl), e
+				inc     hl
+				ld      (hl), d
+				inc     hl
+				inc     hl
+				inc     hl                 ; adjust pointer
+				ret                        
+
+xy0okay:    inc     hl
+				inc     hl
+				inc     hl                 ; point to high byte
+				ld      a, (hl)
+				dec     hl                 ; back to low byte
+				cp      0xff
+				jr      nz, xy1okay
+				ld       de, (yy1)
+				ld      (hl), e
+				inc     hl
+				ld      (hl), d
+				inc     hl                  ; adjust the pointer   
+				ret                        
+
+xy1okay:    
+				push    bc              ; keep loop counter
+				ld      e, (hl)         ; low of y1
+				inc     hl
+				ld      d, (hl)         ; high of y1
+				dec     hl              ; low of y1
+				dec     hl              ; high of y0
+				ld      b, (hl)
+				dec     hl              ; low of y0
+				ld      c, (hl)
+				ex      de, hl
+				xor     a
+				sbc     hl, bc
+				jr      nz, xy0noty1
+				ex      de, hl
+				pop     bc
+				ld      de, (yy1)
+				ld      (hl), e             ; low of y0
+				inc     hl
+				ld      (hl), d             ; high of y0
+				inc     hl
+				inc     hl
+				inc     hl                  ; adjust the pointer
+				ret                     
+
+xy0noty1:   
+				ex      de, hl
+				ld      de, 4
+				add     hl, de
+				pop     bc
+				ret
+
+#endasm
+
+
+/*** BeginHeader VGAEllipse*/
+void    VGAEllipse(int xc, int yc, int a0, int b0, int color, int nfill);
+void    VGASet4Pixels(int xc, int yc, int x, int y, int color);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION **********************************************
+VGAEllipse      <z104.lib>
+
+SYNTAX:         void VGAEllipse(int xc, int yc, int a0, int b0, int color, 
+									 int nfill);
+
+KEYWORDS:       Z104, Z104_ISA, VGA   
+
+DESCRIPTION:    Draws an ellipse defined by its center (xc, yc) and the major
+					 and minor parameter of the ellipse. If nfill is 0, only the
+					 boundary is drawn. If nfill is 1, the inside is filled.
+END DESCRIPTION ************************************************************/
+nodebug root
+void VGAEllipse(int xc, int yc, int a0, int b0, int color, int nfill)
+{
+		int x, y, tag;
+		long a, b;
+		long Asqr, TwoAsqr, Bsqr, TwoBsqr;
+		long  d, dx, dy;
+		int xtop, xbottom, yleft, yright;
+
+		x = 0;
+		y = b0;
+		a = (long) a0;
+		b = (long) b0;
+		Asqr = a*a;
+		Bsqr = b*b;
+		TwoAsqr = Asqr<<1;
+		TwoBsqr = Bsqr<<1;
+
+		d = Bsqr - Asqr*b + (Asqr<<2);
+		dx = 0L;
+		dy = TwoAsqr * b;
+
+	 
+		while(dx < dy)
+		{
+			if(nfill)
+			{
+				xtop = xc - x;
+				if(xtop<0) xtop = 0;
+				xbottom = xc + x;
+				yleft = yc - y;            
+				if(yleft < 0) yleft = 0;
+				yright = yc + y;
+				if(yright > 639) yright = 639;
+
+				if(x==0)
+				{
+					 VGAHline(xc, yleft, xc, yright, color);
+				}
+				else
+				{
+					 VGAHline( xtop, yleft , xtop , yright, color);
+					 VGAHline( xbottom, yleft, xbottom, yright, color);
+				}
+			}
+			else
+			{
+
+				VGASet4Pixels(x, y, xc, yc, color);
+			}
+			if( d > 0L)
+			{
+				--y;
+				dy -= TwoAsqr;
+				d -= dy;
+			}
+			++x;
+			dx += TwoBsqr;
+			d+= Bsqr + dx;
+		}
+
+		d +=  ( ((3L* (Asqr - Bsqr))>>1) - dx - dy) >> 1;
+
+		tag = 1;
+		while(y>=0)
+		{
+			if(nfill)
+			{
+				if(tag)
+				{
+					tag = 0;
+					 xtop = xc - x;
+					 if(xtop<0) xtop = 0;
+					 xbottom = xc + x;
+					 yleft = yc - y;            
+					 if(yleft < 0) yleft = 0;
+					 yright = yc + y;
+					 if(yright > 639) yright = 639;
+				
+					 VGAHline( xbottom, yleft, xbottom, yright, color);
+					 VGAHline( xtop, yleft, xtop, yright, color);
+			 
+				}
+			}
+			else VGASet4Pixels( x, y, xc, yc, color);
+			
+			if( d < 0L)
+			{
+				++x;
+				dx += TwoBsqr;
+				d += dx;
+				tag = 1;
+			}
+			--y;
+			dy -= TwoAsqr;
+			d += Asqr - dy;
+		}
+		
+}
+
+/* START FUNCTION DESCRIPTION ***********************************************
+VGASet4Pixels   <z104.lib>
+
+SYNTAX:         void VGASet4Pixels(int x, int y, int xc, int yc, int color);
+
+KEYWORDS:       Z104, Z104_ISA, VGA   
+
+DESCRIPTION:    Draws four pixel specified by (xc+x,yc+y), (xc+x,yc-y),  
+					 (xc-x,yc+y) and (xc-x, yc-y).
+RETURN VALUES:  None.
+END DESCRIPTION ***********************************************************/
+nodebug root
+void VGASet4Pixels(int x, int y, int xc, int yc, int color)
+{
+		int xtop, xbottom, yright, yleft;
+		
+		xtop = xc - x;
+		xbottom = xc + x;
+		if(xtop < 0) xtop = 0;
+		
+		yleft = yc - y;
+		yright = yc + y;
+		if(yleft < 0) yleft = 0;
+		if(yright > 639) yright = 639;
+
+		if(x!=0)
+		{
+			VGAPutPixel( xbottom,  yright, color);
+			VGAPutPixel( xtop, yright, color);
+			if(y!=0)
+			{
+				VGAPutPixel( xbottom , yleft , color);
+				VGAPutPixel( xtop,  yleft, color);
+			}
+		}
+		else
+		{
+			VGAPutPixel(xc, yright, color);
+			if(yc!=0)
+				VGAPutPixel(xc, yleft, color);
+		}
+
+}
+
+
+/*** BeginHeader pprintf */
+
+int  pprintf(char *fmt, ...);
+int   pport(char x);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ***********************************************
+pprintf         <z104.lib>                
+SYNTAX:         pprintf( char *fmt, ...);
+
+KEYWORDS:       Z104, Z104_ISA, Printer Port   
+
+DESCRIPTION:    Z104 board printer port analogue of printf. Note that 
+					 printer does not print until a line feed is sent.
+RETURN VALUES:  0 if printed okay. -1 if printer is busy; -2 if printer is
+					 out of paper. -3 if printer is off line or general error.
+END DESCRIPTION **********************************************************/
+static char __printerbusy;
+nodebug int pprintf(char *fmt, ...)
+{
+	 int pport();
+
+	 outport(PTRDATAE,0x00);         // Turn-on printer data output-ena
+	 outport(PTRCNTR,0x02);          // Turn-off printer control o.c. outputs
+												// Turn on Printer Select
+	 if (!ibit(PTRCNTR, 4)) return -3;  
+												// printer is off line or general error    
+	 if (!ibit(PTRCNTR, 2)) return -2;
+												// printer is out of paper
+	 __printerbusy = 0;
+	 doprnt(pport, fmt, (char *) ((char *) &fmt + sizeof (fmt)),NULL);
+	 if ( __printerbusy) return -1;  
+												// single character level printer check
+	 return 0;                       // return 0 if doprnt is okay
+}
+
+/* START FUNCTION DESCRIPTION *********************************************
+pport           <Z104.LIB>
+
+SYNTAX:         indirect ine pport(char x);
+
+DESCRIPTION:    Low level routine to send one character out of the printer
+					 port.
+RETURN VALUES:  None.
+END DESCRIPTION ***********************************************************/
+indirect pport(char x)
+{
+	 int timeout;
+	 timeout = 1000;             // a thousand tries or timeout 
+	 while (!ibit(PTRCNTR, 1) && --timeout);     // wait for not busy    
+	 if( !__printerbusy)
+	 {
+		  if(!timeout)  
+		  {    
+				__printerbusy = 1;
+				return -1;
+		  }
+		  outport(PTRDATA, x);          // put char code in data register
+		  outport(PTRCNTR, 0x08);       // assert strobe
+		  outport(PTRCNTR, 0x00);       // de-assert strobe
+	 }
+	 return 0;
+}
+
+/*** BeginHeader VIODrvr, VIOInit */
+void VIODrvr();
+void VIOInit();
+/*** EndHeader */
+	 
+/* START FUNCTION DESCRIPTION ********************************************
+VIOInit                      <Z104.LIB>
+
+SYNTAX: void VIOInit();
+
+KEYWORDS: Virtual IO's, Initialize.
+
+DESCRIPTION: Dummy function used as a host for GLOBAL_INIT of the
+				 Virtual IO variables. 
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug
+void VIOInit()
+{
+#GLOBAL_INIT
+	 {
+	 }
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+VIODrvr                      <Z104.LIB>
+
+SYNTAX: void VIODrvr();
+
+KEYWORDS: Virtual IO's Driver
+
+DESCRIPTION: Update the virtual inputs and outputs. 
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+#asm nodebug fast
+VIODrvr::
+	 ret
+#endasm
+
+/*** BeginHeader SetHiAddr, SaveHiAddr, RestoreHiAddr */
+void    SetHiAddr(int segaddr);
+void    SaveHiAddr();
+void    RestoreHiAddr();
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION **********************************************
+SetHiAddr               <Z104.LIB>
+
+SYNTAX:         void SetHiAddr(int segaddr);
+
+KEYWORDS:       Z104, Z104ISA, High Address
+
+DESCRIPTION:    Sets the high address of the PC104 memory map. Also save the
+				high address into a high address shadow.
+RETURN VALUES:  None.
+END DESCRIPTION **********************************************************/
+#asm fast nodebug   
+SetHiAddr::
+			ld      bc,HIADDR           
+			out     (c),l                ; set the high Address
+			ld      a, l
+			ld      (SHHiAddr), a           ; shadow bus address
+			ret
+#endasm
+
+/* START FUNCTION DESCRIPTION **********************************************
+SaveHiAddr               <Z104.LIB>
+
+SYNTAX:         void SaveHiAddr();
+
+KEYWORDS:       Z104, Z104ISA, High Address
+
+DESCRIPTION:    Saves the high address of the PC104 memory map by pushing it 
+				to the stack. This function has to be accompanied by the 
+				function RestoreHiAddr.
+RETURN VALUES:  None.
+END DESCRIPTION **********************************************************/
+#asm fast nodebug
+SaveHiAddr::
+			pop     hl                  ; save the return address
+			ld      a, (SHHiAddr)       ; get the current High Address
+			ld      e,a
+			push    de                  ; push into the stack
+			jp      (hl)                ; return
+#endasm
+
+/* START FUNCTION DESCRIPTION **********************************************
+RestoreHiAddr               <Z104.LIB>
+
+SYNTAX:         void RestoreHiAddr();
+
+KEYWORDS:       Z104, Z104ISA, High Address
+
+DESCRIPTION:    Restores the high address of the PC104 memory map by popping 
+				it out of the stack. The high address has been previously 
+				pushed to the stack with SaveHiAddr() or equivalent function.
+RETURN VALUES:  None.
+END DESCRIPTION **********************************************************/
+#asm fast nodebug
+RestoreHiAddr::
+			pop     hl              ; save the return address
+			pop     de              ; get the saved High Address from Stack
+			ld      a,e             ; copy data to a
+			ld      bc,HIADDR       
+			out     (c),a           ; High Address Out
+			ld      (SHHiAddr), a   ; shadow high address
+			jp      (hl)            ; return to caller
+#endasm
+
+/*** BeginHeader WritePCMem */
+void WritePCMem(unsigned long address, char *data, int len);
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION **********************************************
+WritePCMem              <Z104.LIB>
+
+SYNTAX:         void WritePCMem(unsigned long address, char *data, int len );
+
+KEYWORDS:       Z104, Z104ISA, High Address
+
+DESCRIPTION:    Writes byte data array of size len to the PC104 memory starting
+				at the long address. 
+RETURN VALUES:  None.
+END DESCRIPTION ************************************************************/
+#asm fast nodebug
+WritePCMem::
+			in0     a,  (CBR)           ; get the current CBR
+			push    af                  ; save the CBR into stack
+			ld      a, 0x71             ; load PCMEM CBR
+			out0    (CBR),  a         
+	  
+			ld      iy, 4               ; add 4 because CBR is pushed to
+										; the stack
+			add     iy, sp              ; offset to arguments 
+			or      a                   ; clear carry flag
+			ld      l, (iy+1)
+			ld      a, (iy+2)           ; get the high address
+			
+			rl      l                   ; rotate left to get the high address
+			rla
+			rl      l
+			rla
+			rl      l
+			rla
+			rl      l
+			rla
+
+			ex      af, af'             ; use alternate now af'
+			ld      e,  (iy)            ; load low address of the offset
+			ld      a,  (iy+1)          ; load high address of the offset
+			and     0x0f                ; make sure upper nibble is zero
+			or      0xe0                ; upper nibble is set to 0xe
+			ld      d,a                 ; copy to a
+			ld      l,  (iy+4)          ; load data pointer low address
+			ld      h,  (iy+5)          ; load data pointer high address
+			ld      c,  (iy+6)          ; load counter low byte
+			ld      b,  (iy+7)          ; load counter high byte
+			ld      a,  b
+			or      c                   ; check if count is zero
+										; at this point a has the hiaddr
+										; bc has the count
+										; hl has the root memory address
+										; de has the pc104 memory address
+			jr      z, WritePCEnd       ; if zero, no data to write
+			push    hl
+			push    de
+dloop:      
+			ex      af, af'             ; regular
+			exx                         ; alternate
+			ld      bc, HIADDR          ; high address
+			out     (c), a
+			ld      (SHHiAddr), a       ; shadow high address
+			exx                         ; regular
+			inc     a                   ; next high address
+			ex      af, af'             ; alternate
+			ld      hl, 0xf000
+			or      a
+			sbc     hl, de              ; check for the HiAddr boundary
+			push    hl                  ; hl has the full count to this
+										; segment
+			sbc     hl, bc              ; check how many count is left in 
+										; this high address segment
+			jr      nc, last_seg        ; check if last segment
+			ld      h, b
+			ld      l, c
+			pop     bc
+			push    bc                  ; keep another copy
+			or      a
+			sbc     hl, bc
+			ld      b, h
+			ld      c, l
+			exx                         ; use alternate
+			pop     bc
+			pop     de
+			pop     hl
+			ldir                        ; copy data (hl) -> (de)
+			push    hl
+			exx
+			ld      de, 0xe000
+			push    de
+			jp      dloop
+
+last_seg:   pop     de                  ; pop extra
+			pop     de
+			pop     hl
+			ldir                        ; copy data (hl) -> (de)
+										; for the last segment
+WritePCEnd:
+			ex      af, af'             ; regular
+			pop     af                  ; restore the CBR
+			out0    (CBR),a
+			ret
+#endasm
+/*** BeginHeader ReadPCMem */
+void ReadPCMem(unsigned long address, char *data, int len);
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION **********************************************
+ReadPCMem              <Z104.LIB>
+
+SYNTAX:         void ReadPCMem(unsigned long address, char *data, int len );
+
+KEYWORDS:       Z104, Z104ISA, High Address
+
+DESCRIPTION:    Reads size len of data into the byte data array from the 
+				PC104 memory starting at long address. 
+RETURN VALUE:   None. Data is return in char *data.
+END DESCRIPTION ************************************************************/
+#if BOARD_TYPE!=Z104ISA
+#error "Z104/ZISA only."
+#else
+#asm fast nodebug
+ReadPCMem::
+			in0     a,  (CBR)           ; get the current CBR
+			push    af                  ; save CBR into stack
+			ld      a, 0x71             ; load PCMEM CBR
+			out0    (CBR),  a         
+	  
+			ld      iy, 4               ; add 4 because CBR is pushed to 
+										; the stack 
+			add     iy, sp              ; offset to arguments  
+			or      a                   ; clear carry flag
+			ld      l, (iy+1)
+			ld      a, (iy+2)           ; get the segment address
+			
+			rl      l                   ; rotate left to get high address
+			rla
+			rl      l
+			rla
+			rl      l
+			rla
+			rl      l
+			rla
+
+			ex      af, af'             ; use alternate now af'
+			ld      e,  (iy)            ; load low address of the offset
+			ld      a,  (iy+1)          ; load high address of the offset
+			and     0x0f                ; make sure upper nibble is zero
+			or      0xe0                ; upper nibble is set to 0xe
+			ld      d,a                 ; copy to a
+			ld      l,  (iy+4)          ; load data pointer low address
+			ld      h,  (iy+5)          ; load data pointer high address
+			ld      c,  (iy+6)          ; load counter low byte
+			ld      b,  (iy+7)          ; load counter high byte
+			ld      a,  b
+			or      c                   ; check if count is zero
+										; at this point a has the hiaddr
+										; bc has the count
+										; hl has the root memory address
+										; de has the pc104 memory address
+			jr      z, ReadPCEnd        ; no data to read
+			push    hl
+			push    de
+dloop:      
+			ex      af, af'             ; regular
+			exx                         ; alternate
+			ld      bc, HIADDR          ; high address
+			out     (c), a
+			ld      (SHHiAddr), a       ; shadow high address
+			exx                         ; regular
+			inc     a
+			ex      af, af'             ; alternate
+			ld      hl, 0xf000
+			or      a
+			sbc     hl, de              ; check for the HiAddr boundary
+			push    hl                  ; hl has the full count to this
+										; segment
+			sbc     hl, bc              ; check how many count is left in 
+										; this high address segment
+			jr      nc, last_seg
+			ld      h, b
+			ld      l, c
+			pop     bc
+			push    bc                  ; keep another copy
+			or      a
+			sbc     hl, bc
+			ld      b, h
+			ld      c, l
+			exx                         ; use alternate
+			pop     bc
+			pop     de
+			pop     hl
+			ex      de, hl              ; swap source and destination             
+			ldir                        ; (hl) -> (de)
+			ex      de, hl              ; swap source and destination
+			push    hl
+			exx
+			ld      de, 0xe000
+			push    de
+			jp      dloop
+
+last_seg:   pop     de                  ; pop extra
+			pop     de
+			pop     hl
+			ex      de, hl              ; swap source and destination
+			ldir                        ; (hl) -> de
+			ex      de, hl              ; restore to normal
+ReadPCEnd:
+			ex      af, af'             ; regular
+			pop     af                  ; ex      af, af'
+			out0    (CBR),a             ; restore the CBR
+			ret
+#endasm
+
+/*** BeginHeader WritePCByte */
+void WritePCByte(unsigned long address, char data);
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION *********************************************
+WritePCByte              <Z104.LIB>
+
+SYNTAX:         void WritePCByte(unsigned long address, char data);
+
+KEYWORDS:       Z104, Z104ISA, High Address
+
+DESCRIPTION:    Writes a byte data to the PC104 memory at long address. 
+
+RETURN VALUES:  None.
+END DESCRIPTION ************************************************************/
+#asm fast nodebug
+WritePCByte::
+			in0     a,  (CBR)           ; get the current CBR
+			ex      af, af'             ; CBR is saved in af'
+			ld      a, 0x71             ; load PCMEM CBR
+			out0    (CBR),  a         
+		 
+			ld      iy, 2               
+				 
+			add     iy, sp              ; offset to argument  
+			or      a                   ; clear carry flag
+			ld      l, (iy+1)
+			ld      a, (iy+2)           ; get the segment address
+			
+			rl      l                   ; rotate left to get high address
+			rla
+			rl      l
+			rla
+			rl      l
+			rla
+			rl      l
+			rla
+		 
+			ld      bc, HIADDR
+			out     (c), a              ; set high address
+			ld      (SHHiAddr), a       ; shadow high address
+			
+			ld      l,  (iy)            ; load low address of the offset
+			ld      a,  (iy+1)          ; load high address of the offset
+			and     0x0f                ; make sure upper nibble is zero
+			or      0xe0                ; upper nibble is set to 0xe
+			ld      h,a                 ; copy to h
+			
+			ld      a,(iy+4)            ; get the data   
+			ld      (hl),a              ; write the data
+		
+			ex      af, af'
+			out0    (CBR),a             ; restore CBR
+			ret
+#endasm
+/*** BeginHeader ReadPCByte */
+int ReadPCByte(unsigned long address);
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION **********************************************
+ReadPCByte              <Z104.LIB>
+
+SYNTAX:         int ReadPCByte(unsigned long address);
+
+KEYWORDS:       Z104, Z104ISA, High Address
+
+DESCRIPTION:    Reads a byte data from the PC104 memory at long address. 
+
+RETURN VALUE:   Byte data 
+END DESCRIPTION ************************************************************/
+#asm fast nodebug
+ReadPCByte::
+			in0     a,  (CBR)           ; get the current CBR
+			ex      af, af'             ; CBR is saved in af'
+			ld      a, 0x71             ; load PCMEM CBR
+			out0    (CBR),  a         
+		
+			ld      iy, 2               
+			add     iy, sp              ; offset to the arguments
+			or      a                   ; clear carry flag
+			ld      l, (iy+1)
+			ld      a, (iy+2)           ; get the segment address
+			
+			rl      l                   ; rotate left to get high address
+			rla
+			rl      l
+			rla
+			rl      l
+			rla
+			rl      l
+			rla
+			
+			ld      bc, HIADDR          ; set high address
+			out     (c), a
+			ld      (SHHiAddr), a       ; shadow high address
+			
+			ld      l,  (iy)            ; load low address of the offset
+			ld      a,  (iy+1)          ; load high address of the offset
+			and     0x0f                ; make sure upper nibble is zero
+			or      0xe0                ; upper nibble is set to 0xe
+			ld      h,a                 ; copy to h
+			
+			ld      e,(hl)              ; load data into e
+			ld      h, 0x00
+			ld      l, e                ; data is in hl
+			ex      af, af'
+			out0    (CBR),a             ; restore CBR
+			ret
+
+#endasm
+/*** BeginHeader WritePCPort */
+void    WritePCPort( unsigned int port, char data);
+/*** EndHeader */
+/*START FUNCTION DESCRIPTION **********************************************
+WritePCPort             <Z104.LIB>
+
+SYNTAX:         void WritePCPort(int port, char data);
+
+KEYWORDS:       Z104, Z104ISA, High Address
+
+DESCRIPTION:    Writes byte data to a PC104 io port. 
+
+RETURN VALUES:  None.
+END DESCRIPTION ****************************************************/
+#asm fast nodebug
+WritePCPort::
+			ld      iy, 2
+			add     iy, sp              ; offset to the arguments
+			xor     a
+			ld      l, (iy+1)
+			rl      l                   ; rotate left to get high address
+			rla
+			rl      l
+			rla
+			rl      l
+			rla
+			rl      l
+			rla
+			ld      bc, HIADDR
+			out     (c), a              ; save high address
+			ld      (SHHiAddr), a       ; shadow high address
+			ld      a, (iy+1)
+			and     0x0f
+			or      PCPortMask
+			ld      b, a
+			ld      c, (iy)
+			ld      a, (iy+2)
+			out     (c), a
+			ret
+#endasm
+/*** BeginHeader ReadPCPort */
+int    ReadPCPort( unsigned int port);
+/*** EndHeader */
+/*START FUNCTION DESCRIPTION ************************************************
+ReadPCPort             <Z104.LIB>
+
+SYNTAX:         int ReadPCPort(int port);
+
+KEYWORDS:       Z104, Z104ISA, High Address
+
+DESCRIPTION:    Reads byte data from a PC104 io port. 
+
+RETURN VALUES:  Returns byte data.
+END DESCRIPTION ****************************************************/
+#asm  fast nodebug
+ReadPCPort::
+			ld      iy, 2
+			add     iy, sp          ; offset to the arguments
+			xor     a
+			ld      l, (iy+1)
+			rl      l               ; rotate left to get high address
+			rla
+			rl      l
+			rla
+			rl      l
+			rla
+			rl      l
+			rla
+			ld      bc, HIADDR      ; set high address
+			out     (c), a
+			ld      (SHHiAddr), a   ; shadow high address
+			ld      a, (iy+1)
+			and     0x0f
+			or      PCPortMask
+			ld      b, a
+			ld      c, (iy)
+			in      l, (c)
+			ld      h, 0
+			ret
+#endasm
+
+/*** BeginHeader _sysZIfPwrFail */
+
+/*** EndHeader */
+
+#asm
+_sysZIfPwrFail::
+			ld		bc,NMI
+			in    a, (c)       ; read NMI bit
+			bit   6, a              ;
+			ret
+#endasm
+
+/*** BeginHeader lc_beepcount */
+
+extern int lc_beepcount;
+
+/*** EndHeader */
+
+int lc_beepcount;
+
+#funcchain _sys_781 lcBeep781
+#asm
+lcBeep781::
+	 ld      hl,(lc_beepcount)
+	 ld      a,l
+	 or      h
+	 jr      z,timer2a00
+	 dec     hl
+	 ld      (lc_beepcount),hl
+; least of beep count is sent to beeper
+	 ld      bc, SPEAKER             ; address of BEEPH or BEEPL     
+	 out     (c),l ;;; a             ; output to beeper
+
+timer2a00:
+	ret
+#endasm
+
+/*** BeginHeader brdChkKB, brdQuitChkKB, brdResKB */
+
+void brdChkKB();
+void brdQuitChkKB();
+void brdResKB();
+
+/*** EndHeader */
+
+#asm
+brdChkKB::
+brdQuitChkKB::
+brdResKB::
+	ret
+#endasm

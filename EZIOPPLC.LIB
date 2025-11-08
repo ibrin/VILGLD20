@@ -1,0 +1,1046 @@
+/*
+General simulation of PLC-bus using the PIO
+
+*/
+/*** BeginHeader */
+
+#ifndef __EZIOPPLC_LIB
+#define __EZIOPPLC_LIB
+
+#use eziopbdv.lib
+
+/*** endHeader */
+
+/*** BeginHeader SHBUS1, SHBUS0 */
+
+extern int SHBUS1, SHBUS0;
+
+/*** EndHeader */
+
+int SHBUS1,SHBUS0;
+
+/*** BeginHeader _eioPlcStbWrAsm */
+
+/*** EndHeader */
+
+/*
+Expects address (bus cycle (highest 3 bits) and data bits
+to write (the next 4 bits)) pass in. Uses PIODX to simulate
+a PLC-bus write cycle. Bit 0 of PIODX is used as the strobe
+line.
+*/
+
+#asm
+;	using register a,l
+_eioPlcStbWrAsm::
+	;	do the PLC-bus transaction
+	ld		bc,PIODX
+_eioPlcStbWrBC::
+	out	(c),a
+	and	PPLC_STBMASK ^ 0xff
+	out	(c),a
+	or		PPLC_STBMASK
+	out	(c),a
+	ret
+#endasm
+
+/*** BeginHeader _eioPlcStbRdAsm, _eioPlcStbRdBC */
+
+/*** EndHeader */
+
+#asm
+;	uses register a,l,h
+_eioPlcStbRdAsm::
+	ld		bc,PIODX
+_eioPlcStbRdBC::
+	out	(c),a
+	and	PPLC_STBMASK ^ 0xff
+	out	(c),a
+	in		l,(c)
+#if PPLC_DSHFT > 0
+	srl	l
+#endif
+#if PPLC_DSHFT > 1
+	srl	l
+#endif
+#if PPLC_DSHFT > 2
+	srl	l
+#endif
+#if PPLC_DSHFT > 3
+	srl	l
+#endif
+#if PPLC_XLATE
+	ld		h,0
+	push	de
+	ld		de,pplcPDXlateTab
+	add	hl,de
+	pop	de
+	ld		l,(hl)
+	ld		h,0
+#endif
+	or		PPLC_STBMASK
+	out	(c),a
+	ld		a,l
+	and	00001111b
+	ld		l,a
+	ret
+#endasm
+
+/*** BeginHeader _eioReadD0 */
+
+#define set12adr mgset12adr
+
+char _eioReadD0();
+
+/*** EndHeader */
+
+#asm
+_eioReadD0::
+	ld		a,i
+	push	af
+	di
+	
+	push	de
+	push	bc
+	ld		bc,PIODX
+	in		d,(c)			;	save current state
+
+	ld		a,PPLC_D0MASK | PPLC_STBMASK
+	call	_eioPlcStbRdBC
+
+	set	PPLC_STBPIN,d
+	out	(c),d
+
+	pop	bc
+	pop	de
+	
+	pop	af
+	ret	po
+	ei
+	ret
+#endasm
+
+/*** BeginHeader _eioReadD1 */
+
+char _eioReadD1();
+
+/*** EndHeader */
+
+#asm
+_eioReadD1::
+	ld		a,i
+	push	af
+	di
+	push	de
+	push	bc
+	ld		bc,PIODX
+	in		d,(c)		;	save current state
+	ld		a,PPLC_D1MASK | PPLC_STBMASK
+	call	_eioPlcStbRdBC
+
+	set	PPLC_STBPIN,d
+	out	(c),d
+	pop	bc
+	pop	de
+	
+	pop	af
+	ret	po
+	ei
+	ret
+#endasm
+
+/*** BeginHeader _eioReadD2 */
+
+char _eioReadD2();
+
+/*** EndHeader */
+
+#asm
+_eioReadD2::
+	ld		a,i
+	push	af
+	di
+	push	de
+	push	bc
+	ld		bc,PIODX
+	in		d,(c)		;	save current state
+
+	ld		a,PPLC_D2MASK | PPLC_STBMASK
+	call	_eioPlcStbRdBC
+
+	set	PPLC_STBPIN,d
+	out	(c),d
+	pop	bc
+	pop	de
+	
+	pop	af
+	ret	po
+	ei
+	ret
+#endasm
+
+/*** BeginHeader _eioWriteWR */
+
+void _eioWriteWR(char ch);
+
+/*** EndHeader */
+
+#asm
+_eioWriteWR::
+	ld		a,i
+	push	af
+	di
+
+	push	de
+	push	bc
+	ld		bc,PIODX
+	in		d,(c)
+
+	;	configure PIODX to be all output
+	ld		bc,PIOCX
+	ld		e,0xcf
+	out	(c),e
+	ld		e,PPLC_OUTMASK
+	out	(c),e
+
+	ld		a,l
+#if PPLC_XLATE
+	ld		h,0
+	ld		de,pplcDPXlateTab
+	add	hl,de
+	ld		a,(hl)
+	ld		h,0
+#else
+#if PPLC_DSHFT > 0
+	sla	a
+#endif
+#if PPLC_DSHFT > 1
+	sla	a
+#endif
+#if PPLC_DSHFT > 2
+	sla	a
+#endif
+#if PPLC_DSHFT > 3
+	sla	a
+#endif
+#endif
+	or		PPLC_WRMASK | PPLC_STBMASK
+	
+	call	_eioPlcStbWrAsm
+
+	;	configure PIODX to be PPLC_INMASK (default) again
+	ld		e,0xcf
+	ld		bc,PIOCX
+	out	(c),e
+	ld		e,PPLC_INMASK
+	out	(c),e
+
+	ld		bc,PIODX
+	set	PPLC_STBPIN,d
+	out	(c),d
+	pop	bc
+	pop	de
+	
+	pop	af
+	ret	po
+	ei
+	ret
+#endasm
+
+/*** BeginHeader eioPlcAdr12 */
+
+void eioPlcAdr12(unsigned adr12);
+
+/*** EndHeader */
+
+#asm
+eioPlcAdr12::
+	ld		a,i
+	push	af
+	di
+
+	push	de
+	push	bc
+	ld		bc,PIODX
+	in		d,(c)
+
+	;	configure PIODX to be all output
+	ld		bc,PIOCX
+	ld		e,0xcf
+	out	(c),e
+	ld		e,PPLC_OUTMASK
+	out	(c),e
+
+	ld		a,l
+	ld		(SHBUS0+1),a
+	and	00001111b
+#if PPLC_XLATE
+	push	de
+	push	hl
+	ld		l,a
+	ld		h,0
+	ld		de,pplcDPXlateTab
+	add	hl,de
+	ld		a,(hl)
+	pop	hl
+#else
+#if PPLC_DSHFT > 0
+	sla	a
+#endif
+#if PPLC_DSHFT > 1
+	sla	a
+#endif
+#if PPLC_DSHFT > 2
+	sla	a
+#endif
+#if PPLC_DSHFT > 3
+	sla	a
+#endif
+#endif
+	or		PPLC_A1MASK  | PPLC_STBMASK
+	call	_eioPlcStbWrAsm
+
+	ld		a,l
+	and	11110000b
+	srl	a
+	srl	a
+	srl	a
+	srl	a
+	ld		(SHBUS0+2),a
+#if PPLC_XLATE
+	push	hl
+	ld		l,a
+	ld		h,0
+	add	hl,de
+	ld		a,(hl)
+	pop	hl
+#else
+#if PPLC_DSHFT > 0
+	sla	a
+#endif
+#if PPLC_DSHFT > 1
+	sla	a
+#endif
+#if PPLC_DSHFT > 2
+	sla	a
+#endif
+#if PPLC_DSHFT > 3
+	sla	a
+#endif
+#endif
+	or		PPLC_A2MASK | PPLC_STBMASK
+	call	_eioPlcStbWrBC
+	
+	ld		a,h
+	and	00001111b
+	ld		(SHBUS0+3),a
+#if PPLC_XLATE
+	ld		l,a
+	ld		h,0
+	add	hl,de
+	ld		a,(hl)
+	pop	de
+#else
+#if PPLC_DSHFT > 0
+	sla	a
+#endif
+#if PPLC_DSHFT > 1
+	sla	a
+#endif
+#if PPLC_DSHFT > 2
+	sla	a
+#endif
+#if PPLC_DSHFT > 3
+	sla	a
+#endif
+#endif
+	or		PPLC_A3MASK | PPLC_STBMASK
+	call	_eioPlcStbWrBC
+
+	;	configure PIODX to be PPLC_INMASK (default) again
+	ld		bc,PIOCX
+	ld		e,0xcf
+	out	(c),e
+	ld		e,PPLC_INMASK
+	out	(c),e
+	
+	set	PPLC_STBPIN,d
+	ld		bc,PIODX
+	out	(c),d
+	pop	bc
+	pop	de
+	
+	pop	af
+	ret	po
+	ei
+	ret
+#endasm
+
+/*** BeginHeader eioPlcAdr4 */
+
+void eioPlcAdr4(int addr);
+
+/*** EndHeader */
+
+#asm
+eioPlcAdr4::
+	ld		a,i
+	push	af
+	di
+
+	push	de
+	push	bc
+	ld		bc,PIODX
+	in		d,(c)
+	
+	;	configure PIODX to be all output
+	ld		bc,PIOCX
+	ld		e,0xcf
+	out	(c),e
+	ld		e,PPLC_OUTMASK
+	out	(c),e
+
+	ld		a,l
+	and	00001111b
+	ld		(SHBUS0+3),a
+#if PPLC_XLATE
+	push	hl
+	push	de
+	ld		l,a
+	ld		h,0
+	ld		de,pplcDPXlateTab
+	add	hl,de
+	ld		a,(hl)
+	pop	de
+	pop	hl
+#else
+#if PPLC_DSHFT > 0
+	sla	a
+#endif
+#if PPLC_DSHFT > 1
+	sla	a
+#endif
+#if PPLC_DSHFT > 2
+	sla	a
+#endif
+#if PPLC_DSHFT > 3
+	sla	a
+#endif
+#endif
+	or		PPLC_A3MASK | PPLC_STBMASK
+	call	_eioPlcStbWrAsm
+
+	;	configure PIODX to be PPLC_INMASK (default) again
+	ld		bc,PIOCX
+	ld		e,0xcf
+	out	(c),e
+	ld		e,PPLC_INMASK
+	out	(c),e
+
+	ld		bc,PIODX
+	set	PPLC_STBPIN,d
+	out	(c),d
+
+	pop	bc
+	pop	de
+	
+	pop	af
+	ret	po
+	ei
+	ret
+#endasm
+
+/*** BeginHeader eioPlcAdr24, eioPlcAdr8 */
+
+void eioPlcAdr24(unsigned long ul);
+
+void eioPlcAdr8(unsigned u);
+
+/*** EndHeader */
+
+#error "8-bit PLC-bus is not supported for the BL14/1500."
+
+/*** BeginHeader _eioClockOut */
+
+/*
+dataword		hl
+bit count	a
+data0			d
+data1			e
+clk0			d'
+clk1			e'
+*/
+
+/*** EndHeader */
+
+#asm
+_eioClockOut::
+	;	disable interrupt first
+	ld		b,a			; use b to count
+	
+	;	preinitialize the value to send out (format PIODX pattern)
+	ld		a,e
+#if PPLC_XLATE
+	push	hl
+	push	bc
+	ld		l,a
+	ld		h,0
+	ld		bc,pplcDPXlateTab
+	add	hl,bc
+	ld		a,(hl)
+#else
+#if PPLC_DSHFT > 0
+	sla	a
+#endif
+#if PPLC_DSHFT > 1
+	sla	a
+#endif
+#if PPLC_DSHFT > 2
+	sla	a
+#endif
+#if PPLC_DSHFT > 3
+	sla	a
+#endif
+#endif
+	or		PPLC_WRMASK | PPLC_STBMASK
+	ld		e,a
+
+	ld		a,d
+#if PPLC_XLATE
+	ld		l,a
+	ld		h,0
+;	ld		bc,pplcDPXlateTab
+	add	hl,bc
+	ld		a,(hl)
+	pop	bc
+	pop	hl
+#else
+#if PPLC_DSHFT > 0
+	rla
+#endif
+#if PPLC_DSHFT > 1
+	rla
+#endif
+#if PPLC_DSHFT > 2
+	rla
+#endif
+#if PPLC_DSHFT > 3
+	rla
+#endif
+#endif
+	or		PPLC_WRMASK | PPLC_STBMASK
+	ld		d,a
+
+	exx
+	
+	ld		a,e
+#if PPLC_XLATE
+	push	hl
+	push	bc
+	ld		l,a
+	ld		h,0
+	ld		bc,pplcDPXlateTab
+	add	hl,bc
+	ld		a,(hl)
+#else
+#if PPLC_DSHFT > 0
+	sla	a
+#endif
+#if PPLC_DSHFT > 1
+	sla	a
+#endif
+#if PPLC_DSHFT > 2
+	sla	a
+#endif
+#if PPLC_DSHFT > 3
+	sla	a
+#endif
+#endif
+	or		PPLC_WRMASK | PPLC_STBMASK
+	ld		e,a
+
+	ld		a,d
+#if PPLC_XLATE
+	ld		l,a
+	ld		h,0
+;	ld		bc,pplcDPXlateTab
+	add	hl,bc
+	ld		a,(hl)
+	pop	bc
+	pop	hl
+#else
+#if PPLC_DSHFT > 0
+	rla
+#endif
+#if PPLC_DSHFT > 1
+	rla
+#endif
+#if PPLC_DSHFT > 2
+	rla
+#endif
+#if PPLC_DSHFT > 3
+	rla
+#endif
+#endif
+	or		PPLC_WRMASK | PPLC_STBMASK
+	ld		d,a
+
+	exx
+	
+	ld		a,i
+	push	af
+	di
+
+	exx
+	push	bc
+	exx
+	
+	push	bc
+	;	saves content of PIODX
+
+	ld		bc,PIODX
+	in		a,(c)
+	pop	bc
+	push	af
+	
+	;	configure PIODX to be all output
+	push	bc
+	ld		bc,PIOCX
+	ld		a,0xcf
+	out	(c),a
+	ld		a,PPLC_OUTMASK
+	out	(c),a
+	pop	bc
+
+outAgain:
+	bit	7,h
+	push	bc
+	jr		z,data0
+;	data1
+	ld		a,e
+	call	_eioPlcStbWrAsm
+	jr		clock10
+data0:
+	ld		a,d
+	call	_eioPlcStbWrAsm
+clock10:
+	pop	bc
+	
+	exx
+	ld		a,e
+	call	_eioPlcStbWrAsm
+	ld		a,d
+	call	_eioPlcStbWrBC
+	exx
+	
+	add	hl,hl
+	djnz	outAgain
+
+	;	configure PIODX to be PPLC_INMASK (default) again
+	ld		bc,PIOCX
+	ld		a,0xcf
+	out	(c),a
+	ld		a,PPLC_INMASK
+	out	(c),a
+	
+	;	restores contents of PIODX (except strobe)
+	pop	af
+	ld		bc,PIODX
+	or		PPLC_STBMASK
+	out	(c),a
+
+	exx
+	pop	bc
+	exx
+
+	;	reenable interrupt if necessary
+	pop	af
+	ret	po
+	ei
+	ret	
+#endasm
+
+/*** BeginHeader _eioClockInD0 */
+
+/*
+dataword		hl
+bit count	a
+data1			d
+clk0			d'
+clk1			e'
+*/
+
+/*** EndHeader */
+
+#asm
+_eioClockInD0::
+	ld		b,a		;	use b for count
+
+	;	preinitialize the value to send out (format PIODX pattern)
+	exx
+	ld		a,e
+#if PPLC_XLATE
+	push	hl
+	push	bc
+	ld		l,a
+	ld		h,0
+	ld		bc,pplcDPXlateTab
+	add	hl,bc
+	ld		a,(hl)
+#else
+#if PPLC_DSHFT > 0
+	sla	a
+#endif
+#if PPLC_DSHFT > 1
+	sla	a
+#endif
+#if PPLC_DSHFT > 2
+	sla	a
+#endif
+#if PPLC_DSHFT > 3
+	sla	a
+#endif
+#endif
+	or		PPLC_WRMASK | PPLC_STBMASK
+	ld		e,a
+	ld		a,d
+#if PPLC_XLATE
+	ld		l,a
+	ld		h,0
+;	ld		bc,pplcDPXlateTab
+	add	hl,bc
+	ld		a,(hl)
+	pop	bc
+	pop	hl
+#else
+#if PPLC_DSHFT > 0
+	sla	a
+#endif
+#if PPLC_DSHFT > 1
+	sla	a
+#endif
+#if PPLC_DSHFT > 2
+	sla	a
+#endif
+#if PPLC_DSHFT > 3
+	sla	a
+#endif
+#endif
+	or		PPLC_WRMASK | PPLC_STBMASK
+	ld		d,a
+	exx
+
+	;	diable interrupt
+	ld		a,i
+	push	af
+	di
+
+	push	bc
+	;	saves state of PIODX
+	ld		bc,PIODX
+	in		a,(c)
+	pop	bc
+	push	af
+	
+inAgain:
+	;	configure PIODX to be all output
+	push	bc
+	ld		bc,PIOCX
+	ld		a,0xcf
+	out	(c),a
+	ld		a,PPLC_OUTMASK
+	out	(c),a
+
+	exx
+	ld		a,e					;	clock high
+	exx
+	
+	call	_eioPlcStbWrAsm
+
+	add	hl,hl
+	push	hl
+	
+	;	configure PIODX to be PPLC_INMASK (default) again
+	ld		bc,PIOCX
+	ld		a,0xcf
+	out	(c),a
+	ld		a,PPLC_INMASK
+	out	(c),a
+
+	ld		a,PPLC_STBMASK
+	call	_eioPlcStbRdAsm	;	read D0
+	and	d						;	mask bit
+	pop	hl						
+	jr		z,data0
+	inc	hl
+data0:
+	
+	;	configure PIODX to be all output
+	ld		bc,PIOCX
+	ld		a,0xcf
+	out	(c),a
+	ld		a,PPLC_OUTMASK
+	out	(c),a
+
+	exx
+	ld		a,d					;	clock low
+	exx
+	
+	call	_eioPlcStbWrAsm
+	pop	bc
+	
+;	out0	(BUSWR),d
+;	dec	a
+;	jr		nz,inAgain
+	djnz	inAgain
+
+	ld		bc,PIOCX
+	ld		a,0xcf
+	out	(c),a
+	ld		a,PPLC_INMASK
+	out	(c),a
+
+	;	restore status of PIODX
+	pop	af
+	ld		bc,PIODX
+	or		PPLC_STBMASK
+	out	(c),a
+
+	;	restore interrrupt enable status
+	pop	af
+	ret	po
+	ei
+	ret
+#endasm
+
+/*** BeginHeader eioResetPlcBus */
+
+void eioResetPlcBus();
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+eioResetPlcBus
+
+SYNTAX: 	void eioResetPlcBus();
+
+DESCRIPTION:	this function resets all boards on the PLC-bus. The
+programmer must make sure there is enough delay between this call and
+the first access to any PLC-bus devices for the reset to take effect.
+
+RETURN VALUE:	N/A
+
+END DESCRIPTION **********************************************************/
+
+#asm
+eioResetPlcBus::
+;	in0	a,(RST8)
+	;	first initialize value at the port
+	push	bc
+	ld		bc,PIODX
+	ld		a,PPLC_STBMASK
+	out	(c),a
+	
+	;	initialize port direction
+	ld		bc,PIOCX
+	ld		a,0xcf
+	out	(c),a
+	ld		a,PPLC_INMASK
+	ld		(PIOCXShadow),a
+	out	(c),a
+
+	;	read from A=0x03 (reset line)
+	ld		bc,PIODX
+	ld		a,PPLC_RSTMASK | PPLC_STBMASK
+	out	(c),a
+	and	PPLC_STBMASK ^ 0xff
+	out	(c),a
+	or		PPLC_STBMASK
+	out	(c),a
+
+	ld		a,PPLC_STBMASK
+	out	(c),a
+
+	pop	bc
+	
+	ret
+#endasm
+
+/*** BeginHeader _eioClockOutM */
+
+/*
+dataword		hl
+bit count	a
+data0			d
+data1			e
+clk			d'
+*/
+
+/*** EndHeader */
+
+#asm
+_eioClockOutM::
+	;	disable interrupt first
+	ld		b,a			; use b to count
+	
+	;	preinitialize the value to send out (format PIODX pattern)
+	ld		a,e
+#if PPLC_XLATE
+	push	hl
+	push	bc
+	ld		l,a
+	ld		h,0
+	ld		bc,pplcDPXlateTab
+	add	hl,bc
+	ld		a,(hl)
+#else
+#if PPLC_DSHFT > 0
+	sla	a
+#endif
+#if PPLC_DSHFT > 1
+	sla	a
+#endif
+#if PPLC_DSHFT > 2
+	sla	a
+#endif
+#if PPLC_DSHFT > 3
+	sla	a
+#endif
+#endif
+	or		PPLC_WRMASK | PPLC_STBMASK
+	ld		e,a
+
+	ld		a,d
+#if PPLC_XLATE
+	ld		l,a
+	ld		h,0
+;	ld		bc,pplcDPXlateTab
+	add	hl,bc
+	ld		a,(hl)
+;	pop	bc
+;	pop	hl
+#else
+#if PPLC_DSHFT > 0
+	rla
+#endif
+#if PPLC_DSHFT > 1
+	rla
+#endif
+#if PPLC_DSHFT > 2
+	rla
+#endif
+#if PPLC_DSHFT > 3
+	rla
+#endif
+#endif
+	or		PPLC_WRMASK | PPLC_STBMASK
+	ld		d,a
+
+	exx
+	
+	ld		a,d
+#if PPLC_XLATE
+	ld		l,a
+	ld		h,0
+;	ld		bc,pplcDPXlateTab
+	add	hl,bc
+	ld		a,(hl)
+	pop	bc
+	pop	hl
+#else
+#if PPLC_DSHFT > 0
+	rla
+#endif
+#if PPLC_DSHFT > 1
+	rla
+#endif
+#if PPLC_DSHFT > 2
+	rla
+#endif
+#if PPLC_DSHFT > 3
+	rla
+#endif
+#endif
+	or		PPLC_WRMASK | PPLC_STBMASK
+	ld		d,a
+
+	exx
+	
+	ld		a,i
+	push	af
+	di
+
+	exx
+	push	bc
+	exx
+	
+	push	bc
+	;	saves content of PIODX
+
+	ld		bc,PIODX
+	in		a,(c)
+	pop	bc
+	push	af
+	
+	;	configure PIODX to be all output
+	push	bc
+	ld		bc,PIOCX
+	ld		a,0xcf
+	out	(c),a
+	ld		a,PPLC_OUTMASK
+	out	(c),a
+	pop	bc
+
+outAgain:
+	bit	7,h
+	push	bc
+	jr		z,data0
+;	data1
+	ld		a,e
+	call	_eioPlcStbWrAsm
+	jr		clock10
+data0:
+	ld		a,d
+	call	_eioPlcStbWrAsm
+clock10:
+	pop	bc
+	
+	exx
+	xor	d
+	call	_eioPlcStbWrAsm
+	xor	d
+	call	_eioPlcStbWrBC
+	exx
+	
+	add	hl,hl
+	djnz	outAgain
+
+	;	configure PIODX to be PPLC_INMASK (default) again
+	ld		bc,PIOCX
+	ld		a,0xcf
+	out	(c),a
+	ld		a,PPLC_INMASK
+	out	(c),a
+	
+	;	restores contents of PIODX (except strobe)
+	pop	af
+	ld		bc,PIODX
+	or		PPLC_STBMASK
+	out	(c),a
+
+	exx
+	pop	bc
+	exx
+
+	;	reenable interrupt if necessary
+	pop	af
+	ret	po
+	ei
+	ret	
+#endasm
+
+/*** BeginHeader */
+
+#endif
+
+/*** EndHeader */

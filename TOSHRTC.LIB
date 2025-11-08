@@ -1,0 +1,36 @@
+/*** BeginHeader */
+
+#ifndef __TOSHRTC_LIB
+#define __TOSHRTC_LIB
+
+/*** EndHeader */
+
+/*** BeginHeader _8250Exists */
+
+int _8250Exists();
+
+/*** EndHeader */
+
+int _8250Exists() {
+	auto int found;
+
+	found = 0;
+	unlock8250();
+	set8250TOUT(0);
+	if ((0xf&get8250TOUT()) == 0) {
+		set8250TOUT(0xf);
+		if ((0xf&get8250TOUT()) == 0xf) {
+			found = 1;
+		} else {
+		}
+	} else {
+	}
+	lock8250();
+	return found;
+}
+
+/*** BeginHeader */
+
+#endif
+
+/*** EndHeader */

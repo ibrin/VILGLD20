@@ -1,0 +1,288 @@
+/*** BeginHeader */
+
+#ifndef __VWDOG_LIB
+#define __VWDOG_LIB
+
+/*** EndHeader */
+
+/*** BeginHeader */
+
+//int VdWdogGet(int nwd);
+int VdWdogHit(int ndog);
+
+/*** EndHeader */
+
+/*** BeginHeader lg_wd_code */
+
+extern char lg_wd_code;
+
+/*** EndHeader */
+
+char lg_wd_code;
+
+/*** BeginHeader VdGetFreeWd  */
+
+int VdGetFreeWd(char count);
+
+/*** Endheader */
+/* START FUNCTION DESCRIPTION ********************************************
+VdGetFreeWd               <vdriver.lib>
+
+SYNTAX: int VdGetFreeWd(char count);
+
+KEYWORDS: timer, watchdog, VdWdogHit 
+
+DESCRIPTION: Returns a free virtual watchdog and initializes that watchdog 
+				 so that the virtual driver begins counting it down from 
+				 count. The virtual driver must be initialized with VdInit()
+				 before virtual watchdogs are available.
+	
+				 The virtual driver is called every 0.00078125 sec. On every
+				 32nd call to it (25 ms), the virtual watchdogs are counted down.
+				 If a virtual watchdog reaches 0, this is a fatal error. Once a
+				 a virtual watchdog is active it should reset periodically
+				 with a call to VdWdogHit to prevent this. 
+
+RETURN VALUE: integer id number of an unused virtual watchdog timer.
+END DESCRIPTION **********************************************************/
+
+#ifndef N_WATCHDOG
+#define N_WATCHDOG 10
+#endif
+
+extern unsigned vd_wdogarray[N_WATCHDOG];
+
+VdGetFreeWd(char count){
+
+	int i;
+	for(i=0; i<N_WATCHDOG; i++)
+	{
+		if(vd_wdogarray[i]==0xffff) goto found;
+	}
+
+#asm xmemok
+								; Return Address of Caller on Stack
+   ld hl,250                ; no more virtual watchdogs
+   push  hl
+   push  hl                 ; Dummy Return Address
+   ld iy,(ERROR_EXIT)       ; Error is Fatal: Will Not Return
+   jp (iy)                  ; Execute Handler
+
+#endasm
+		
+found:
+	if(count==255)count=254;
+	vd_wdogarray[i]=(count << 8) | count;
+	return i+1;
+}
+
+#asm
+dum: equ vwdog
+#endasm
+
+/*** BeginHeader VdReleaseWd  */
+
+int VdReleaseWd(int ndog);
+
+/*** Endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+VdReleaseWd               <vdriver.lib>
+
+SYNTAX: int VdReleaseWd(int ndog);
+
+KEYWORDS: timer, watchdog, VdWdogHit 
+
+DESCRIPTION: Deactivates a virtual watchdog and makes it available
+				 for VdGetFreeWd().
+
+RETURN VALUE: 0 - ndog out of range, 1 - success
+END DESCRIPTION **********************************************************/
+
+#ifndef N_WATCHDOG
+#define N_WATCHDOG 10
+#endif
+
+extern unsigned vd_wdogarray[N_WATCHDOG];
+
+int VdReleaseWd(int ndog){
+	if( (ndog >= 0) && (ndog <= N_WATCHDOG-1) ){
+		vd_wdogarray[ndog-1] = 0xffff;
+		return 1;
+	}
+	else{
+		return 0;
+	}   
+}
+
+#asm
+dum: equ vwdog
+#endasm
+
+/*** BeginHeader vwdog, up_wdoghit, VdWdogHit, vd_wdogarray, vwdogInit */
+
+void vwdogInit(unsigned initVal);
+int VdWdogHit(int ndog);
+int up_wdoghit(int ndog, int tick);
+void vwdog();
+
+/*** endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+VdWdogHit               <vdriver.lib>
+
+SYNTAX: int VdWdogHit(int ndog);
+
+				ndog = id of virtual watchdog returned by VdGetFreeWd()
+
+KEYWORDS: timer, virtual driver
+
+DESCRIPTION: Resets virtual watchdog counter to N counts where N is the
+				 argument to the call to VdGetFreeWd() that obtained the virtual
+				 watchdog ndog.
+
+				 The virtual driver counts down watchdogs every 25 ms.
+				 If a virtual watchdog reaches 0, this is a fatal error. Once a
+				 a virtual watchdog is active it should reset periodically
+				 with a call to VdWdogHit to prevent this.
+					
+				 If count = 2 the VdWdogHit will need to be called again for
+				 virtual watchdog ndog within 25 ms.  
+ 
+				 If count = 255 the VdWdogHit will need to be called again for
+				 virtual watchdog ndog within 6.325 sec.  
+
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+
+#ifndef N_WATCHDOG
+#define N_WATCHDOG 10
+#endif
+
+#funcchain _sys_25msPostEI vwdog
+
+#if N_WATCHDOG
+
+unsigned vd_wdogarray[N_WATCHDOG];
+
+#asm
+; virtual watchdog
+; VdWdogHit( int ndog, char count)
+
+up_wdoghit::
+	ld de,vd_wdogarray  
+	sla l                       ; ndog * 2  since vd_wdogarray[i]'s are 2 bytes
+
+	dec de               ; index is off by one (2 bytes)
+	dec de
+
+	add hl,de               ; now hl points to correct element  
+	inc	hl						;	high byte is the count
+	
+	 ld      iy,4
+	 add     iy,sp
+	 ld      a,(iy)
+	 ld      (hl),a
+	ret
+	
+VdWdogHit::
+	ld de,vd_wdogarray  
+	sla l                       ; ndog * 2  since vd_wdogarray[i]'s are 2 bytes
+
+	dec de               ; index is off by one (2 bytes)
+	dec de
+
+	add hl,de               ; now hl points to correct element  
+
+	ld d,(hl)               ; move the low byte containing
+	inc hl               ; the max count for this wdog into
+	ld (hl),d            ; the high byte to reset countdown
+	ret
+	
+; The virtual watchdog engine
+vwdog::
+; this code is used if dynamic C debugger present only
+#if ROM!=1
+	ld      a,(OPMODE)
+	and     8
+	jr      nz,wvdog0   ; if run from ram mode skip inhibit of watchdog
+	ld      hl,(3)      ; get 3 table pointer
+	ld      de,41
+	add     hl,de       ; point to pointer to comptr
+	ld      a,(hl)
+	inc     hl
+	ld      h,(hl)
+	ld      l,a                         ; hl points to comptr
+	ld      de,5
+	add     hl,de                       ; point to brkattn
+	ld      a,(hl)
+	or      a
+	jr      z,wvdog0                ; no breakpoint active
+	ret                                 ; done if breakpoint active,
+#endif                                  ;   inhibit decrementing of VWD
+
+wvdog0:
+	ld      b,N_WATCHDOG
+	ld      hl,vd_wdogarray
+	ld      a,0ffh                  ; disable code in a for comparision
+
+vwdog1:
+	 cp     (hl)                 ; low byte of array element contains maxcount
+	 jr     z,wvdog1a               ;   for this wd (255 if disabled)
+	 inc        hl                    ; point to byte 2 of the array element and
+	dec     (hl)                        ;   decrement actual count of wd
+	jr      z,vwdog5                ; crash - timeout
+	 dec        hl                      ; point back to start of element
+
+wvdog1a:
+	 inc        hl                          ; point to next element                       
+	 inc        hl
+	 djnz    vwdog1                 
+	call    hitwd                       ; hit the real watchdog too
+	ret
+
+vwdog5:                                 ; crash location
+	di
+	ld      de,vd_wdogarray-3       ; error codes 3, 4, ...
+	xor     a
+	sbc     hl,de
+	ld      a,l                     ; error code 3, 4, ...
+	ld      (lg_wd_code),a          ; save error code, but who's reading it?
+;	call    user_pwrdown            ; user routine to initialize, but who's providing it?
+vwdog5a:
+	jr      vwdog5a                 ; end of the line
+#endasm
+
+void vwdogInit(unsigned initVal) {
+	auto int k;
+	
+	for(k=0; k<N_WATCHDOG; k++)
+		 vd_wdogarray[k]=initVal;   // 1.5 seconds init
+}
+
+#else
+
+#asm
+;; if no virtual watchdogs specified by user
+vwdog::
+#ifndef _VD_NOHITWD
+	call    hitwd
+#endif
+	ret
+
+; VdWdogHit( int ndog, char count)
+vwdogInit::
+VdWdogHit::
+up_wdoghit::
+	ret                    ; dummy to allow program to include calls
+
+#endasm
+
+#endif		//	N_WATCHDOG == 0
+
+/*** BeginHeader */
+
+#endif
+
+/*** EndHeader */

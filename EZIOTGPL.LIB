@@ -1,0 +1,76 @@
+/*
+	PLC-bus driver for bl1000
+*/
+
+/*** BeginHeader */
+
+#ifndef __EZIOTGPL_LIB
+#define __EZIOTGPL_LIB
+
+#define PIODX PIODB
+#define PIOCX PIOCB
+#define PIOCXShadow PIOCBShadow
+
+#define PPLC_STBMASK 0x80
+#define PPLC_STBPIN 0x07
+
+#define PPLC_INMASK 00001111b
+#define PPLC_OUTMASK 00000000b
+
+#define PPLC_D0MASK	00000000b
+#define PPLC_D1MASK	00010000b
+#define PPLC_D2MASK	00100000b
+#define PPLC_WRMASK	01110000b
+#define PPLC_RSTMASK 00110000b
+#define PPLC_A1MASK	01000000b
+#define PPLC_A2MASK	01010000b
+#define PPLC_A3MASK	01100000b
+
+#define PPLC_DSHFT 0
+
+#define PPLC_XLATE 1
+
+#use eziopplc.lib
+#use eziopbdv.lib
+
+/*** endHeader */
+
+/*** BeginHeader PIOCBShadow */
+
+extern char PIOCBShadow;
+
+/*** EndHeader */
+
+char PIOCBShadow;
+
+/*** beginHeader pplcDPXlateTab, pplcPDXlateTab */
+
+extern char pplcDPXlateTab[16];
+extern char pplcPDXlateTab[16];
+
+/*** endHeader */
+
+/*
+This table is not needed, only for testing the eziopplc.lib.
+*/
+
+#asm
+pplcDPXlateTab::
+	;	data to port translation table
+	;	D3 D2 D1 D0
+	;	P5 P4 P7 P6
+	db	00000000b, 00000010b, 00000001b, 00000011b, 00001000b, 00001010b, 00001001b, 00001011b
+	db 00000100b, 00000110b, 00000101b, 00000111b, 00001100b, 00001110b, 00001101b, 00001111b
+pplcPDXlateTab::
+	;	port to data translation table
+	;	P3 P2 P1 P0
+	;	D1 D0 D3 D2
+	db	0000b, 0010b, 0001b, 0011b, 1000b, 1010b, 1001b, 1011b
+	db 0100b, 0110b, 0101b, 0111b, 1100b, 1110b, 1101b, 1111b
+#endasm
+
+/*** BeginHeader */
+
+#endif
+
+/*** EndHeader */

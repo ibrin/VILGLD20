@@ -1,0 +1,1624 @@
+/* START LIBRARY DESCRIPTION *********************************************
+PK21XX.LIB
+    Copyright (c) 1995, Z-World.
+
+DESCRIPTION: Support for the Rugged Giant (formerly the CPLC). 
+
+SUPPORT LIB'S: sys.lib, drivers.lib
+END DESCRIPTION **********************************************************/
+
+/*** BeginHeader */
+#if BOARD_TYPE!=CPLC_BOARD
+#error "Rugged Giant only."
+#endif
+/*** EndHeader */
+
+/*** BeginHeader */  
+    // shadow variables for the Rugged Giant board   
+    // *** Virtual registers to enable/ disable relays:
+    char RELAY2, RELAY1;
+
+    // *** Virtual registers for transistor outputs:
+    char OUT10, OUT9, OUT8, OUT7, OUT6, OUT5, OUT4, OUT3, OUT2, OUT1;
+
+    // *** Previous digital register inputs:
+    char DREG2PREV;
+
+    // Virtual reg's for digital inputs; hold image of digital inputs:
+    char DIGIN7, DIGIN6, DIGIN5, DIGIN4, DIGIN3, DIGIN2, DIGIN1;
+
+    // U1IN - U7IN updated periodically, 1=> above threshold, 0=> below
+    // U1CUR- U7CUR for storing previous values of UnIN .
+    // UnLOW, UnHIGH=upper and lower thresholds, hystersis band
+
+    char U7IN, U7CUR;         // 1 above high threshold, 0 below low
+    shared int U7LOW, U7HIGH; // low and high analog thresholds
+    char U6IN, U6CUR;
+    shared int U6LOW, U6HIGH;
+    char U5IN, U5CUR;
+    shared int U5LOW, U5HIGH;
+    char U4IN, U4CUR;
+    shared int U4LOW, U4HIGH;
+    char U3IN, U3CUR;
+    shared int U3LOW, U3HIGH;
+    char U2IN, U2CUR;
+    shared int U2LOW, U2HIGH;
+    char U1IN, U1CUR;
+    shared int U1LOW, U1HIGH;
+/*** EndHeader */
+
+/*** BeginHeader VIODrvr, VIOInit */
+void VIODrvr();
+void VIOInit();
+/*** EndHeader */
+    
+/* START FUNCTION DESCRIPTION ********************************************
+VIOInit                      <PK21XX.LIB>
+
+SYNTAX: void VIOInit();
+
+KEYWORDS: Virtual IO's, Initialize.
+
+DESCRIPTION: Dummy function used as a host for GLOBAL_INIT of the
+             Virtual IO variables. Virtual input's are read and virtual
+             outputs are written out whenever the function VIODrvr() is
+             called. Inputs are DIGIN1 to DIGIN7, U1IN to U7IN. Outputs 
+             are OUT1 to OUT10, RELAY1 and RELAY2. DIGIN's has to be the
+             same for two successive reads to be valid.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug
+void VIOInit()
+{
+    char *p;
+    int k;
+
+#GLOBAL_INIT
+    {
+        p = &RELAY2;
+        for (k = 0; k < 12; k++)
+            *p--= 0;
+
+        // set low and high thresholds equal to 1/4 full scale (2.5 volts)
+        p = (char *) &U1HIGH;
+        for (k = 0; k < 7; k++)
+        {
+            *p++= 0;
+            *p++= 1;
+            *p++= 0;
+            *p++= 1;
+            *p++= 0;
+            *p++= 0;
+        }
+    }
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+VIODrvr                      <PK21XX.LIB>
+
+SYNTAX: void VIODrvr();
+
+KEYWORDS: Virtual IO's Driver
+
+DESCRIPTION: Update the virtual inputs DIGIN1 to DIGIN7 and U1IN to U7IN.
+             The virtual outputs OUT1 to OUT10, RELAY1 and RELAY2 are
+             send out to corresponding output ports.
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+#asm nodebug fast
+VIODrvr::
+; make sure 1 bit is on on all nonzero outputs
+    ld      hl,OUT1
+    ld      b,12            ; 12 outputs
+uoutb:
+    ld      a,(hl)          ; 7
+    add     a,0feh          ; 6 if hl other than zero or 1 is carry
+    jr      nc,uoutc
+    ld      (hl),1          ; 6 set to 1 if other than 0 or 1
+uoutc:
+    inc     hl              ; 6
+    djnz    uoutb           ; 9
+;
+    ld      c,DRV1          ; update the outputs
+    ld      b,7
+    ld      hl,OUT1
+    otimr                   ; store seven results
+    ld      c,DRV8
+    otim
+    otim                    ; store 2 more
+    ld      c,DRV10
+    otim
+    ld      c,RLY2
+    otim
+    ld      c,RLY1
+    otim
+; now get digital inputs
+    ld      a,(DREG2PREV)
+    ld      d,a
+    in0     a,(DREG2)
+    ld      (DREG2PREV),a   ; update previous
+    ld      e,a             ; e has current value
+    xor     a,d             ; a has differences
+    and     7fh             ; one bit does not count
+    ld      hl,DIGIN1       ; point to first bit
+    ld      b,7             ; 7 steps
+    ld      c,0
+uoutd:
+    bit     0,a
+    jr      nz,uoutd5
+    bit     0,e
+    jr      z,uoutd4
+    ld      (hl),1
+    jr      uoutd5
+uoutd4:
+    ld      (hl),c          ; zero
+uoutd5:
+    rra
+    rr e
+    inc     hl
+    djnz    uoutd
+; handle universal input thresholding
+    ld      hl,U1HIGH       ; point to first entry in table
+    ld      b,7             ; steps
+    xor     a               ; clc
+    inc     a               ;  mask==1
+    ex      af,af'          ; in alternate
+uoutd8:
+    di
+    ld      e,(hl)          ; U1HIGH least
+    inc     hl
+    ld      d,(hl)          ; U1HIGH most
+    ei
+    inc     hl
+; high is in de
+    xor     a
+    rr      d
+    rr      e
+    rla
+    rr      d
+    rr      e    
+    rla
+    cpl
+    di
+    out0    (UEXP),e            ; output upper 8
+    out0    (UEXPA),a           ; out next to least
+    rra
+    out0    (UEXPB),a           ; out least
+   ; 1-24-94 aoc , push af
+   ; 1-24-94 aoc , pop af
+   ; 1-24-94 aoc , push af
+   ; 1-24-94 aoc , pop af
+   ; 1-24-94 aoc , nop
+   ; 1-24-94 aoc , nop
+   ; 1-24-94 aoc , nop
+   ; 1-24-94 aoc , nop
+   ; 1-24-94 aoc , nop
+    call    udelay25            ; 1-24-94 aoc
+    in0     a,(UINP)
+    ei
+    ex      af,af'
+    ld      c,a
+    ex      af,af'
+    and     c                   ; mask out input
+    jr      z,uoutd9            ; go test low threshold
+    inc     hl
+    inc     hl                  ; skip past low threshold
+    ld      a,(hl)              ; get previous
+    ld      (hl),1              ; is replace previous
+    or      a                   ; fix from or 1
+    jr      z,uoutd12           ; if previous not also 1 do not update current
+    inc     hl
+    ld      (hl),1              ; update current
+    dec     hl
+    jr      uoutd12             ; continue loop
+; test low threshold
+uoutd9:
+    di
+    ld      e,(hl)
+    inc     hl
+    ld      d,(hl)
+    ei
+    inc     hl
+; low is in de
+    xor     a
+    rr      d
+    rr      e
+    rla
+    rr      d
+    rr      e
+    rla
+    cpl
+    di
+    out0    (UEXP),e            ; output upper 8
+    out0    (UEXPA),a           ; out next to least
+    rra
+    out0    (UEXPB),a           ; out least
+   ; 1-24-94 aoc, push af
+   ; 1-24-94 aoc, pop af
+   ; 1-24-94 aoc, push af
+   ; 1-24-94 aoc, pop af
+   ; 1-24-94 aoc, nop
+   ; 1-24-94 aoc, nop
+   ; 1-24-94 aoc, nop
+   ; 1-24-94 aoc, nop
+   ; 1-24-94 aoc, nop
+    call    udelay25            ; 1-24-94 aoc
+    in0     a,(UINP)
+    ei
+    ex      af,af'
+    ld      c,a
+    ex      af,af'
+    and     c                   ; mask out input
+    jr      nz,uoutd12          ; if not lower
+    ld      a,(hl)              ; get previous
+    ld      (hl),0              ; new previous
+    rra
+    jr      c,uoutd12           ; if previous not also zero
+    inc     hl
+    ld      (hl),0
+    dec     hl                  ; update value
+
+uoutd12:
+    ex      af,af'
+    rla                         ; for next time shift mask
+    ex      af,af'
+    inc     hl                  ; skip past parameters
+    inc     hl
+    djnz    uoutd8   ; loop
+
+    ret
+
+udelay25:            ; Delay mechanism to allow universal inputs
+    push    bc       ; EXP D/A op amps to settle.
+    ld      b,25     ; 25*9 -> 36 us for 6 mhz
+                     ;      -> 22 us for 9 mhz
+                     ; works okay at 9 mhz, increase if there is problem 
+                     ; with the universal input.
+udelay201:
+    djnz    udelay201
+    pop     bc
+    ret
+
+#endasm
+
+/*** BeginHeader up_digin */
+
+int up_digin(int chan);
+
+/*** Endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+up_digin                     <PK21XX.LIB>
+
+SYNTAX: int up_digin(int chan);
+
+KEYWORDS: input, digital
+
+DESCRIPTION: Reads value of digital input port.  "chan" is the digital 
+channel 1-7.
+
+RETURN VALUE: 1 or 0, depending on the input voltage to the port.
+END DESCRIPTION **********************************************************/
+nodebug int up_digin(int chan)
+{
+    if (chan < 1 || chan > 7) 
+        return -1;                // chan out of range
+    return IBIT(DREG2, chan -1);  // Read register and return state of bit.
+}
+
+/*** BeginHeader up_setout */
+
+int up_setout(int nout, int onoff);
+
+/*** Endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+up_setout                    <PK21XX.LIB>
+
+SYNTAX: int up_setout(int nout, int onoff);
+
+KEYWORDS: digital, output
+
+DESCRIPTION: Sets a digital output to 1 or 0.  "nout" is the digital output 
+channel number 1-12. (11 and 12 are reserved for RELAYS). "onoff" is the 
+binary output value for the specified channel: 1 => high; 0 => low.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug int up_setout(int nout, int onoff)
+{
+    auto char     k;
+
+    char ioadr[16] =
+    {
+         0xff, 0x99, 0x9a, 0x9b, 0x9c, 0x9d, 0x9e, 0x9f, 0xa4, 0xa5,
+         0x87, 0xa7, 0xa6, 0xff, 0xff, 0xff
+    };
+
+    if (nout < 1 || nout > 12) 
+        return -1;          // channel out of range
+
+    if (iff())          // If at least 1 interrupt is on
+    {
+        DI();
+        k = 1;          // change sequence to avoid conflict during INT call
+    }
+    else 
+        k = 0;          // No int's are on
+
+    nout = nout & 15;   // Mask for address domain.
+    *(&OUT1 - 1 + nout) = (onoff != 0); // Store image in virtual reg
+                        // tempout = 0;
+    
+    if (onoff)  outport(ioadr[nout], 0xff); // Init output
+    else outport(ioadr[nout], 0x00);
+    if (k) EI();
+}
+
+/*** Beginheader up_daccal, init_daccal */
+
+void up_daccal(int val);      
+void init_daccal();
+
+/*** Endheader */
+
+int DACCAL[11];
+
+/* START FUNCTION DESCRIPTION ********************************************
+init_daccal         <PK21XX.LIB>
+
+SYNTAX: void init_daccal();
+
+KEYWORDS: DAC, Calibration, Initialize.
+
+DESCRIPTION: Dummy function used as a host for GLOBAL_INIT of the DACCAL
+             calibration values for the RG's DAC output.
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug
+void init_daccal()
+{
+    char *p;
+    int k;
+#GLOBAL_INIT
+    {        
+        p = (char *) DACCAL;
+        for (k = 0x146; k < 0x15C; k++)
+            *p++= ee_rd(k);
+    }
+}
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+up_daccal                    <PK21XX.LIB>
+
+SYNTAX: void up_daccal(int val);
+
+KEYWORDS: analog, output
+
+DESCRIPTION: Outputs to dac with calibration value, 0-10000 mV
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+#asm nodebug fast
+up_daccal::
+    ld      de,5
+    add     hl,de           ;round
+    add     hl,hl           ; adjust scale to 1/2 millivolt
+    ld      de,(DACCAL)
+    xor     a
+    sbc     hl,de           ; offset
+    ld      de,DACCAL+21    ; point to 512 bit millivolt value
+    exx
+    ld      b,10
+    ld      hl,0
+    ld      de,512          ; bits to add
+daccal1:
+    exx
+    ex      de,hl
+    ld      b,(hl)
+    dec     hl
+    ld      c,(hl)
+    dec     hl
+    ex      de,hl
+    xor     a
+    sbc     hl,bc           ; trial subtraction
+    jp      m,daccal3       ; if not ok
+    exx
+    add     hl,de
+    or      a
+    rr      d
+    rr      e
+    djnz    daccal1
+    jr      daccal8  ; done
+daccal3:
+    add     hl,bc ; reverse
+    exx
+    or      a
+    rr      d
+    rr      e
+    djnz    daccal1
+daccal8:
+    push    hl
+    call    up_dacout      ; output lower two bits to extend DAC to 10 bits
+    pop     hl
+    ret
+#endasm
+
+
+/*** Beginheader up_dacout ***/
+
+void up_dacout(int val);     // 1-21-94, aoc
+
+/*** Endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+up_dacout                    <PK21XX.LIB>
+
+SYNTAX: void up_dacout(int val);
+
+KEYWORDS: analog, output
+
+DESCRIPTION: Output uncalibrated D/A value to channel DAC.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+#asm nodebug fast
+up_dacout::       ; dacout(int val) val=1023 full scale==10 volts
+    ld      a,i
+    ex      af,af'              ; save interrupt state
+    xor     a   
+    rr      h       
+    rr      l
+    rla
+    rr      h
+    rr      l
+    rla
+    xor     a,3
+    di
+    out0    (DAC),l
+    out0    (DACA),a
+    rra
+    out0    (DACB),a
+    ex      af,af'
+    ret     po ; interrupts were off
+    ei
+    ret
+#endasm
+
+
+/*** Beginheader up_expout ***/
+
+void up_expout(int val);  
+
+/*** Endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+up_expout                    <PK21XX.LIB>
+
+SYNTAX: void up_expout(int val);
+
+KEYWORDS: analog, output
+
+DESCRIPTION: Outputs uncalibrated D/A value to channel EXP.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+#asm nodebug fast
+up_expout::       ; dacout(int val) val=1023 full scale==10 volts
+    xor     a
+    rr      h
+    rr      l
+    rla
+    rr      h
+    rr      l
+    rla
+    xor     a,3
+    out0    (UEXP),l
+    out0    (UEXPA),a
+    rra
+    out0    (UEXPB),a
+    ret
+#endasm
+
+
+/*** Beginheader up_adtest */
+
+int up_adtest(int chan, int testval);
+
+/*** Endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+up_adtest                    <PK21XX.LIB>
+
+SYNTAX: int up_adtest(int chan, int testval);
+
+KEYWORDS: input
+
+DESCRIPTION: Compares voltage input at universal input channel, "chan," 
+to "testval."
+
+RETURN VALUE: 1, if input voltage is greater than testval; else 0.
+END DESCRIPTION **********************************************************/
+#asm nodebug fast
+chanss:  db 0,1,2,4,8,16,32,64,128
+up_adtest::
+    ld      de,chanss
+    add     hl,de       ; hl points to mask for channel
+    ld      e,(hl)      ; save in e
+    ld      hl,4
+    add     hl,sp
+    ld      a,(hl)      ; get testval least
+    inc     hl
+    ld      h,(hl)
+    ld      l,a         ; test val least
+    ld      a,i         ; test and save interrupt status
+    ex      af,af'
+    rr      h
+    rr      l
+    rl      a           ; first least
+    rr      h
+    rr      l
+    rl      d                   ; 2nd
+    xor     1
+    di
+    out0    (UEXP),l            ; next 8 bits
+    out0    (UEXPB),a           ;least
+    ld      a,1
+    xor     d
+    out0    (UEXPA),a           ; second least
+    call    delay15
+    in0     a,(UINP)            ; get result
+    in0     d,(DREG2)
+    ex      af,af'
+    jp      po,adtest1
+    ei
+adtest1:
+    ex      af,af'
+    and     e
+    and     7fh
+    ld      b,a
+    ld      a,d
+    and     80h
+    and     e
+    or      b
+    ld      hl,0
+    jr      nz,adtest2
+    inc     l
+adtest2:
+    ret
+#endasm
+
+/*** Beginheader up_adcal,up_docal, up_uncal, init_expcal */
+
+int up_adcal(int chan);      // returns calibrated A/D reading
+int up_docal(int raw_value); // returns calibrated from uncalibrated
+int up_uncal(int val);      // Returns raw value for internal dac given
+                            // calibrated value in millivolts units
+void init_expcal();
+extern int EXPCAL[11];
+/*** Endheader */
+
+int EXPCAL[11];
+void init_expcal()
+{
+    char *p;
+    int k;
+#GLOBAL_INIT
+    {        
+        p = (char *) EXPCAL;
+        for (k = 0x130; k < 0x146; k++)
+            *p++= ee_rd(k);
+    }
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+up_uncal                     <PK21XX.LIB>
+
+SYNTAX: int up_uncal(int val);
+
+KEYWORDS: analog, input
+
+DESCRIPTION: Returns uncalibrated integer (0-1023), given calibrated 
+D/A output value in millivolts. 
+
+RETURN VALUE: Integer equivalent of millivolt input value.
+END DESCRIPTION **********************************************************/
+#asm nodebug fast
+up_uncal::
+    ld      de,5
+    add     hl,de               ;round
+    add     hl,hl               ; adjust scale to 1/2 millivolt
+    ld      de,(EXPCAL)
+    xor     a
+    sbc     hl,de ; offset
+    ld      de,EXPCAL+21        ; point to 512 bit millivolt value
+    exx
+    ld      b,10
+    ld      hl,0
+    ld      de,512              ; bits to add
+daccal1:
+    exx
+    ex      de,hl
+    ld      b,(hl)
+    dec     hl
+    ld      c,(hl)
+    dec     hl
+    ex      de,hl
+    xor     a
+    sbc     hl,bc               ; trial subtraction
+    jp      m,daccal3           ; if not ok
+    exx
+    add     hl,de
+    or      a
+    rr      d
+    rr      e
+    djnz    daccal1
+    jr      daccal8             ; done
+daccal3:
+    add     hl,bc               ; revers
+    exx
+    or      a
+    rr      d
+    rr      e
+    djnz    daccal1
+daccal8:
+    ret
+#endasm
+
+/* START FUNCTION DESCRIPTION ********************************************
+up_docal                     <PK21XX.LIB>
+
+SYNTAX: int up_docal(int rawval);
+
+KEYWORDS: input, calibrate, analog
+
+DESCRIPTION: Converts rawval to its calibrated value as A/D input.
+
+RETURN VALUE: Calibrated value.
+END DESCRIPTION **********************************************************/
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+up_adcal                     <PK21XX.LIB>
+
+SYNTAX: int up_adcal(int chan);
+
+KEYWORDS: input, analog
+
+DESCRIPTION: Reads specified universal input channels (1-7).
+
+RETURN VALUE: Calibrated A/D value (0-10000mv).
+END DESCRIPTION **********************************************************/
+#asm nodebug anymem
+up_docal::      ; entry to calibrate only up_docal(int uncalvalue)
+    push    hl
+    jr      adcal01     ; just do conversion, no reading of channel
+
+up_adcal::
+    push    hl          ; channel, read universal input channel
+    call    up_adrd     ; raw value is returned
+adcal01:                ; convert raw value to calibrated value.
+    pop     de
+; hl has a/d value
+    ld      c,l         ; save least 8 bits in c
+    ld      a,h         ; most 2 bits in af'
+    ex      af,af'
+    ld      b,10        ; number of multiply steps
+    ld      hl,EXPCAL   ; point to calibration table
+    ld      e,(hl)
+    inc     hl
+    ld      d,(hl)
+    inc     hl          ; offset loaded
+adcal1:
+    ex      af,af'
+    rra
+    rr      c
+    jr      c,adcal3
+    ex      af,af'
+    inc     hl
+    inc     hl          ;skip this one
+    jr      adcal5
+adcal3:
+    ex      af,af'
+    ld      a,e         ; add bit to sum
+    add     a,(hl)
+    inc     hl
+    ld      e,a
+    ld      a,d
+    adc     a,(hl)
+    inc     hl
+    ld      d,a
+adcal5:
+    djnz    adcal1      ;loop 10 times
+    ex      de,hl       ; put result in hl
+    xor     a
+    sra     h
+    rr      l           ; align correctly
+    ret
+#endasm
+
+/*** Beginheader up_adrd */
+
+int up_adrd(int chan);
+
+/*** Endheader */
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+up_adrd                      <PK21XX.LIB>
+
+SYNTAX: int up_adrd(int chan);
+
+KEYWORDS: input
+
+DESCRIPTION: Read universal input channel 1-7.
+
+RETURN VALUE: Raw value (ADC output) from specified channel.
+END DESCRIPTION **********************************************************/
+#asm nodebug anymem
+; register assignments
+; bc - points to UEXP the 8 bits of dac
+; e' - mask for particular channel response bit chan 1-7
+; d' - make 080h if channel is 8
+; d - the accumulated result
+chanss:  db 0,1,2,4,8,16,32,64,128
+up_adrd::
+    ld      de,chanss
+    add     hl,de           ; hl points to mask for channel, 1-8
+    ld      a,(hl)          ; save in e'
+    exx
+    ld      e,a
+    res     7,e             ; e must not have most
+    and     80h
+    ld      d,a             ; mask for channel 8
+    exx
+; branch 2 ways depending if interrupts on or off
+;
+    ld      a,i             ; check interrupts
+    jp      pe,adrdon       ; if interrupts on jump
+
+; here interrupts off case
+
+    ld      h,1            ; register for least bits
+    ld      bc,UEXP        ; set up bc
+; begin successive approx
+    ld      d,128
+
+    out     (c),d
+    out0    (UEXPA),h       ; init the least bits
+    out0    (UEXPB),h
+    call    delay8
+    call    delay4
+
+    exx
+    in0     a,(DREG2)       ; bit 7 is high gain, chan 8
+    and     a,d
+    ld      b,a
+    in0     a,(UINP)        ; bits 0-6 channels 1-7
+    and     e
+    or      b
+    exx
+
+    jr      nz,llc64
+    ld      d,0             ; don't include the 512 bit
+llc64:
+    ld      a,64
+    or      d
+
+    out     (c),a           ; 128 bit and 64 bit
+    out0    (UEXPA),h       ; init the least bits
+    out0    (UEXPB),h
+    ld      l,a             ; stash in l
+    call    delay8
+
+    exx
+    in0     a,(DREG2)    ; bit 7 is high gain, chan 8
+    and     a,d
+    ld      b,a
+    in0     a,(UINP)      ; bits 0-6 channels 1-7
+    and     e
+    or      b
+    exx
+
+    jr      z,llc32
+    ld      d,l             ; keep the bit
+llc32:
+    ld      a,32
+    or      d
+
+    out     (c),a           ; 128 bit and 64 bit
+    out0    (UEXPA),h       ; init the least bits
+    out0    (UEXPB),h
+    ld      l,a             ; stash in l
+    call    delay4
+    exx
+    in0     a,(DREG2)       ; bit 7 is high gain, chan 8
+    and     a,d
+    ld      b,a
+    in0     a,(UINP)        ; bits 0-6 channels 1-7
+    and     e
+    or      b
+    exx
+
+    jr      z,llc16
+    ld      d,l             ; keep the bit
+llc16:
+    ld      a,16
+    or      d
+
+    out     (c),a           ; 128 bit and 64 bit
+    out0    (UEXPA),h       ; init the least bits
+    out0    (UEXPB),h
+    ld      l,a             ; stash in l
+    call    delay4
+    exx
+    in0     a,(DREG2)       ; bit 7 is high gain, chan 8
+    and     a,d
+    ld      b,a
+    in0     a,(UINP)        ; bits 0-6 channels 1-7
+    and     e
+    or      b
+    exx
+
+    jr      z,llc08
+    ld      d,l             ; keep the bit
+llc08:
+    ld      a,8
+    or      d
+
+    out     (c),a           ; 128 bit and 64 bit
+    out0    (UEXPA),h       ; init the least bits
+    out0    (UEXPB),h
+    ld      l,a             ; stash in l
+
+    exx
+    in0     a,(DREG2)       ; bit 7 is high gain, chan 8
+    and     a,d
+    ld      b,a
+    in0     a,(UINP)        ; bits 0-6 channels 1-7
+    and     e
+    or      b
+    exx
+    jr      z,llc04
+    ld      d,l             ; keep the bit
+llc04:
+    ld      a,04
+    or      d
+
+    out     (c),a               ; 128 bit and 64 bit
+    out0    (UEXPA),h           ; init the least bits
+    out0    (UEXPB),h
+    ld      l,a                 ; stash in l
+    exx
+    in0     a,(DREG2)           ; bit 7 is high gain, chan 8
+    and     a,d
+    ld      b,a
+    in0     a,(UINP)            ; bits 0-6 channels 1-7
+    and     e
+    or      b
+    exx
+
+    jr      z,llc02
+    ld      d,l         ; keep the bit
+llc02:
+    ld      a,02
+    or      d
+
+    out     (c),a           ; 128 bit and 64 bit
+    out0    (UEXPA),h       ; init the least bits
+    out0    (UEXPB),h
+    ld      l,a             ; stash in l
+    exx
+    in0     a,(DREG2)       ; bit 7 is high gain, chan 8
+    and     a,d
+    ld      b,a
+    in0     a,(UINP)        ; bits 0-6 channels 1-7
+    and     e
+    or      b
+    exx
+
+    jr      z,llc01
+    ld      d,l                 ; keep the bit
+llc01:
+    ld      a,1
+    or      d
+
+    out     (c),a               ; 128 bit and 64 bit
+    out0    (UEXPA),h           ; init the least bits
+    out0    (UEXPB),h
+    ld      l,a                 ; stash in l
+    exx
+    in0     a,(DREG2)           ; bit 7 is high gain, chan 8
+    and     a,d
+    ld      b,a
+    in0     a,(UINP)            ; bits 0-6 channels 1-7
+    and     e
+    or      b
+    exx
+
+    jr      z,llc00
+    ld      d,l                 ; keep the bit
+llc00:
+    xor     a
+    ld      l,d
+    ld      h,a
+    rl      l
+    rl      h
+    rl      l
+    rl      h                   ; align correctly
+
+    out     (c),d               ; output the actual value so far
+    out0    (UEXPA),a
+    inc     a
+    out0    (UEXPB),a           ; set to 1
+    exx
+    in0     a,(DREG2)           ; bit 7 is high gain, chan 8
+    and     a,d
+    ld      b,a
+    in0     a,(UINP)            ; bits 0-6 channels 1-7
+    and     e
+    or      b
+    exx
+
+    jr      z,llc3
+; keep the bit
+    set     1,l
+llc3:
+    ld      a,2
+    xor     l
+
+    out     (c),d               ; set upper 8 bits
+    out0    (UEXPB),a           ; set least bit
+    rra
+    out0    (UEXPA),a           ; set next to least
+    exx
+    in0     a,(DREG2)           ; bit 7 is high gain, chan 8
+    and     a,d
+    ld      b,a
+    in0     a,(UINP)            ; bits 0-6 channels 1-7
+    and     e
+    or      b
+    exx
+
+    jr      z,llc4
+; keep the bit
+    set     0,l
+llc4:
+    ret
+
+
+; here for interrupts on case
+adrdon:
+    ld      h,1                 ; register for least bits
+    ld      bc,UEXP             ; set up bc
+; begin successive approx
+    ld      d,128
+
+    di                          ; interrupts off
+    out     (c),d
+    out0    (UEXPA),h           ; init the least bits
+    out0    (UEXPB),h
+    call    delay15
+    exx
+    in0     a,(DREG2)           ; bit 7 is high gain, chan 8
+    and     a,d
+    ld      b,a
+    in0     a,(UINP)            ; bits 0-6 channels 1-7
+    ei
+    and     e
+    or      b
+    exx
+    jr      nz,lllc64
+    ld      d,0                 ; don't include the 512 bit
+lllc64:
+    ld      a,64
+    or      d
+
+    di                          ; interrupts off
+    out     (c),a               ; 128 bit and 64 bit
+    out0    (UEXPA),h           ; init the least bits
+    out0    (UEXPB),h
+    call    delay15
+    ld      l,a                 ; stash in l
+    exx
+    in0     a,(DREG2)           ; bit 7 is high gain, chan 8
+    and     a,d
+    ld      b,a
+    in0     a,(UINP)            ; bits 0-6 channels 1-7
+    ei
+    and     e
+    or      b
+    exx
+    jr      z,lllc32
+    ld      d,l                 ; keep the bit
+lllc32:
+    ld      a,32
+    or      d
+
+    di                          ; interrupts off
+    out     (c),a               ; 128 bit and 64 bit
+    out0    (UEXPA),h           ; init the least bits
+    out0    (UEXPB),h
+    ld      l,a                 ; stash in l
+    call    delay15
+    exx
+    in0     a,(DREG2)           ; bit 7 is high gain, chan 8
+    and     a,d
+    ld      b,a
+    in0     a,(UINP)            ; bits 0-6 channels 1-7
+    ei
+    and     e
+    or      b
+    exx
+    jr      z,lllc16
+    ld      d,l                 ; keep the bit
+lllc16:
+    ld      a,16
+    or      d
+
+    di                          ; interrupts off
+    out     (c),a               ; 128 bit and 64 bit
+    out0    (UEXPA),h           ; init the least bits
+    out0    (UEXPB),h
+    ld      l,a                 ; stash in l
+    call    delay15
+    exx
+    in0     a,(DREG2)           ; bit 7 is high gain, chan 8
+    and     a,d
+    ld      b,a
+    in0     a,(UINP)            ; bits 0-6 channels 1-7
+    ei
+    and     e
+    or      b
+    exx
+    jr      z,lllc08
+    ld      d,l                 ; keep the bit
+lllc08:
+    ld      a,8
+    or      d
+
+    di                          ; interrupts off
+    out     (c),a               ; 128 bit and 64 bit
+    out0    (UEXPA),h           ; init the least bits
+    out0    (UEXPB),h
+    ld      l,a                 ; stash in l
+    call    delay15
+    exx
+    in0     a,(DREG2)           ; bit 7 is high gain, chan 8
+    and     a,d
+    ld      b,a
+    in0     a,(UINP)        ; bits 0-6 channels 1-7
+    ei
+    and     e
+    or      b
+    exx
+    jr      z,lllc04
+    ld      d,l             ; keep the bit
+lllc04:
+    ld      a,04
+    or      d
+
+    di                      ; interrupts off
+    out     (c),a           ; 128 bit and 64 bit
+    out0    (UEXPA),h       ; init the least bits
+    out0    (UEXPB),h
+    ld      l,a             ; stash in l
+    call    delay15
+    exx
+    in0     a,(DREG2)       ; bit 7 is high gain, chan 8
+    and     a,d
+    ld      b,a
+    in0     a,(UINP)      ; bits 0-6 channels 1-7
+    ei
+    and     e
+    or      b
+    exx
+    jr      z,lllc02
+    ld      d,l             ; keep the bit
+lllc02:
+    ld      a,02
+    or      d
+
+    di                      ; interrupts off
+    out     (c),a           ; 128 bit and 64 bit
+    out0    (UEXPA),h       ; init the least bits
+    out0    (UEXPB),h
+    ld      l,a             ; stash in l
+    call    delay15
+    exx
+    in0     a,(DREG2)       ; bit 7 is high gain, chan 8
+    and     a,d
+    ld      b,a
+    in0     a,(UINP)        ;  bits 0-6 channels 1-7
+    ei
+    and     e
+    or      b
+    exx
+    jr      z,lllc01
+    ld      d,l             ; keep the bit
+lllc01:
+    ld      a,1
+    or      d
+
+    di                      ; interrupts off
+    out     (c),a           ; 128 bit and 64 bit
+    out0    (UEXPA),h       ; init the least bits
+    out0    (UEXPB),h
+    ld      l,a             ; stash in l
+    call    delay15
+    exx
+    in0     a,(DREG2)       ; bit 7 is high gain, chan 8
+    and     a,d
+    ld      b,a
+    in0     a,(UINP)        ; bits 0-6 channels 1-7
+    ei
+    and     e
+    or      b
+    exx
+    jr      z,lllc00
+    ld      d,l             ; keep the bit
+lllc00:
+    xor     a
+    ld      l,d
+    ld      h,a
+    rl      l
+    rl      h
+    rl      l
+    rl      h               ; align correctly
+
+    di
+    out     (c),d           ; output the actual value so far
+    out0    (UEXPA),a
+    inc     a
+    out0    (UEXPB),a       ; set to 1
+    call    delay15
+    exx
+    in0     a,(DREG2)       ; bit 7 is high gain, chan 8
+    and     a,d
+    ld      b,a
+    in0     a,(UINP)        ; bits 0-6 channels 1-7
+    ei
+    and     e
+    or      b
+    exx
+    jr      z,lllc3
+; keep the bit
+    set     1,l
+lllc3:
+    ld      a,2
+    xor     l
+
+    di
+    out     (c),d           ; set upper 8 bits
+    out0    (UEXPB),a       ; set least bit
+    rra
+    out0    (UEXPA),a       ; set next to least
+    call    delay15
+    exx
+    in0     a,(DREG2)       ; bit 7 is high gain, chan 8
+    and     a,d
+    ld      b,a
+    in0     a,(UINP)        ; bits 0-6 channels 1-7
+    ei
+    and     e
+    or      b
+    exx
+    jr      z,lllc4
+; keep the bit
+    set     0,l
+lllc4:
+    ret
+
+#endasm
+
+/*** beginheader delay15, delay8, delay4 */
+
+/*** Endheader */
+
+#asm nodebug fast
+delay15::                        ; delay mechanism for the universal inputs
+    push    bc
+    ld      b,15    ; 15 * 9 - 22 us for 15 counts
+delay201:
+    djnz    delay201
+    pop     bc
+    ret
+delay8::            ; approximately 8 us delay
+    push    af
+    pop     af
+delay4::            ; approximately 4 us delay
+    ret      ;
+
+#endasm
+
+
+
+/*** Beginheader up_dac420 */
+
+void up_dac420(int current); 
+
+/*** Endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+up_dac420                    <PK21XX.LIB>
+
+SYNTAX: void up_dac420(int current);
+
+KEYWORDS: output, current
+
+DESCRIPTION: Outputs 4-20 mil at D/A channel DAC.  Hardware must be 
+configured for current loop operation. 4000 - 20000 is the current range. 
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+useix nodebug void up_dac420(int current)
+{
+    float  f1, f2;
+    int    k, j, n;
+
+#GLOBAL_INIT
+    {
+        // f1 is proportional constant.
+        f1 = ((k = eei_rd(0x15e)) - eei_rd(0x15c)) / 8000.; 
+        f2 = k / 1000. - f1 * 10.; // Offset
+        f2 = - f2 / f1;
+        f1 = 1. / f1;
+        k = f2 * 1000.;
+        j = 65536. *f1;
+    }
+#asm
+    ld      hl,(j)
+    ld      e,(ix+current)          ; least
+    ld      d,h                     ; most
+    ld      c,h                     ; most
+    ld      l,(ix+current+1)        ; most
+    ld      b,l                     ; bc most most
+    mlt     bc
+    mlt     de
+    mlt     hl
+    add     hl,de                   ; a1*b2+a2*b1
+    ld      a,h
+    adc     a,c
+    ld      l,a
+    ld      a,b
+    adc     a,0
+    ld      h,a                     ; hl has product
+    ld      de,(k)
+    add     hl,de                   ; voltage setting
+    push    hl
+    call    up_daccal
+    pop     bc
+#endasm
+
+}
+
+
+/*** Beginheader up_in420 */
+
+int up_in420(void);
+
+/*** Endheader */
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+up_in420                     <PK21XX.LIB>
+
+SYNTAX: int up_in420(void);
+
+KEYWORDS: input, current
+
+DESCRIPTION: Reads universal input channel 6 as a 4-20 mil input. 
+Hardware must be configured for current loop operation..
+
+RETURN VALUE: Returns 4000 - 20000 for 4-20 mil input range.
+END DESCRIPTION **********************************************************/
+nodebug int up_in420(void)
+{
+    unsigned int k, j;
+
+#GLOBAL_INIT
+    {
+        // 2x resistance for 4-20 ma load in EEPROM (word) addr, 0x128.
+        k = (int) (32768000L / eei_rd(0x128));
+    }
+#asm
+    ld      hl,6
+    push    hl
+    call    up_adcal
+    pop     bc
+    add     hl,hl               ; double, max 40000
+    ld      a,h
+    or      a
+    jp      p,in41
+    ld      hl,0                ; if negative, force to zero
+in41:
+    ld      de,(k)
+    ld      c,d
+    ld      b,h
+    ld      a,l
+    ld      l,e
+    ld      e,a
+    mlt     bc
+    mlt     de
+    mlt     hl
+    add     hl,de           ; a1*b2+a2*b1
+    ld      a,h
+    adc     a,c
+    ld      l,a
+    ld      a,b
+    adc     a,0
+    ld      h,a             ; hl has product
+    add      hl,hl          ; scale by 4
+    ld      (j),hl
+#endasm
+    return j;
+}
+
+/*** Beginheader up_higain */
+
+float up_higain(int mode);   // H7 not jumpered
+
+/*** Endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+up_higain                    <PK21XX.LIB>
+
+SYNTAX: float up_higain(int mode);
+
+KEYWORDS: read, analog
+
+DESCRIPTION: Reads high gain channel with H7 not jumpered.  If H7 is 
+jumpered, use constant a1 (for the H7 unjumpered case) to compute the 
+negative gain as b1 = a1 - 1; NOTE: Since AD+ and AD- are read as universal 
+input channels, this function and the hardware cannot read negative 
+voltages.
+
+RETURN VALUE: If Mode = 1, returns AD+ (0-1 volt); assumes AD- is grounded.
+If Mode = 2, returns AD+ - AD- (0-1volt).  If Mode = 3, returns AD- (0-10 
+volt).  If Mode = undefined, return -100.
+END DESCRIPTION **********************************************************/
+nodebug float up_higain(int mode)
+{
+    static int k;
+    static float _a0, _a1, _c1, _d1, _d2;
+
+#GLOBAL_INIT
+    {
+        _a1 = eei_rd(0x166) / 200.0;
+        _a0 = 0.00001 * eei_rd(0x164); // a0 scaled by 1/1000 then by 1/100
+        _c1 = 0.001 / _a1;
+        _d1 = 0.001 / (_a1 - 1.0);
+        _d2 = _a0 * _a1 / (_a1 - 1.0);
+    }
+    switch (mode)
+    {
+        case 1:
+            k = up_adcal(7);
+            if (k < 10000)
+                return (_c1 * k - _a0);
+            else
+                return (0.001 * up_adcal(8));
+        case 2:
+            k = up_adcal(7);
+            if (k < 10000)
+                return (_d1 * (k - up_adcal(8)) - _d2);
+            else
+                return (0.001 * up_adcal(8));
+        case 3:
+            return (0.001 * up_adcal(8));
+        default:
+            return -100.00;
+    }
+}
+
+
+/*** BeginHeader sysIsRunWithDC */
+
+int sysIsRunWithDC();
+extern char OPMODE;
+
+/*** EndHeader */
+
+int sysIsRunWithDC() {
+	return !(OPMODE & 0xf0);
+}
+
+/*** BeginHeader _sysZIfPwrFail */
+
+/*** EndHeader */
+
+#asm
+_sysZIfPwrFail::
+			ld		bc,DREG1
+			in    a, (c)       ; read NMI bit
+			bit   1, a              ;
+			ret
+#endasm
+
+/*** BeginHeader lc_beepcount, lc_beepflag */
+
+extern int lc_beepcount;
+extern char lc_beepflag;
+
+/*** EndHeader */
+
+int lc_beepcount;
+char lc_beepflag;
+
+#funcchain _GLOBAL_INIT _lcbeepinit
+void _lcbeepinit() {
+	lc_beepcount = 0;
+	lc_beepflag = 0;
+}
+
+#funcchain _sys_390 lcBeep390
+#asm
+lcBeep390::
+   ld    hl,(lc_beepcount)
+   ld    a,l
+   or    h
+   jr    z,timer2a00
+   dec   hl
+   ld    (lc_beepcount),hl
+; least of beep count is sent to beeper
+   ld    bc,(lc_beepvol)   ; address of BEEPH or BEEPL
+   ld a,c
+   rlca                    ; valid addresses are 0x83 and 0x98
+   jr nc,timer2a00         ; if not valid address with 0x80 (if quieted)
+   and l
+   out   (c),a             ; output to beeper
+
+timer2a00:
+		ld  hl,lc_beepflag
+		inc (hl)
+		bit 0,(hl)
+	ret
+#endasm
+
+/*** BeginHeader brdChkKB,brdQuitChkKB, brdResKB */
+
+void brdChkKB();
+void brdQuitChkKB();
+void brdResKB();
+
+/*** EndHeader */
+
+#asm
+brdChkKB::
+;	 ei             ; interrupts may be on if no delay more 16x
+	
+;11-4-94,aoc   
+#ifdef KEY4x6    
+	 ld      a, 1
+	 ld      (SKEYR1), a
+	 ld      (SKEYR2), a
+	 ld      (SKEYR3), a
+	 ld      (SKEYR4), a      
+	 out0    (KEYR1), a
+	 out0    (KEYR2), a
+	 out0    (KEYR3), a
+	 out0    (KEYR4), a
+	 in0     a, (DREG1)
+	 and     0fch
+	 cp      0fch
+	 ret     z
+#else
+	 
+	 ld      a,1
+	 ld      (SKEYR1),a
+	 ld      (SKEYR2),a
+	 out0    (KEYR1),a
+	 out0    (KEYR2),a           ; lower 2 rows
+	 xor     a
+	 ld      (SKEYR3),a
+	 out0    (KEYR3),a           ; take jumper out of contention
+	 in0     a,(DREG1)           ; read keypad columns
+	 and     0fch                ; mask 6 keypad colums
+	 cp      0fch
+	 ret      z         ; jump if no codes (all high)
+#endif
+
+
+;
+;kbtest1:
+	 ld      a,0
+	 ld      (SKEYR2),a
+	 out0    (KEYR2),a
+
+;11-4-94,aoc
+#ifdef KEY4x6
+	 ld      (SKEYR3), a
+	 out0    (KEYR3), a
+	 ld      (SKEYR4), a
+	 out0    (KEYR4), a
+#endif
+
+
+;   ld    a,1
+;   out0  (KEYR1),a         ; enable key row 1
+	 ld      h,0             ; row
+	 in0     a,(DREG1)
+	 cpl                     ; make 1 key depressed
+	 and     0fch            ; mask to 6 keys
+	 ld      l,a
+	 ret     nz      ; if key in first row depressed
+	
+	 xor     a
+	 ld      (SKEYR1),a
+	 out0    (KEYR1),a
+	 inc     a     ; 1
+	 ld      (SKEYR2),a
+	 out0    (KEYR2),a   ; lower row 2
+	 in0     a,(DREG1)
+	 cpl
+	 and     0fch
+	 ld      l,a
+	 ld      h,1            ; row
+	 ret     nz
+
+;11-4-94,aoc
+#ifdef KEY4x6
+	 xor     a
+	 ld      (SKEYR2),a
+	 out0    (KEYR2),a
+	 inc     a     ; 1
+	 ld      (SKEYR3),a
+	 out0    (KEYR3),a   ; lower row 3
+	 in0     a,(DREG1)
+	 cpl
+	 and     0fch
+	 ld      l,a
+	 ld      h,2            ; row
+	 ret     nz
+	 
+	 xor     a
+	 ld      (SKEYR3),a
+	 out0    (KEYR3),a
+	 inc     a     ; 1
+	 ld      (SKEYR4),a
+	 out0    (KEYR4),a   ; lower row 4
+	 in0     a,(DREG1)
+	 cpl
+	 and     0fch
+	 ld      l,a
+	 ld      h,3            ; row
+#endif
+	 ret
+
+brdQuitChkKB::
+	 ld      a,0
+	 ld      (SKEYR1),a
+	 ld      (SKEYR2),a
+	 out0    (KEYR1),a           ; remove drive from rows
+	 out0    (KEYR2),a
+
+;11-4-94,aoc
+#ifdef KEY4x6
+	 ld      (SKEYR3), a
+	 ld      (SKEYR4), a
+	 out0    (KEYR3), a
+	 out0    (KEYR4), a
+#endif
+	ret
+
+brdResKB::
+	 ld      a,0
+	 ld      (SKEYR1),a
+	 ld      (SKEYR2),a
+	 out0    (KEYR1),a       ; remove drive from rows
+	 out0    (KEYR2),a
+
+;11-4-94,aoc
+#ifdef KEY4x6
+	 ld      (SKEYR3), a
+	 ld      (SKEYR4), a
+	 out0    (KEYR3), a
+	 out0    (KEYR4), a
+#endif
+	ret
+
+#endasm
+
+

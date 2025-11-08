@@ -1,0 +1,969 @@
+/*
+
+EasyIO library: maps all devices to the same universal maps. Five
+maps in total: Digital out, Digital in, Analog out, Analog in and
+Analog Calibration.
+
+*/
+
+/*** BeginHeader */
+
+#ifndef __EZIO_LIB
+#define __EZIO_LIB
+
+#use eziocmmn.lib
+
+/*** EndHeader */
+
+/*** BeginHeader */
+
+//	the following are flags for initialization.
+#if EIOUSEPLC
+
+#use eziopbdv.lib
+
+#endif
+
+#ifndef EIO_NODEV
+#ifdef ZIO_NODEV
+#define EIO_NODEV ZIO_NODEV
+#else
+#define EIO_NODEV 0x02
+#endif
+#endif
+//#define EIO_NODEV 
+
+#define	STAR_DIGIN		0
+#define	STAR_DIGOUT		0
+#define	STAR_DIGINDB	16
+#define	MG_DIGIN			0
+#define	MG_DIGOUT		0
+#define	MG_DIGINDB		16
+#define	MG_IOCTRL		16
+#define	MG2_DIGIN		0
+#define	MG2_DIGOUT		0
+#define	MG2_DIGINDB		32
+#define	MG2_IOCTRL		32
+#define	MG2_ANAIN		0
+#define	MG2_ANAINRAW	4
+
+#define	UIO0_DIGIN			(EIO_DI_UIO_B+(0<<EIO_DI_UIO_BS))
+#define	UIO0_DIGINDB		(EIO_DI_UIODB_B+(0<<EIO_DI_UIODB_BS))
+#define	UIO0_DIGOUT			(EIO_DO_UIO_B+(0<<EIO_DO_UIO_BS))
+#define	UIO1_DIGIN			(EIO_DI_UIO_B+(1<<EIO_DI_UIO_BS))
+#define	UIO1_DIGINDB		(EIO_DI_UIODB_B+(1<<EIO_DI_UIODB_BS))
+#define	UIO1_DIGOUT			(EIO_DO_UIO_B+(1<<EIO_DO_UIO_BS))
+
+#define	RELAY6_0				(EIO_DO_RELAY6_B+(0<<EIO_DO_RELAY6_BS))
+#define	RELAY6_1				(EIO_DO_RELAY6_B+(1<<EIO_DO_RELAY6_BS))
+#define	RELAY6_2				(EIO_DO_RELAY6_B+(2<<EIO_DO_RELAY6_BS))
+#define	RELAY6_3				(EIO_DO_RELAY6_B+(3<<EIO_DO_RELAY6_BS))
+#define	RELAY6_4				(EIO_DO_RELAY6_B+(4<<EIO_DO_RELAY6_BS))
+#define	RELAY6_5				(EIO_DO_RELAY6_B+(5<<EIO_DO_RELAY6_BS))
+#define	RELAY6_6				(EIO_DO_RELAY6_B+(6<<EIO_DO_RELAY6_BS))
+#define	RELAY6_7				(EIO_DO_RELAY6_B+(7<<EIO_DO_RELAY6_BS))
+
+#define	DAC_0					(EIO_AO_XP86_B+(0<<EIO_AO_XP86_BS))
+#define	DAC_1					(EIO_AO_XP86_B+(1<<EIO_AO_XP86_BS))
+#define	DAC_2					(EIO_AO_XP86_B+(2<<EIO_AO_XP86_BS))
+#define	DAC_3					(EIO_AO_XP86_B+(3<<EIO_AO_XP86_BS))
+#define	DAC_4					(EIO_AO_XP86_B+(4<<EIO_AO_XP86_BS))
+#define	DAC_5					(EIO_AO_XP86_B+(5<<EIO_AO_XP86_BS))
+#define	DAC_6					(EIO_AO_XP86_B+(6<<EIO_AO_XP86_BS))
+#define	DAC_7					(EIO_AO_XP86_B+(7<<EIO_AO_XP86_BS))
+
+#define	ADC_0					(EIO_AI_ADC4_B+(0<<EIO_AI_ADC4_BS))
+#define	ADC_1					(EIO_AI_ADC4_B+(1<<EIO_AI_ADC4_BS))
+#define	ADC_2					(EIO_AI_ADC4_B+(2<<EIO_AI_ADC4_BS))
+#define	ADC_3					(EIO_AI_ADC4_B+(3<<EIO_AI_ADC4_BS))
+
+#define	ADC_0_RAW			(EIO_AI_ADC4R_B+(0<<EIO_AI_ADC4R_BS))
+#define	ADC_1_RAW			(EIO_AI_ADC4R_B+(1<<EIO_AI_ADC4R_BS))
+#define	ADC_2_RAW			(EIO_AI_ADC4R_B+(2<<EIO_AI_ADC4R_BS))
+#define	ADC_3_RAW			(EIO_AI_ADC4R_B+(3<<EIO_AI_ADC4R_BS))
+
+#define	PIN01					0
+#define	PIN02					1
+#define	PIN03					2
+#define	PIN04					3
+#define	PIN05					4
+#define	PIN06					5
+#define	PIN07					6
+#define	PIN08					7
+#define	PIN09					8
+#define	PIN10					9
+#define	PIN11					10
+#define	PIN12					11
+#define	PIN13					12
+#define	PIN14					13
+#define	PIN15					14
+#define	PIN16					15
+
+#define	P1A0					0
+#define	P1A1					1
+#define	P1A2					2
+#define	P1A3					3
+#define	P1A4					4
+#define	P1A5					5
+#define	P1A6					6
+#define	P1A7					7
+#define	P1B0					010
+#define	P1B1					011
+#define	P1B2					012
+#define	P1B3					013
+#define	P1B4					014
+#define	P1B5					015
+#define	P1B6					016
+#define	P1B7					017
+#define	P2A0					020
+#define	P2A1					021
+#define	P2A2					022
+#define	P2A3					023
+#define	P2A4					024
+#define	P2A5					025
+#define	P2A6					026
+#define	P2A7					027
+#define	P2B0					030
+#define	P2B1					031
+#define	P2B2					032
+#define	P2B3					033
+#define	P2B4					034
+#define	P2B5					035
+#define	P2B6					036
+#define	P2B7					037
+
+
+#define	HV01					0
+#define	HV02					1
+#define	HV03					2
+#define	HV04					3
+#define	HV05					4
+#define	HV06					5
+#define	HV07					6
+#define	HV08					7
+#define	HV09					8
+#define	HV10					9
+#define	HV11					10
+#define	HV12					11
+#define	HV13					12
+#define	HV14					13
+
+#define	POS01					0
+#define	POS02					1
+#define	POS03					2
+#define	POS04					3
+#define	POS05					4
+#define	POS06					5
+
+#define	VI1					0
+#define	VI2					1
+
+#define	IN00					0
+#define	IN01					1
+#define	IN02					2
+#define	IN03					3
+#define	IN04					4
+#define	IN05					5
+#define	IN06					6
+#define	IN07					7
+#define	IN08					8
+#define	IN09					9
+#define	IN10					10
+#define	IN11					11
+#define	IN12					12
+#define	IN13					13
+#define	IN14					14
+#define	IN15					15
+
+#define	CH0					0
+#define	CH1					1
+#define	CH2					2
+#define	CH3					3
+#define	CH4					4
+#define	CH5					5
+#define	CH6					6
+#define	CH7					7
+#define	CH8					8
+#define	CH9					9
+#define	CH10					10
+
+#define	L0						0
+#define	L1						1
+#define	L2						2
+#define	L3						3
+#define	L4						4
+#define	L5						5
+
+#define	AD0					0
+#define	AD1					1
+#define	AD2					2
+#define	AD3					3
+
+#ifndef EIODBNC
+
+#define EIODBNC 0
+
+#endif
+
+#if EIODBNC
+
+#makechain _eioDbnc
+
+void _eioDebounce() {
+	costate {
+		waitfor(IntervalMs(25));
+		_eioDbnc();
+	}
+}
+
+#funcchain _ezLoopHead _eioDebounce
+
+#endif
+
+#ifndef EIO_EE_SAFE_B
+#define EIO_EE_SAFE_B 0x10
+#endif
+
+#ifndef EIO_EE_PLC_X
+#if EIOUSEPLC && EIO_SAFEST
+#define EIO_EE_PLC_X 0x2e
+#else
+#define EIO_EE_PLC_X 0
+#endif
+#endif
+
+
+/*** EndHeader */
+
+/*** BeginHeader eioInit, eio_def_safe*/
+
+char _eioReadD0();
+unsigned _eioPlcRelayAddr(char brdaddr);
+unsigned _eioPlcUIOAddr(char brdaddr);
+unsigned _eioPlcADC4Addr(char brdaddr);
+unsigned _eioPlcXP86Addr(char brdaddr);
+void _eioWriteWR(char wr);
+void eioInit(int flags);
+
+#if EIOUSEPLC
+extern struct _eioAdcCalib eioAICalib[EIO_AI_ADC4_BM+1][11];
+#endif
+extern int eio_def_safe;
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+eioInit
+
+SYNTAX: void eioInit(int flags);
+
+DESCRIPTION:	Initializes the module. This is the function call first
+before doing any I/O operations. This function finds out what PLC-bus
+devices are attached, and set all output to safe state. This function
+also calls the board specific initialization routines. "flags control
+what features should be initialized. If the bit in mask EIO_INIT_PBUS
+is set, the plc-bus is initialized. If the bit in EIO_SET_SAFE is set,
+the safe state is restored when the routine is called.
+
+RETURN VALUE:	N/A
+
+END DESCRIPTION **********************************************************/
+
+int eio_def_safe;
+
+void eioInit(int flags) {
+	auto unsigned i,j,l;
+//	need to check for existence of boards
+//	maintain data base to indicate which boards exist
+	eio_def_safe = 0;		//	do not define safe state
+	eioBrdInit(flags);
+#if EIOUSEPLC
+	if (flags & EIO_INIT_PBUS) {
+		eioResetPlcBus();
+		hitwd();
+		eioPlcRstWait();
+	}
+//	relay6
+	for (i=0; i <= EIO_DO_RELAY6_BM; ++i) {
+		hitwd();
+		eioPlcAdr12(_eioPlcRelayAddr(i));
+#if EIO_SAFEST
+		if ((!(_eioReadD0() & 1)) && (flags & EIO_SET_SAFE)) {
+			for (	j=EIO_DO_RELAY6_B+(i<<EIO_DO_RELAY6_BS),l=j+6;
+					j < l;
+					++j)
+				eioDigOut(j,_eioPlcDORdSafe(j));
+		}
+#endif
+	}
+	for (i=0; i <= EIO_DO_XP81_BM; ++i) {
+		hitwd();
+		eioPlcAdr12(_eioPlcXP81Addr(i));
+#if EIO_SAFEST
+		if ((!(_eioReadD0() & 1)) && (flags & EIO_SET_SAFE)) {
+			for (	j=EIO_DO_XP81_B+(i<<EIO_DO_XP81_BS),l=j+32;
+					j < l;
+					++j)
+				eioDigOut(j,_eioPlcDORdSafe(j));
+		}
+#endif
+	}
+//	uio
+	for (i=0; i <= EIO_DO_UIO_BM; ++i) {
+		hitwd();
+		eioPlcAdr12(_eioPlcUIOAddr(i));
+#if EIO_SAFEST
+		if (!(_eioReadD0() & 1) && (flags & EIO_SET_SAFE)) {
+			for (	j=EIO_DO_UIO_B+(i<<EIO_DO_UIO_BS),l=j+6;
+					j < l;
+					++j)
+				eioDigOut(j,_eioPlcDORdSafe(j));
+		}
+#endif
+	}
+//	adc4
+	for (i=0; i <= EIO_AI_ADC4_BM; ++i) {
+		hitwd();
+		eioAdc4Init(i);
+	}
+//	dac
+	for (i=0; i <= EIO_AO_XP86_BM; ++i) {
+		hitwd();
+		eioPlcAdr12(_eioPlcXP86Addr(i));
+		if (!(_eioReadD0() & 1)) {
+			eioDac2Init();
+//			eioDac2On();
+#if EIO_SAFEST
+			if (flags & EIO_SET_SAFE) {
+				for (	j=EIO_AO_XP86_B+(i<<EIO_AO_XP86_BS),l=j+2;
+						j < l;
+						++j)
+					eioAnOut(j,_eioPlcAORdSafe(j));
+			}
+#endif
+		}
+	}
+#endif
+}
+
+/*** BeginHeader eioSwDefSafe */
+
+int eioSwDefSafe(int newValue);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+eioSwDefSafe
+
+SYNTAX: int eioSwDefSafe(int newValue);
+
+DESCRIPTION:	To switch the eio system to define safe state or not. If
+newValue is zero, the system will not define safe state. Otherwise, all
+output is logged as the safe state (in addition to the actual output).
+
+RETURN VALUE:	the old value of the switch
+
+END DESCRIPTION **********************************************************/
+
+int eioSwDefSafe(int newValue) {
+	auto int oldstate;
+	oldstate = eio_def_safe;
+	eio_def_safe = newValue;
+	return oldstate;
+}
+
+/*** BeginHeader eioGetDefSafe */
+
+int eioGetDefSafe();
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+eioGetDefSafe
+
+SYNTAX: 	int eioGetDefSafe();
+
+DESCRIPTION:	Inquire the system to check if the safe state is being
+defined.
+
+RETURN VALUE:	1 if the system is defining safe state, 0 if not.
+
+END DESCRIPTION **********************************************************/
+
+int eioGetDefSafe() {
+	return eio_def_safe;
+}
+
+/*** BeginHeader _eioPlcDOWrSafe */
+
+void _eioPlcDOWrSafe(int addr, int state);
+
+/*** EndHeader */
+
+#if EIO_SAFEST
+
+void _eioPlcDOWrSafe(int addr, int state) {
+	auto char tmp;
+	auto char bitmask;
+	auto int eeaddr;
+	
+	tmp = ee_rd(eeaddr=EIO_EE_SAFE_B+((addr-EIO_DO_RELAY6_B)>>3));
+	if ((state!=0) != ((tmp & (bitmask=__bitmap[addr&0x7]))!=0)) {
+		ee_wr(eeaddr,state?(tmp|bitmask):(tmp^bitmask));
+	}
+}
+
+#endif
+
+/*** BeginHeader _eioPlcDORdSafe */
+
+int _eioPlcDORdSafe(int addr);
+
+/*** EndHeader */
+
+#if EIO_SAFEST
+
+int _eioPlcDORdSafe(int addr) {
+	return (ee_rd(EIO_EE_SAFE_B+((addr-EIO_DO_RELAY6_B)>>3))&
+				__bitmap[addr&0x7]) != 0;
+}
+
+#endif
+/*** BeginHeader _eioPlcAOWrSafe */
+
+void _eioPlcAOWrSafe(int addr, unsigned int state);
+
+/*** EndHeader */
+
+#if EIO_SAFEST
+
+void _eioPlcAOWrSafe(int addr, unsigned int state) {
+	auto char tmp;
+	auto int eeaddr;
+	
+	tmp = ee_rd_w(eeaddr=(EIO_EE_SAFE_B+((EIO_DO_UIO_B+EIO_DO_UIO_X)>>3))+
+							(addr-EIO_AO_XP86_B)*2);
+	if (state != tmp) {
+		ee_wr_w(eeaddr,state);
+	}
+}
+
+#endif
+
+/*** BeginHeader _eioPlcAORdSafe */
+
+int _eioPlcAORdSafe(int addr);
+
+/*** EndHeader */
+
+#if EIO_SAFEST
+
+int _eioPlcAORdSafe(int addr) {
+	return ee_rd_w(EIO_EE_SAFE_B+((EIO_DO_UIO_B+EIO_DO_UIO_X)>>3)+
+						(addr-EIO_AO_XP86_B)*2);
+}
+
+#endif
+
+/************************************************************************
+
+BEGIN OF DEV. DEP. MAPPING
+
+************************************************************************/
+
+/************************************************************************
+BEGIN OF DIGITAL API
+************************************************************************/
+
+/*** BeginHeader eioSysPtr */
+
+struct _eioSys {
+	char handled;
+	unsigned channel;
+	unsigned param;
+	union {
+		float f;
+		char c;
+	} result;
+};
+
+extern struct _eioSys *eioSysPtr;
+
+#makechain eioSysDI
+#makechain eioSysDO
+#makechain eioSysAI
+#makechain eioSysAO
+
+/*** EndHeader */
+
+struct _eioSys *eioSysPtr;
+
+/*** BeginHeader eioDigIn */
+
+int eioDigIn(unsigned eioAddr);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+eioDigIn
+
+SYNTAX: int eioDigIn(unsigned BrdAddr);
+
+DESCRIPTION:	Reads an DigIn state.
+BrdAddr contains the ez address of the digital DigIn
+channel.
+
+RETURN VALUE:	The state of DigIn channel
+
+END DESCRIPTION **********************************************************/
+
+int eioDigIn(unsigned eioAddr) {
+	auto unsigned eioPAddr;
+	auto int result;
+	auto struct _eioSys *oldPtr, thisInstance;
+	
+	if (eioAddr < EIO_DI_UIO_B) {
+		//	on board digital input
+		result = (eioBrdDI(eioAddr));
+	}
+#if EIOUSEPLC
+	else if (eioAddr < (EIO_DI_UIO_B+EIO_DI_UIO_X)) {
+		//	UIO digital input
+		return plcUIOIn(eioAddr -= EIO_DI_UIO_B);
+#if EIODBNC
+	} else if (eioAddr < (EIO_DI_UIODB_B+EIO_DI_UIODB_X)) {
+		//	UIO digital input
+		eioPAddr = ((eioAddr -= EIO_DI_UIODB_B) >> EIO_DI_UIODB_BS) & EIO_DI_UIODB_BM;
+		//	okay, board exists, now read the bit
+		eioPAddr <<= 1;
+		if (eioAddr & 1) ++eioPAddr;
+		result = (eioUIODbnced[eioPAddr] & (1<<((eioAddr&EIO_DI_UIODB_PM)/2))) ? 1 : 0;
+#endif
+	} else if (eioAddr < (EIO_DI_XP81_B+EIO_DI_XP81_X)) {
+		//	IO32 digital input
+		result = plcXP81In(eioAddr-=EIO_DI_XP81_B);
+	}
+#endif
+	else if (eioAddr >= EIO_DI_SYS_B) {
+		//	system digital status
+		oldPtr = eioSysPtr;
+		eioSysPtr = &thisInstance;
+		thisInstance.channel = eioAddr;
+		thisInstance.handled = 0;
+		eioSysDI();
+		result = thisInstance.result.c;
+		eioSysPtr = oldPtr;
+	} else {
+		//	error
+		eioErrorCode |= EIO_NODEV;
+		result = -1;
+	}
+	return result;
+}
+
+#asm
+_dum: equ eioInit
+#endasm
+
+/*** BeginHeader eioDigOut */
+
+int eioDigOut(unsigned eioAddr, char state);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+eioDigOut
+
+SYNTAX: int eioDigOut(unsigned BrdAddr, char state);
+
+DESCRIPTION:	Changes the state of an ez DigOut channel
+
+RETURN VALUE:	0 if successful, -1 if not
+
+END DESCRIPTION **********************************************************/
+
+int eioDigOut(unsigned eioAddr, char state) {
+	auto unsigned eioPAddr;
+	auto int result;
+	auto struct _eioSys *oldPtr, thisInstance;
+	
+	if (eioAddr < EIO_DO_RELAY6_B) {
+		//	on board digital output
+		return eioBrdDO(eioAddr,state);
+	}
+#if EIOUSEPLC
+	else if (eioAddr < EIO_DO_UIO_B) {
+		//	relay output
+		if (eioGetDefSafe()) _eioPlcDOWrSafe(eioAddr,state);
+		result = plcRelay6(eioAddr -= EIO_DO_UIO_B, state);
+	} else if (eioAddr < (EIO_DO_UIO_B+EIO_DO_UIO_X)) {
+		//	uio output
+		if (eioGetDefSafe()) _eioPlcDOWrSafe(eioAddr,state);
+		result = plcUIOOut(eioAddr -= EIO_DO_UIO_B, state);
+	} else if (eioAddr < (EIO_DO_XP81_B+EIO_DO_XP81_X)) {
+		//	io32 output
+		if (eioGetDefSafe()) _eioPlcDOWrSafe(eioAddr,state);
+		result = plcXP81Out(eioAddr -= EIO_DO_XP81_B,state);
+	}
+#endif
+	else if (eioAddr >= EIO_DO_SYS_B) {
+		//	system
+		oldPtr = eioSysPtr;
+		eioSysPtr = &thisInstance;
+		thisInstance.channel = eioAddr;
+		thisInstance.param = state;
+		thisInstance.handled = 0;
+		eioSysDO();
+		result = thisInstance.result.c;
+		eioSysPtr = oldPtr;
+	} else {
+		//	error!
+		eioErrorCode |= EIO_NODEV;
+		result = -1;
+	}
+	return result;
+}
+
+#asm
+_dum: equ eioInit
+#endasm
+
+/************************************************************************
+BEGIN OF ANALOG API
+************************************************************************/
+
+/*** BeginHeader eioAnIn */
+
+float eioAnIn(unsigned eioAddr);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+eioAnIn
+
+SYNTAX: unsigned eioAnIn(unsigned BrdAddr);
+
+DESCRIPTION:	Reads an AnIn state.
+BrdAddr contains the ez address of the analog AnIn
+channel.
+
+RETURN VALUE:	The state of channel
+
+END DESCRIPTION **********************************************************/
+
+float eioAnIn(unsigned eioAddr) {
+	auto unsigned eioPAddr;
+	auto float result;
+	auto struct _eioSys *oldPtr, thisInstance;
+	auto char raw;
+	auto unsigned rawValue, padr, badr;
+	
+	if (eioAddr < EIO_AI_ADC4_B) {
+		//	on board A/D
+		result = (eioBrdAI(eioAddr));
+	}
+#if EIOUSEPLC
+	else if (eioAddr < (EIO_AI_ADC4R_B+EIO_AI_ADC4R_X)) {
+		// can be raw or converted
+		//	adc4 Plc card
+		if (eioAddr < (EIO_AI_ADC4_B+EIO_AI_ADC4_X)) {
+			raw = 0;
+			eioAddr -= EIO_AI_ADC4_B;
+		} else {
+			raw = 1;
+			eioAddr -= EIO_AI_ADC4R_B;
+		}
+		rawValue = plcXP85In(eioAddr);
+		if (rawValue == -1) {
+			result = -1;
+		} else {
+			if (raw) {
+				result = rawValue;
+			} else {
+				result = eioAdcConvert(rawValue,&eioAICalib[badr][padr]);
+			}
+		}
+	}
+#endif
+	else if (eioAddr >= EIO_AI_SYS_B) {
+		//	system
+		oldPtr = eioSysPtr;
+		eioSysPtr = &thisInstance;
+		thisInstance.channel = eioAddr;
+		thisInstance.handled = 0;
+		eioSysAI();
+		result = thisInstance.result.f;
+		eioSysPtr = oldPtr;
+	} else {
+		//	error
+		eioErrorCode |= EIO_NODEV;
+		result = -1;
+	}
+	return result;
+}
+
+//	extern struct _eioAICoeff eioAICalib[EIO_AI_ADC4_BM][11];
+
+#asm
+_dum: equ eioInit
+#endasm
+
+/*** BeginHeader eioAnInCal */
+
+void eioAnInCal(	unsigned eioAddr, unsigned d1, unsigned d2,
+						float v1, float v2);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+eioAnInCal
+
+SYNTAX: void eioAnInCal(unsigned BrdAddr, unsigned d1, unsigned d2,
+						float v1, float v2);
+
+DESCRIPTION:	Reads an AnIn state.
+BrdAddr contains the ez address of the analog AnIn
+channel.
+
+RETURN VALUE:	The state of channel
+
+END DESCRIPTION **********************************************************/
+
+void eioAnInCal(unsigned eioAddr, unsigned d1, unsigned d2,
+						float v1, float v2) {
+	auto unsigned eioPAddr;
+	auto float result;
+	auto struct _eioSys *oldPtr, thisInstance;
+	auto char raw;
+	auto unsigned rawValue, padr, badr;
+	
+	if (eioAddr < EIO_AI_ADC4_B) {
+		//	on board A/D
+		result = (eioBrdACalib(eioAddr, d1, d2,
+						v1, v2));
+	}
+#if EIOUSEPLC
+	else if (eioAddr < (EIO_AI_ADC4_B+EIO_AI_ADC4_X)) {
+		eioAddr -= EIO_AI_ADC4_B;
+		eioPAddr = _eioPlcADC4Addr(badr=((eioAddr
+			>> EIO_AI_ADC4_BS ) & EIO_AI_ADC4_BM));
+		eioPlcAdr12(eioPAddr);
+		if (_eioReadD0() & 1) {
+			//	error, board doesn't exist!
+			eioErrorCode |= EIO_NODEV;
+		} else {
+			padr=(eioAddr & EIO_AI_ADC4_PM);
+			if (padr > 10) {
+				eioErrorCode |= EIO_NODEV;
+				*(long*)&result = -1;
+			} else {
+				adc4_compute(&eioAICalib[badr][padr],v1,d1,v2,d2);
+				
+				//	okay, board exists, now write the data
+			}
+		}
+	}
+#endif
+	else if (eioAddr >= EIO_AI_SYS_B) {
+	} else {
+	}
+	return;
+}
+
+//	extern struct _eioAICoeff eioAICalib[EIO_AI_ADC4_BM][11];
+
+#asm
+_dum: equ eioInit
+#endasm
+
+/*** BeginHeader eioAnOut */
+
+int eioAnOut(unsigned eioAddr, unsigned state);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+eioAnOut
+
+SYNTAX: int eioAnOut(unsigned BrdAddr, char state);
+
+DESCRIPTION:	Changes the state of an analog output channel
+
+RETURN VALUE:	-1 if device is not available.
+
+END DESCRIPTION **********************************************************/
+
+int eioAnOut(unsigned eioAddr, unsigned state) {
+	auto unsigned eioPAddr;
+	auto char result;
+	auto struct _eioSys *oldPtr, thisInstance;
+	
+	if (eioAddr < EIO_AO_XP86_B) {
+		//	on board A/D
+		result = eioBrdAO(eioAddr,state);
+	}
+#if EIOUSEPLC
+	else if (eioAddr < (EIO_AO_XP86_B+EIO_AO_XP86_X)) {
+		//	adc4 Plc card
+		result = plcXP86Out(eioAddr-EIO_AO_XP86_B,state);
+		}
+	}
+#endif
+	else if (eioAddr >= EIO_AO_SYS_B) {
+		//	system
+		oldPtr = eioSysPtr;
+		eioSysPtr = &thisInstance;
+		thisInstance.channel = eioAddr;
+		thisInstance.param = state;
+		thisInstance.handled = 0;
+		eioSysAO();
+		result = thisInstance.result.c;
+		eioSysPtr = oldPtr;
+	} else {
+		//	error
+		eioErrorCode |= EIO_NODEV;
+		result = -1;
+	}
+	return result;
+}
+
+#asm
+_dum: equ eioInit
+#endasm
+
+/*** BeginHeader eioInitSafeState */
+
+void eioInitSafeState();
+
+/*** EndHeader */
+
+void eioInitSafeState() {
+	auto int i;
+	
+	eioBrdInitSafe();
+	for (i = EIO_EE_SAFE_B; i < EIO_EE_BRD_B; ++i)
+		ee_wr(i,0);
+}
+
+#funcchain sysSupRstChain eioInitSafeState
+
+/*** BeginHeader eioReset */
+
+int eioReset(int dest);
+
+/*** EndHeader */
+
+int eioReset(int dest) {
+	if (!dest)
+		return eioAnIn(ZIO_RST_BRD);
+	else return -1;
+}
+
+/*** BeginHeader eioPing */
+
+int eioPing(int dest);
+
+/*** EndHeader */
+
+#warnt "No network to ping."
+
+int eioPing(int dest) {
+	if (dest) 
+		return -1;
+	else return 0;
+}
+
+/*** BeginHeader eioSetSafeSt */
+
+void eioSetSafeSt(int dest);
+
+/*** EndHeader */
+
+void eioSetSafeSt(int dest) {
+	rioSysDO;
+	if (!dest) eioDigOut(ZIO_SET_SAFE,1);
+}
+
+/*** BeginHeader eioBegDefSafeSt */
+
+void eioBegDefSafeSt(int dest);
+
+/*** EndHeader */
+
+void eioBegDefSafeSt(int dest) {
+	rioSysDO;
+	if (!dest) eioDigOut(ZIO_DEFN_SAFE,1);
+}
+
+/*** BeginHeader eioEndDefSafeSt */
+
+void eioEndDefSafeSt(int dest);
+
+/*** EndHeader */
+
+void eioEndDefSafeSt(int dest) {
+	rioSysDO;
+	if (!dest) eioDigOut(ZIO_DEFN_SAFE,0);
+}
+
+/*** BeginHeader eioWakeUpSlave */
+
+int eioWakeUpSlave(int slv1,...);
+
+/*** EndHeader */
+
+#warnt "No slaves to wake up."
+
+int eioWakeUpSlave(int slv1,...) {
+	return -1;
+}
+
+/*** BeginHeader eioGetAllAlive */
+
+void eioGetAllAlive();
+
+/*** EndHeader */
+
+#warnt "No slaves to wake up."
+
+void eioGetAllAlive() {
+}
+
+/*** BeginHeader eioAssignNewID */
+
+void eioAssignNewID(int dest, int newID);
+
+/*** EndHeader */
+
+void eioAssignNewID(int dest, int newID) {
+}
+
+/*** BeginHeader eioDefInit */
+
+void eioDefInit();
+
+/*** EndHeader */
+
+void eioDefInit() {
+	eioInitSafeState;
+	eioErrorCode = 0;
+	eioInit(0xffff);
+}
+
+/*** BeginHeader eioChgMyID */
+
+void eioChgMyID(int i);
+
+/*** EndHeader */
+
+#asm
+eioChgMyID::
+	ret
+#endasm
+
+
+/*** BeginHeader */
+
+#endif
+
+/*** EndHeader */

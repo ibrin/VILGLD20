@@ -1,0 +1,193 @@
+/* START LIBRARY DESCRIPTION ***************************************************
+THERMADC.LIB 
+	Copyright (c) 1998, Z-World.
+
+DESCRIPTION: Functions and data structures for implementing temperature
+	measurement with thermistors.
+
+SUPPORT LIBRARIES: none
+END DESCRIPTION ***************************************************************/
+
+/*** BeginHeader ThermCoef */
+
+struct ThermCoef {
+	float a,b,c,d;
+};
+
+/*** EndHeader */
+
+/*
+	For the Basys type T1 10kOhm thermistor, insert the following
+	into the C code before using the Resistance to Temperature
+	conversion function "thermOhm2Temp".
+
+	struct ThermCoef *therm;
+	
+	therm->a = 2.775e-3;
+	therm->b = 2.468e-4;
+	therm->c = 1.771e-6;
+	therm->d = 9.536e-7;
+*/
+
+/*** BeginHeader thermOhm2Temp */
+
+float thermOhm2Temp(float ohms, struct ThermCoef *therm, char unit);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+thermOhm2Temp
+
+SYNTAX: float thermOhm2Temp(float R, struct ThermCoef *therm, char unit)
+
+DESCRIPTION: Calculation of temperature from thermistor resistance.
+
+		"R" in kOhms is the resistance required by the "Thermistor Equation".
+
+             1/T = a + b log(R) + c log(R)^2 + d log(R)^3
+
+      The structure *therm represents the coefficients a, b, c and d
+      in 1/Kelvin. "unit" is chosen as 'C' or 'c' for degrees Centigrade,
+      'F' or 'f' for degrees Fahrenheit and 'K' or 'k' for Kelvin.
+
+RETURN VALUE: The temperature in the specified unit
+
+END DESCRIPTION **********************************************************/
+
+float thermOhm2Temp(float ohms, struct ThermCoef *therm, char unit)
+{
+	auto float LR,temp;
+
+	LR = log(ohms/1000);
+	temp = ( therm->a + LR * ( therm->b + LR * ( therm->c + therm->d * LR ) ) );
+
+	switch(unit)
+	{
+		case 'K': case 'k':
+			temp = 1/temp; // Kelvin
+		break;
+		
+		case 'F': case 'f':
+			temp = 1/temp - 273.15;
+			temp = 1.8 * temp + 32; // Fahrenheit
+		break;
+
+		case 'C': case 'c':
+		default:
+			temp = 1/temp - 273.15; // Centigrade
+		break;
+	}			
+
+	return temp;
+}
+
+/*** BeginHeader pk23Read10kOhmTherm */
+
+float pk23Read10kOhmTherm(char unit);
+
+/*** Endheader */
+
+float pk23Read10kOhmTherm(char unit) {
+	auto struct ThermCoef *tc;
+
+	tc->a = 2.775e-3;
+	tc->b = 2.468e-4;
+	tc->c = 1.771e-6;
+	tc->d = 9.536e-7;
+
+	return thermOhm2Temp(eioBrdAI(0),&tc,unit);
+}
+
+/*** BeginHeader plcADC4parms, ADC4ohms */
+
+struct plcADC4parms {
+	float Rref,Vref,Rbias,Rp;
+};
+
+float ADC4ohms(float volts, struct plcADC4parms *adcparms);
+
+/*** endheader */
+
+/*
+	If the ADC4 is configured for a voltage divider using a 10 kOhm
+	excitation resistor in ratiometric mode for a voltage range of
+	0.0 to 5.0 volts, the following values can be defined in the
+	C code for determining the resistance of a component of interest.
+	See the PLCBus manual for more information.
+
+	struct plcADCparms *adcparms;
+
+	adcparms->Rref  = 10.0; // in kOhms
+	adcparms->Vref  = 4.97; // in volts
+	adcparms->Rbias = 4.87;
+	adcparms->Rp    = 10.0;
+*/
+
+/* START FUNCTION DESCRIPTION ********************************************
+ADC4ohms
+
+SYNTAX: float ADC4ohms(float volts, struct plcADCparms *adcParms)
+
+DESCRIPTION: Calculation of resistance from a conditioned ADC4 channel
+      configured as a ratiometric voltage divider using an excitation
+      resistor.
+
+      "volts" is the voltage read from the ADC4 channel.
+      "struct plcADCparms *adcParms" is a structure containing ADC4
+      voltage divider parameters. See the "PLCBus Expansion Boards" manual
+      for more information on how to select these parameters. Also see
+      comments in the file thermadc.lib.
+
+RETURN VALUE: The resistance in Ohms.
+
+END DESCRIPTION **********************************************************/
+
+float ADC4ohms(float volts, struct plcADC4parms *adcParms)
+{
+float ohms;
+
+	ohms = (volts * adcParms->Rref * 1000);
+	ohms = ohms / ( adcParms->Vref*( 1 + adcParms->Rbias/(adcParms->Rbias+adcParms->Rp) ) - 2*volts );
+	return ohms;
+}
+
+/*** BeginHeader pk24Temp */
+
+float pk24Read3kOhmTherm(char unit);
+
+/*** Endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+pk24Read3kOhmTherm
+
+SYNTAX: float pk24Read3kOhmTherm(char unit);
+
+DESCRIPTION: Calculation of temperature from the Keystone thermistor placed
+      across an unconditioned channel of a pk24xx analog voltage divider.
+
+		"unit" is chosen as 'C' or 'c' for degrees Centigrade, 'F' or 'f'
+		for degrees Fahrenheit and 'K' or 'k' for Kelvin.
+
+RETURN VALUE: The temperature in the specified unit
+
+END DESCRIPTION **********************************************************/
+
+float pk24Read3kOhmTherm(char unit);
+{
+int counts;
+float volts,ohms,temp;
+auto struct ThermCoef *tc;
+
+	// from the keystone data sheet (3kOhm #RL2007-1723-103-SA)
+	tc->a = 3.354e-3;
+	tc->b = 2.503e-4;
+	tc->c = 2.426e-6;
+	tc->d = -7.351e-8;
+
+//	counts = _eioBrdAI(3); // Number of counts from the adc
+	volts = eioBrdAI(3); // Converted voltage from calibration and adc counts
+
+	ohms = 10.0*volts/(5.0-volts);
+	temp = thermOhm2Temp( ohms, &tc, unit);
+	return temp;
+}

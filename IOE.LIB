@@ -1,0 +1,796 @@
+/****************************************************************************
+
+      Little Giant Expansion Board Library Functions
+      
+      These functions are divided into two sets.  The first set are functions
+      that are hard coded for the default base address of 0xFxxx.  This is
+      the address of single expansion boards installed on a Little Giant.  
+      These functions will run faster because they do not need to get a set
+      of addresses.
+      
+      The second set of functions allow you to specify the node for the
+      board to be addressed.  This is a slower process because the addresses
+      must be looked up before the actual function is run.  To improve the
+      speed of this lookup there is a structure that holds the default
+      addresses.  Instead of specifying a node number (0 - 3) specify -1,
+      this will load the currect default addresses.  Do not use these
+      functions unless you are using more than one Expansion board on the
+      Little Giant.  This will save you code space as they are in seperate
+      header sections and will not be compiled.
+      
+****************************************************************************/        
+
+/*** BeginHeader exp_init */
+   
+   int exp_init (int exp_init (int ppia, int ppib, int ppicu, int ppicl);
+
+/* Default base address = 0xFx0x */
+
+#define RDTTL  0xF400         /* TTL inputs */
+#define PAL    0xF800         /* Pulse Width enable (out) PIN level (inp) */
+#define POL    0xF801         /* Polarity of pulse to measure */
+#define PPIA   0xFC00         /* PPI data A */
+#define PPIB   0xFC01         /* PPI data B */
+#define PPIC   0xFC02         /* PPI data C */
+#define PPICN  0xFC03         /* PPI control */
+
+/*** EndHeader exp_init  */
+
+/*=========================================================================*\
+    Little Giant Expansion Card Initialization
+
+   U5 PPI use Mode 0 - Basic I/O mode
+   ppia, ppib, ppicu, ppicl are output values for PPI output register. 
+      Configure Port A as input, if ppia = -1   
+      Configure Port B as input, if ppib = -1
+      Configure Port C upper bits as input, if ppicu =-1 
+      Configure Port C lower bits as input, if ppicl =-1 
+
+   All PPI output ports will be reset to low when mode is changed. 
+   
+   It is important to output a correct value to the output port
+   right after the mode is changed.
+   
+      mode     c.word         ppia        ppicu       ppib        ppicl
+
+      0        0x80           out         out         out         out
+      1        0x81           out         out         out         in
+      2        0x82           out         out         in          out
+      3        0x83           out         out         in          in
+      4        0x88           out         in          out         out
+      5        0x89           out         in          out         in
+      6        0x8A           out         in          in          out
+      7        0x8B           out         in          in          in
+      8        0x90           in          out         out         out
+      9        0x91           in          out         out         in
+      10       0x92           in          out         in          out
+      11       0x93           in          out         in          in
+      12       0x98           in          in          out         out
+      13       0x99           in          in          out         in
+      14       0x9A           in          in          in          out
+      15       0x9B           in          in          in          in
+      
+      Return:
+               0       init OK
+
+\*=======================================================================*/
+
+nodebug exp_init (int ppia, int ppib, int ppicu, int ppicl)
+{
+   int mode; 
+
+   outport (PAL, 0);      /* PWM PAL EN=0  */
+
+   mode=0x80;
+   if (ppia == -1) 
+      SET (&mode, 4);
+   
+   if (ppib == -1)
+      SET (&mode, 1);
+      
+   if (ppicu == -1) 
+      SET (&mode, 3);
+   
+   if (ppicl == -1) 
+      SET (&mode, 0);
+
+   outport (PPICN, mode);   /* ALL PPI outport pins will be low !   */
+
+   outport (PPIA, ppia);   /*  set the correct outputs  */
+   outport (PPIB, ppib);   
+   outport (PPIC, (ppicu << 4) | ppicl);  
+   
+   return 0;
+}
+
+/*** BeginHeader  mux_ch */
+
+int mux_ch (int chan);   
+
+/*** EndHeader  */       
+
+/*=========================================================================*\
+   Set LGEXP U17  DG509A Multiplexer default address (0xFXXX)
+   int mux_ch (int chan);
+
+   PPI PA06 and PA07 are used for MUX address setting
+      chan     PA00     PA06     PA07     MUX-DA      MUX-DB
+       0       0        0         0       AN0-        AN0+    
+       1       0        1         0       AN1-        AN1+    
+       2       0        0         1       AN2-        AN2+    
+       3       0        1         1       AN3-        AN3+    
+
+\*=========================================================================*/
+
+nodebug int mux_ch (int chan)
+{
+   int i;
+   
+   i = inport (PPIA);
+   
+   RES (&i, 6);    /*  chan 0   */
+   RES (&i, 7);
+   
+   if (BIT (&chan,0)) SET (&i, 6);
+   
+   if (BIT (&chan,1)) SET (&i, 7);
+   
+   outport (PPIA, i);
+}
+
+
+/*** BeginHeader ad20_mux, ad20_rdy, ad20_cal, ad20_rd */
+ 
+int ad20_mux (int chan);
+int ad20_rdy ();
+int ad20_cal (int mode);
+long ad20_rd ();
+
+/*** EndHeader ad20_mux, ad20_rdy, ad20_cal, ad20_rd  */       
+
+/*=========================================================================*\
+      Set LGEXP U17  DG509A Multiplexer for 20 bit AD7703
+
+   PPI PA00 selects AD7703 input range Unipolar or Bipolar(BP): 
+                           PA00=0      0 to +2.5v
+                           PA00=1      -2.5v to +2.5v
+
+   PPI PA06 and PA07 are used for MUX address setting
+      chan     PA00     PA06     PA07     MUX-DA      MUX-DB   AD range
+       0       0        0         0       AN0-        AN0+    0 to +2.5v
+       1       0        1         0       AN1-        AN1+    0 to +2.5v
+       2       0        0         1       AN2-        AN2+    0 to +2.5v
+       3       0        1         1       AN3-        AN3+    0 to +2.5v
+       4       1        0         0       AN0-        AN0+   -2.5v to +2.5v
+       5       1        1         0       AN1-        AN1+   -2.5v to +2.5v
+       6       1        0         1       AN2-        AN2+   -2.5v to +2.5v
+       7       1        1         1       AN3-        AN3+   -2.5v to +2.5v
+\*=========================================================================*/
+
+nodebug int ad20_mux (int chan)
+{
+   int i;
+
+   i = inport (PPIA);
+   RES (&i, 0);    /*  unipolar */
+   RES (&i, 6);    /*  chan 0   */
+   RES (&i, 7);
+
+   if (BIT (&chan, 0))
+      SET (&i, 6);
+
+   if (BIT (&chan, 1))
+      SET (&i, 7);
+      
+   if (BIT (&chan, 2) || BIT (&chan, 3))
+      SET (&i, 0);
+      
+   outport (PPIA, i);
+}
+
+/***************************************************************\
+
+   Test AD7703 DRDY status from RDTTL IN1
+   returns: 0  DRDY low
+            1  DRDY high
+\***************************************************************/
+
+nodebug int ad20_rdy ()
+{
+   return (IBIT (RDTTL, 1)); 
+}  
+
+/***************************************************************\
+   
+int mode:   
+   AD7703   offers three calibration modes
+   
+   mode     SC1   SC2   Cal Type       Zero     FS          Steps
+ 
+   0        0     0     self-cal       AGND     REF+        1
+   1        1     1     system offset  Ain                  1st of 2
+   1        0     1     system gain             Ain         2nd of 2
+   2        1     0     system offset  Ain      REF+        1
+
+   Mode0 calibration do not use multiplxer.
+   Mode1 calibration use multiplxer to get zero, full scale on Ain.
+      MUX ch0 is the A/D signal to be measured
+      MUX ch1 is Ain for Mode1 1st step to calibrate system offset
+      MUX ch2 is Ain for Mode1 2nd step to calibrate system gain
+   Mode2 calibration use the cuurent channel to get Ain as zero
+                                 to calibrate system offset
+
+returns: 0 calibration completed
+         -1 error in calibration mode setting 
+
+\***************************************************************/
+
+#define SDAT 0x00
+#define CAL  0x01
+#define CS   0x02
+#define SC2  0x03
+#define SCLK 0x04
+#define SC1  0x05
+
+nodebug int ad20_cal (int mode)
+{
+   int i, par;
+   
+   par = inport (PPIA);
+   SET (&par, CS);      /* disable AD7701 to transmit serial data */
+   RES (&par, CAL);     /* CAL low  */
+   outport (PPIA, par); /* output Port A  */
+
+   switch (mode)
+   {
+      case 0x00:
+            RES (&par, SC1);        /* CS1=0, CS2=0, self calibration  */
+            RES (&par, SC2);
+            outport (PPIA, par);     
+            SET (&par, CAL);         /* CAL high */
+            outport (PPIA, par);     
+                     
+            for (i=0; i < 4; i++);
+            RES (&par, CAL);        /* CAL low  after 4 CLK high */
+            outport (PPIA, par);
+            break;
+
+      case 0x01:
+            ad20_mux (1);           /* Uni- or Bi- polarity must same as CH0 */
+            
+            /* CH1 is zero Ain for Mode 1 calibration */
+            SET (&par, SC1);        /* mode 1 system offset calibration  */
+            SET (&par, SC2);
+            outport (PPIA, par);     
+            SET (&par, CAL);        /* CAL high */
+            outport (PPIA, par);    /* output Port A  */
+                     
+            for (i = 0; i < 4; i++);
+            RES (&par, CAL);        /* CAL low  after 4 CLK high */
+            outport (PPIA, par); 
+
+            while (ad20_rdy());    
+            ad20_mux (2);           /* Uni- or Bi- polarity must same as CH0 */
+
+            /* CH2 is full scale Ain for Mode 1 calibration */
+            RES (&par, SC1);        /* mode 1 system gain calibration  */
+            SET (&par, SC2);
+            outport (PPIA, par);     
+            SET (&par, CAL);        /* CAL high */
+            outport (PPIA, par);    /* output Port A  */
+
+            for (i = 0; i < 4; i++);
+            RES (&par, CAL);        /* CAL low after 4 CLK high */
+            outport (PPIA, par); 
+            break;
+
+         case 0x02:
+            /* current channel is zero Ain for Mode 2 calibration */
+            SET (&par, SC1);        /* mode 2 system offset calibration  */
+            RES (&par, SC2);
+            outport (PPIA, par);     
+            SET (&par, CAL);        /* CAL high */
+            outport (PPIA, par);    /* output Port A  */
+
+            for (i = 0; i < 4; i++);
+            RES (&par, CAL);        /* CAL low  after 4 CLK high */
+            outport (PPIA, par); 
+            break;
+         
+         default: 
+            return (-1);
+   }
+
+   while (ad20_rdy ());    
+   return 0;
+}
+
+/*==================================================================*\
+
+   This routine samples a 20 bit data from AD7703 serial data port
+   and returns the A/D data as a long int.
+      
+   Due to the 125 ms step response time of AD7703, a time delay should
+   be guaranteed after a multiplexer switching.
+      
+   A/D data will be valid when DRDY is low at upto 4 KHz output data rate  
+
+   The polarity was set in ad20_mux ();.
+      In Unipolar mode, PA00=BP=0, Ain range is 0 to +2.5V and 
+                        1 LSB = 2.5V/1048576 = 2.384 uV
+                        Output Codes: 00000 = AGND
+                                      7FFFF = +1.25V
+                                      FFFFF = +2.5V
+      In Bipolar mode, PA00=BP=1, Ain range is -2.5V to +2.5V and 
+                        1 LSB = 5V/1048576 = 4.768 uV
+                        Output Codes: 00000 = -2.5V
+                                      7FFFF = AGND
+                                      FFFFF = +2.5V
+
+   Returns:    long AD data
+
+\*======================================================================*/
+
+nodebug long ad20_rd ()
+{
+   int i, j, par;
+   long ad_dat;
+
+   while (ad20_rdy ());
+
+   par = inport (PPIA);
+   RES (&par, CS);               /* enable AD7703 to transmit serial data */
+   outport (PPIA, par);          /* output Port A  */
+
+   ad_dat = 0;
+
+   for (i = 0; i < 20; i++)
+   {
+      if (IBIT (RDTTL, SDAT))
+      {
+         j = 19 - i;
+         SET (&ad_dat, j);
+      }
+      
+      SET (&par, SCLK);          /* SCLK low to high  */
+      outport (PPIA, par);       /* output Port A  */
+      RES (&par, SCLK);          /* SCLK high to low */
+      outport (PPIA, par);       /* output Port A  */
+   }
+
+   SET (&par, CS);               /* disable AD7701 transmit serial data */
+   outport (PPIA, par);          /* output Port A  */
+   return (ad_dat);
+}
+
+
+/************************************************************************\
+
+   This section contains the functions that support multiple I/O Expanders
+   on one Little Giant.  You can stack up to four IOE boards, each with it's
+   own address set by J10.  The default base address (Fx0xH) is for a 
+   board with no jumpers placed on J10. Other available addresses are
+   Cx0xH, Dx0xH and Ex0xH.  The jumper settings for these addresses can be 
+   found in the I/O Expander Technical Manual.
+   
+   This set of functions allows you to specify the node for the
+   board to be addressed.  This is a slower process because the addresses
+   must be looked up before the actual function is run.  To improve the
+   speed of this lookup there is a structure that holds the default
+   addresses.  Instead of specifying a node number (0 - 3) specify -1,
+   this will load the currect default addresses.  Do not use these
+   functions unless you are using more than one Expansion board on the
+   Little Giant.  This will save you code space as they are in seperate
+   header sections and will not be compiled.
+   
+\**************************************************************************/
+
+/*** BeginHeader exp_init_n, get_na, set_def_na, get_def_na */
+
+/* you may want to delete any of these definitions that you are not using */
+
+/* Base address = 0xEx0x */
+
+#define RDTTL_E  0xE400         /* TTL inputs */
+#define PAL_E    0xE800         /* Pulse Width enable (out) PIN level (inp) */
+#define POL_E    0xE801         /* Polarity of pulse to measure */
+#define PPIA_E   0xEC00         /* PPI data A */
+#define PPIB_E   0xEC01         /* PPI data B */
+#define PPIC_E   0xEC02         /* PPI data C */
+#define PPICN_E  0xEC03         /* PPI control */
+
+/* Base address = 0xDx0x */
+
+#define RDTTL_D  0xD400         /* TTL inputs */
+#define PAL_D    0xD800         /* Pulse Width enable (out) PIN level (inp) */
+#define POL_D    0xD801         /* Polarity of pulse to measure */
+#define PPIA_D   0xDC00         /* PPI data A */
+#define PPIB_D   0xDC01         /* PPI data B */
+#define PPIC_D   0xDC02         /* PPI data C */
+#define PPICN_D  0xDC03         /* PPI control */
+
+/* Base address = 0xCx0x */
+
+#define RDTTL_C  0xC400         /* TTL inputs */
+#define PAL_C    0xC800         /* Pulse Width enable (out) PIN level (inp) */
+#define POL_C    0xC801         /* Polarity of pulse to measure */
+#define PPIA_C   0xCC00         /* PPI data A */
+#define PPIB_C   0xCC01         /* PPI data B */
+#define PPIC_C   0xCC02         /* PPI data C */
+#define PPICN_C  0xCC03         /* PPI control */
+
+
+struct node_addr
+{
+   int ppicn;           /* PPI control register */
+   int ppida;           /* PPI A data */
+   int ppidb;           /* PPI B data */
+   int ppidc;           /* PPI C data */
+   int pal;             /* PWM enable (out) PIN (in) */
+   int pol;             /* Polarity for PWM */
+   int rdttl;           /* TTL input */
+   int num;             /* node number */
+};
+
+int exp_init_n (int node, int ppia, int ppib, int ppicu, int ppicl, int def);
+
+int get_na (int node, struct node_addr *na);
+int set_def_na (int node);
+int get_def_na (struct node_addr *na);
+
+/*** EndHeader exp_init_n, get_na, set_def_na, get_def_na */
+
+struct node_addr def_na;   /* default node addresses */
+
+/*=========================================================================*\
+
+ int exp_init_n (int node, int ppia, int ppib, int ppicu, int ppicl, int def);
+
+   Node I/O address selection with J10 jumper setting as:
+   
+   Node #      J10 1-2     J10 3-4     I/O address
+
+   3           open        open        Fx0xH
+   2           close       open        Ex0xH
+   1           open        close       Dx0xH
+   0           close       close       Cx0xH
+   -1                                  use default addresses saved in def_na
+ 
+   def specifies whether to save the node addresses as the default address
+   for subsequent calls with node = -1.  
+   
+            0              do not make default
+            1              save node as default
+
+   Returns:  
+         0        initial OK
+         -1       unknown node
+
+\*=========================================================================*/
+
+nodebug int exp_init_n (int node, int ppia, int ppib, int ppicu, int ppicl, int def)
+{
+   struct node_addr na;
+   int mode; 
+
+   if (node != -1) 
+   {
+      if (get_na (node, &na))
+         return -1;          /* if not valid node number */
+   }
+   else
+      get_def_na (&na);
+
+   outport (na.pal, 0);      /* Disable PWM PAL */
+
+   mode=0x80;
+   if (ppia == -1) 
+      SET (&mode, 4);
+   
+   if (ppib == -1)
+      SET (&mode, 1);
+      
+   if (ppicu == -1) 
+      SET (&mode, 3);
+   
+   if (ppicl == -1) 
+      SET (&mode, 0);
+
+   outport (na.ppicn, mode);   /* ALL PPI outport pins will be low !   */
+
+   outport (na.ppida, ppia);   /*  set the correct outputs  */
+   outport (na.ppidb, ppib);   
+   outport (na.ppidc, (ppicu << 4) | ppicl);  
+   
+   if (def)
+      def_na = na;             /* save as default node addresses */
+
+   return 0;
+}
+
+nodebug int get_na (int node, struct node_addr *na)
+{
+   if (node > 3 || node < 0)           /* test for valid node number */
+      return -1;
+
+   na->num = node; 
+   node <<= 12;                        /* make into something useful */
+
+   na->ppida = 0xCC00 + node;          /* make the correct addr for node */
+   na->ppidb = 0xCC01 + node;
+   na->ppidc = 0xCC02 + node;
+   na->ppicn = 0xCC03 + node;
+   na->pal   = 0xC800 + node;
+   na->pol   = 0xc801 + node;
+   na->rdttl = 0xC400 + node;
+   return 0;
+}
+
+nodebug int set_def_na (int node)
+{
+   return (get_na (node, &def_na));
+}
+
+nodebug int get_def_na (struct node_addr *na)
+{
+   if (def_na.num < 0 || def_na.num > 3)
+      set_def_na (3);                     /* set to default board addr */
+   *na = def_na;
+   return (def_na.num);                   /* and return the def node */
+}
+
+/*** BeginHeader mux_ch_n */
+
+int mux_ch_n (int node, int chan, int def);
+
+/*** EndHeader mux_ch_n */
+ 
+/*=========================================================================*\
+   Set U17  DG509A Multiplexer on multiple I/O Expanders 
+   
+   int mux_ch_n (int node, int chan, int def);
+
+\*=========================================================================*/
+
+nodebug int mux_ch_n (int node, int chan, int def)
+{
+   struct node_addr na;
+   int i;
+   
+   if (node != -1) 
+   {
+      if (get_na (node, &na))          /* if not valid node number */
+         return -1;
+   }
+   else
+      get_def_na (&na);
+
+   i = inport(na.ppida);
+   
+   RES (&i, 6);                        /*  chan 0   */
+   RES (&i, 7);
+   
+   if (BIT (&chan,0)) SET (&i,6);
+   
+   if (BIT (&chan,1)) SET (&i,7);
+   
+   outport(na.ppida, i);
+
+   if (def)
+      def_na = na;
+
+   return 0;
+}
+
+/*** BeginHeader ad20_mux_n, ad20_rdy_n, ad20_cal_n, ad20_rd_n */
+
+int ad20_mux_n (int node, int chan, int def);
+int ad20_rdy_n (int node);
+int ad20_cal_n (int node, int mode, int def);
+long ad20_rd_n (int node, int def);
+ 
+/*** EndHeader ad20_mux_n, ad20_rdy_n, ad20_cal_n, ad20_rd_n */
+
+
+/*       See comments for single board versions */
+
+#define SDAT 0x00
+#define CAL  0x01
+#define CS   0x02
+#define SC2  0x03
+#define SCLK 0x04
+#define SC1  0x05
+
+nodebug int ad20_mux_n (int node, int chan, int def)
+{
+   int i;
+   struct node_addr na;
+   
+   if (node != -1) 
+   {
+      if (get_na (node, &na))          /* if not valid node number */
+         return -1;
+   }
+   else
+      get_def_na (&na);
+
+   i = inport (na.ppida);
+   RES (&i, 0);    /*  unipolar */
+   RES (&i, 6);    /*  chan 0   */
+   RES (&i, 7);
+
+   if (BIT (&chan, 0))
+      SET (&i, 6);
+
+   if (BIT (&chan, 1))
+      SET (&i, 7);
+      
+   if (BIT (&chan, 2) || BIT (&chan, 3))
+      SET (&i, 0);
+      
+   outport (na.ppida, i);
+
+   if (def)
+      def_na = na;
+}
+
+nodebug int ad20_rdy_n (int node)
+{
+   struct node_addr na;
+   
+   if (node != -1) 
+   {
+      if (get_na (node, &na))          /* if not valid node number */
+         return -1;
+   }
+   else
+      get_def_na (&na);
+
+   return (IBIT (na.rdttl, 1)); 
+}  
+
+nodebug int ad20_cal_n (int node, int mode, int def)
+{
+   int i, par, ppida, save_node;
+   struct node_addr na;
+   
+   if (node != -1) 
+   {
+      if (get_na (node, &na))          /* if not valid node number */
+         return -1;
+   }
+   else
+      get_def_na (&na);
+
+   save_node = def_na.num;
+   def_na = na;
+   ppida = na.ppida;
+
+   par = inport (ppida);
+   SET (&par, CS);       /* disable AD7701 to transmit serial data */
+   RES (&par, CAL);      /* CAL low  */
+   outport (ppida, par); /* output Port A  */
+
+   switch (mode)
+   {
+      case 0x00:
+            RES (&par, SC1);        /* CS1=0, CS2=0, self calibration  */
+            RES (&par, SC2);
+            outport (ppida, par);     
+            SET (&par, CAL);         /* CAL high */
+            outport (ppida, par);     
+                     
+            for (i=0; i < 4; i++);
+            RES (&par, CAL);        /* CAL low  after 4 CLK high */
+            outport (ppida, par);
+            break;
+
+      case 0x01:
+            ad20_mux_n (-1, 1, 0);  /* Uni- or Bi- polarity must same as CH0 */
+            
+            /* CH1 is zero Ain for Mode 1 calibration */
+            SET (&par, SC1);        /* mode 1 system offset calibration  */
+            SET (&par, SC2);
+            outport (ppida, par);     
+            SET (&par, CAL);        /* CAL high */
+            outport (ppida, par);   /* output Port A  */
+                     
+            for (i = 0; i < 4; i++);
+            RES (&par, CAL);        /* CAL low  after 4 CLK high */
+            outport (ppida, par); 
+
+            while (ad20_rdy_n (-1));    
+            ad20_mux_n (-1, 2, 0);  /* Uni- or Bi- polarity must same as CH0 */
+
+            /* CH2 is full scale Ain for Mode 1 calibration */
+            RES (&par, SC1);        /* mode 1 system gain calibration  */
+            SET (&par, SC2);
+            outport (ppida, par);     
+            SET (&par, CAL);        /* CAL high */
+            outport (ppida, par);   /* output Port A  */
+
+            for (i = 0; i < 4; i++);
+            RES (&par, CAL);        /* CAL low after 4 CLK high */
+            outport (ppida, par); 
+            break;
+
+         case 0x02:
+            /* current channel is zero Ain for Mode 2 calibration */
+            SET (&par, SC1);        /* mode 2 system offset calibration  */
+            RES (&par, SC2);
+            outport (ppida, par);     
+            SET (&par, CAL);        /* CAL high */
+            outport (ppida, par);    /* output Port A  */
+
+            for (i = 0; i < 4; i++);
+            RES (&par, CAL);        /* CAL low  after 4 CLK high */
+            outport (ppida, par); 
+            break;
+         
+      default: 
+#ifndef ROM
+            printf("unknown calibration mode= %x \n",mode);
+#endif
+            if (!def)
+               set_def_na (save_node);
+            return (-1);
+   }
+
+   while (ad20_rdy_n (-1));    
+
+   if (!def)
+      set_def_na (save_node);          /* restore default node */
+   
+   return 0;
+}
+
+nodebug long ad20_rd_n (int node, int def)
+{
+   int i, j, par, save_node, ppida;
+   long ad_dat;
+   struct node_addr na;
+   
+   if (node != -1) 
+   {
+      if (get_na (node, &na))          /* if not valid node number */
+         return -1;
+   }
+   else
+      get_def_na (&na);
+
+   save_node = def_na.num;
+   def_na = na;
+   ppida = na.ppida;
+
+   while (ad20_rdy_n (-1));
+
+   par = inport (ppida);
+   RES (&par, CS);               /* enable AD7703 to transmit serial data */
+   outport (ppida, par);          /* output Port A  */
+
+   ad_dat = 0;
+
+   for (i = 0; i < 20; i++)
+   {
+      if (IBIT (na.rdttl, SDAT))
+      {
+         j = 19 - i;
+         SET (&ad_dat, j);
+      }
+      
+      SET (&par, SCLK);           /* SCLK low to high  */
+      outport (ppida, par);       /* output Port A  */
+      RES (&par, SCLK);           /* SCLK high to low */
+      outport (ppida, par);       /* output Port A  */
+   }
+
+   SET (&par, CS);                /* disable AD7701 transmit serial data */
+   outport (ppida, par);          /* output Port A  */
+
+   if (!def)
+      set_def_na (save_node);    /* restore default node */
+
+   return (ad_dat);
+}
+
+/******************************************* end of USER1.LIB *****/

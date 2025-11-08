@@ -1,0 +1,911 @@
+/****************************************************************************
+ EZIOBL17.LIB
+ Copyright (c)1997, Z-World
+
+ BL17xx Controller Board functions.
+ 
+ ****************************************************************************/
+
+/*** BeginHeader */
+
+#ifndef _EZIOBL17_LIB
+#define _EZIOBL17_LIB
+
+//#use ezio.lib
+#define EIO_BRD_NUM_ADC 10
+
+#define PWMBANK _OUT_BANKS
+#define NOOP 0x0E
+#define BRDON(x) ((x<<1)|1)&15
+#define BRDOFF(x) (x<<1)&15
+
+#define _IN_BANKS  0x4040	//base address for inputs
+#define _OUT_BANKS 0x4100	//base address for outputs
+
+#use eziocmmn.lib
+#use eziodpwm.lib
+
+#define EIO_NODEV 0x02
+
+#ifdef EIOUSEPLC
+#undef EIOUSEPLC
+#endif
+
+#define EIOUSEPLC 0
+
+#ifndef EIO_EE_ACAL_B		
+#define EIO_EE_ACAL_B 0x2	//	start EIO EE usage at 0x2 unless
+									//	otherwise defined
+#endif
+
+
+#ifndef EIO_SAFEST
+#define EIO_SAFEST 0
+#endif
+
+#ifndef EIODBNC
+#define EIODBNC 0
+#endif
+
+#define _ADCADDR 0x40D0		//adc address access to data out,data in,chip select,clocking
+#define _ADEOC 0x40C0		//adc address end of conversion, read d0
+#define ADCSNEG 0x02			//adc chip select negate, write d1
+#define ADCSAST 0x00			//adc chip select assert, write d1
+#define CLKHI 0x01			//adc i/o clock, write d0 high
+#define CLKLO 0x00			//adc i/o clock, write d0 low
+#define BITOUT8  1			//adc output data length of 8, bits d3-d2
+#define BITOUT12 0			//adc output data length of 12, bits d3-d2
+#define BITOUT16 3			//adc output data length of 16, bits d3-d2
+#define MSB_FIRST 0			//adc output format, bit d1
+#define LSB_FIRST 1			//adc output format, bit d1
+#define UNIPOLAR 0			//adc polar format, bit d0
+#define BIPOLAR  1			//adc polar format, bit d0
+#define CLKOUT8 8				//adc clock tracking
+#define CLKOUT12 12
+#define CLKOUT16 16
+
+#define _LED1 0x4142			//LED D2
+
+#ifdef LCDWR
+#undef LCDWR
+#endif
+#define LCDWR 0x40e0			//for KDM off of plcbus
+
+#ifdef LCDRD
+#undef LCDRD
+#endif
+#define LCDRD 0x40e0			//for KDM off of plcbus
+
+#define BUSRD0 +(0x40c0+0x30)			//plcbus addressing
+#define BUSRD1 +(0x40c0+0x32)
+#define BUSRD2 +(0x40c0+0x34)
+#define BUSWR +(0x40c0+0x3e)
+#define BUSADR0 +(0x40c0+0x38)
+#define BUSADR1 +(0x40c0+0x3a)
+#define BUSADR2 +(0x40c0+0x3c)
+#define BUSRST +(0x40c0+0x36)
+
+typedef struct adcinits
+	{
+	unsigned outmode;
+	int outlen;
+	};
+	
+/*** EndHeader */
+
+/*** BeginHeader SHBUS0, SHBUS1 */
+
+extern int SHBUS1,SHBUS0;
+
+/*** EndHeader */
+
+int SHBUS1,SHBUS0;
+
+/*** BeginHeader eioBrdDbnc, eioBrdDbnced */
+
+extern int eioBrdDbnced;
+
+void eioBrdDbnc();
+
+/*** EndHeader */
+
+
+#if EIODBNC
+
+int eioBrdDbnced;
+int eioBrdThis;
+int eioBrdLast;
+
+void eioBrdDbncInit() {
+	eioBrdThis = eioBrdLast = eioBrdDbnced = 0;
+}
+
+#funcchain _GLOBAL_INIT eioBrdDbncInit
+
+#asm
+eioBrdDbnc::				;	12 for call
+	ld		bc,_IN_LOBANK	;	9
+	in		l,(c)				;	9
+	ld		bc,_IN_HIBANK	;	9
+	in		h,(c)				;	9
+	ld		(eioBrdThis),hl	;	12
+	ld		hl,eioBrdLast		;	9	hl = eioBrdLast
+	ld		bc,eioBrdThis		;	9	bc = eioBrdThis
+	ld		de,eioBrdDbnced	;	9	de = eioBrdDbnced
+	ld		a,(bc)				;	6	a = *eioBrdThis
+	xor	(hl)					;	6	a = *eioBrdThis ^ *eioBrdLast
+	ld		(_eioBrdDBTmp),a	;	tmp = *eioBrdThis ^ *eioBrdLast
+	or		(hl)					;	a = tmp | *eioBrdLast
+	push	af						;	(sp) = tmp | *eioBrdLast
+	ld		a,(_eioBrdDBTmp)	;	a = tmp
+	cpl							;	a = ~tmp
+	ex		de,hl
+	or		(hl)					;	a = ~tmp | *eioBrdDbnced
+	ex		de,hl
+	ex		(sp),hl				;	(sp) = hl, h = tmp | *eioBrdLast
+	and	h						;	a = (~tmp | *eioBrdDbnced) & (tmp | *eioBrdLast)
+	pop	hl						;	restore hl
+	ld		(de),a				;	*eioBrdDbnced = (~tmp | *eioBrdDbnced) & (tmp | *eioBrdLast)
+	inc	bc						;	4
+	inc	de						;	4
+	inc	hl						;	4
+	ld		a,(bc)				;	6	a = *eioBrdThis
+	xor	(hl)					;	6	a = *eioBrdThis ^ *eioBrdLast
+	ld		(_eioBrdDBTmp),a	;	tmp = *eioBrdThis ^ *eioBrdLast
+	or		(hl)					;	a = tmp | *eioBrdLast
+	push	af						;	(sp) = tmp | *eioBrdLast
+	ld		a,(_eioBrdDBTmp)	;	a = tmp
+	cpl							;	a = ~tmp
+	ex		de,hl
+	or		(hl)					;	a = ~tmp | *eioBrdDbnced
+	ex		de,hl
+	ex		(sp),hl				;	(sp) = hl, h = tmp | *eioBrdLast
+	and	h						;	a = (~tmp | *eioBrdDbnced) & (tmp | *eioBrdLast)
+	pop	hl						;	restore hl
+	ld		(de),a				;	*eioBrdDbnced = (~tmp | *eioBrdDbnced) & (tmp | *eioBrdLast)
+	ret							;	9
+	;	total of 170 states
+#endasm
+
+#funcchain _eioDbnc eioBrdDbnc
+
+#endif
+
+/*** BeginHeader BankA, BankB */
+
+unsigned BankA(unsigned eioAddr);
+unsigned BankB(unsigned eioAddr);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ***********************************************
+BankB    	<EZIOBL17.LIB>
+
+SYNTAX: 		unsigned BankB(unsigned eioAddr);
+
+DESCRIPTION:	This function translates I/O numbers to an addressable format.
+
+PARAMETER1:		eioAddr is an input number from 0 to 15.
+
+RETURN VALUE:	Returns the addressable value of 0 to 15.  Returns -1 if invalid
+eioAddr.
+
+END DESCRIPTION *************************************************************/
+
+unsigned BankB(unsigned eioAddr)
+{
+if (eioAddr < 0 || eioAddr > 15)
+	return -1;
+else
+	return eioAddr;
+}
+
+/* START FUNCTION DESCRIPTION ***********************************************
+BankA    	<EZIOBL17.LIB>
+
+SYNTAX: 		unsigned BankA(unsigned eioAddr);
+
+DESCRIPTION:	This function translates I/O numbers to an addressable format.
+
+PARAMETER1:		eioAddr is an input number from 0 to 15.
+
+RETURN VALUE:	Returns the addressable value of 16 to 31.  Returns -1 if invalid
+eioAddr.
+
+END DESCRIPTION *************************************************************/
+
+unsigned BankA(unsigned eioAddr)
+{
+if (eioAddr < 0 || eioAddr > 15)
+	return -1;
+else
+	return eioAddr+16;
+}
+
+/* START FUNCTION DESCRIPTION ***********************************************
+eioBrdDI    <EZIOBL17.LIB>
+
+SYNTAX: 		int eioBrdDI(unsigned eioAddr);
+
+DESCRIPTION:	This function attempts to read an input position.
+
+PARAMETER1:		eioAddr is an input number from 0 to 31.
+
+RETURN VALUE:	Returns 0 or 1 if read is successful.  Returns -1 if invalid
+eioAddr.
+
+END DESCRIPTION *************************************************************/
+
+/*** BeginHeader eioBrdDI */
+
+int eioBrdDI(unsigned eioAddr);
+
+/*** EndHeader */
+#asm
+eioBrdDI::
+	ld		a,h
+	or		a
+	jr		nz,bad
+	ld		a,l				;	4
+#if EIODBNC
+	cp		11111b			;  i/o must be 0-31
+	jr		nc,bad
+#endif
+	cp		100000b
+#if EIODBNC
+	jr		nc,ebdbnc		;	6/8+103=111
+#else
+	jr		nc,bad
+#endif
+								;compensate for hardware versus addressing by
+								;swapping I/O 16-23 (0x4042) and 24-31 (0x4043)
+	ld		a,l								
+	cp		11000b			; is number 24-31?
+	jr		nc,sub8			; then swap to address 0x4042
+	cp		10000b			; is number 16-23?
+	jr		nc,add8			; then swap to address 0x4043
+	jp 	isobits			; otherwise go on
+add8:
+	add	a,8				; 24-31 is now address 0x4042
+	jp		isobits
+sub8:
+	ld		l,8				
+	sub	l					; 16-23 is now address 0x4043
+isobits:	
+	ld		l,a				; new number is used below
+	;ld		a,l
+	sra	a					; isolating bits 4 and 3 determines a bank address
+	sra	a
+	sra	a
+	ld		bc,_IN_BANKS	; load in base address
+	or		c					; add-in isolated bits to address				
+	ld		c,a				; 
+	in		b,(c)				; 9
+
+	ld		a,0x07			; use lower 3 bits
+	and	l
+	ld		l,a
+	ld		h,0				; 6
+	ld		de,__bitmap		; 9, use bitmap to determine which bit to examine
+	add	hl,de				; 7
+	ld		a,(hl)			; 6
+	ld		hl,0				; 9
+	and	b					; 4
+	ret	z					; 9
+	inc	hl					; 4+13
+	ret						; 9/
+								;	140 max
+#if EIODBNC
+ebdbnc:
+	cp		00100000b
+	jr		nc,bad
+	ld		a,l
+	and	00001111b			;	6
+	ld		hl,eioBrdDbnced	;	9
+	bit	4,a					;	6
+	jr		z,ebdbnc100			;	8 _10
+	inc	hl						;	4/
+ebdbnc100:
+	ld		b,(hl)				;	6
+	and	7						;	6
+	ld		h,0					;	6
+	ld		l,a					;	6
+	ld		de,__bitmap			;	9
+	add	hl,de					;	7
+	ld		a,b					;	4
+	and	(hl)					;	6
+	ld		hl,0					;	9
+	ret	z						;	9
+	inc	hl						;	4+13
+	ret							;	9/
+									;	103
+#endif
+
+bad:
+	ld		a,EIO_NODEV
+	ld		hl,eioErrorCode
+	or		(hl)
+	ld		(hl),a
+	ld		hl,0xffff
+	ret
+#endasm
+
+/* START FUNCTION DESCRIPTION ***********************************************
+eioBrdDO    <EZIOBL17.LIB>
+
+SYNTAX: 		int eioBrdDO(unsigned eioAddr, char state);
+
+DESCRIPTION:	This function attempts to write an output position. 
+
+PARAMETER1:		eioAddr is an output number from 0 to 31.
+PARAMETER2:		state is 1-on or 0-off condition.
+
+RETURN VALUE:	Returns 0 if successful.  Returns -1 if invalid parameters.
+
+END DESCRIPTION *************************************************************/
+
+/*** BeginHeader eioBrdDO */
+
+int eioBrdDO(unsigned eioAddr, char state);
+
+#ifndef EIO_EE_BRD_X
+#if EIO_SAFEST
+#define EIO_EE_BRD_X 1
+#else
+#define EIO_EE_BRD_X 0
+#endif
+#endif
+
+#ifndef EIO_EE_BRD_B
+#define EIO_EE_BRD_B (EIO_EE_SAFE_B+EIO_EE_PLC_X)
+#endif
+
+#ifndef EIO_SAFEST
+#define EIO_SAFEST 0
+#endif
+
+/*** EndHeader */
+
+#if EIO_SAFEST
+
+nodebug void eioBrdDOSafe(unsigned eioAddr, char state) {
+	auto char tmp;
+	auto char bitmask;
+	auto int eeaddr;
+
+	tmp = ee_rd(eeaddr=EIO_EE_BRD_B+(eioAddr>>3));
+	if ((state!=0) != ((tmp & (bitmask=__bitmap[eioAddr&0x7]))!=0)) {
+		ee_wr(eeaddr,state?(tmp|bitmask):(tmp&(~bitmask)));
+	}
+}
+
+#endif
+
+
+#asm
+eioBrdDO::
+	pop	bc					;	9
+	pop	hl					;	9
+	pop	de					;	9
+	push	de					;	11
+	push	hl					;	11
+	push	bc					;	11
+	ld		a,h				;	high byte should be 0!
+	or		a
+	jr		nz,bad			;	or else it is a bad channel
+	
+	ld		a,l				;	low byte
+	cp		100000b			; i/o should be 0-31
+	jr		nc,bad			; or else it is also a bad channel
+	
+	ld		a,e				; check state
+	or		d					; is de non-zero?
+	jr		z,outPort		
+	ld		a, 0x01			; 0th bit to turn on otherwise off
+outPort:
+	ld		bc,_OUT_BANKS	; load base address
+	ld		c,l				; add-in output number
+	sla	l					; shift bits one left
+	or		l					; include output number plus on/off state
+	and	00001111b		; clean up upper byte
+	out	(c),a				; 10
+
+#if EIO_SAFEST
+	ld		a,(eio_def_safe)
+	or		a
+	jr		z,noDefSafe
+	ld		hl,@SP+state
+	add	hl,sp
+	ld		c,(hl)
+	inc	hl
+	ld		b,(hl)
+	push	bc
+	ld		hl,@SP+eioAddr+2	;	compensate for word already pushed
+	add	hl,sp
+	ld		c,(hl)
+	inc	hl
+	ld		b,(hl)
+	push	bc
+	call	eioBrdDOSafe
+	pop	bc
+	pop	bc
+
+noDefSafe:
+#endif
+
+	ld		hl,0			;	9	;successful return
+	jr		end
+	
+bad:
+	ld		a,EIO_NODEV
+	ld		hl,eioErrorCode
+	or		(hl)
+	ld		(hl),a
+	ld		hl,0xffff	;
+end:
+	ret
+#endasm
+
+/*** Beginheader eioBrdDO32 */
+
+void eioBrdDO32(unsigned long state);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ***********************************************
+eioBrdDO32    <EZIOBL17.LIB>
+
+SYNTAX: 		void eioBrdDO32(unsigned long int state);
+
+DESCRIPTION:	This function updates all 32 output positions.
+
+PARAMETER1:		state is a 32-bit mask to indicate the desired state of the
+output channel. Bit-0 corresponds to channel 0 of Bank A, bit-31 corresponds
+to channel 15 of Bank B.
+
+RETURN VALUE:	N/A
+
+END DESCRIPTION *************************************************************/
+
+void eioBrdDO32(unsigned long state) {
+#asm xmemok
+	ld		hl,@SP+state
+	add	hl,sp
+	ex		de,hl					;	de = address of state
+	ld		bc,_OUT_BANKS		;	bc = bank I/O addr
+
+	ld		a,4
+anotherBank:
+	push	af
+	ld		a,(de)
+	ld		h,a
+
+	srl	h
+	ld		l,0
+	rl		l
+	out	(c),l
+	
+	srl	h
+	ld		l,1
+	rl		l
+	out	(c),l
+	
+	srl	h
+	ld		l,2
+	rl		l
+	out	(c),l
+	
+	srl	h
+	ld		l,3
+	rl		l
+	out	(c),l
+	
+	srl	h
+	ld		l,4
+	rl		l
+	out	(c),l
+	
+	srl	h
+	ld		l,5
+	rl		l
+	out	(c),l
+	
+	srl	h
+	ld		l,6
+	rl		l
+	out	(c),l
+	
+	srl	h
+	ld		l,7
+	rl		l
+	out	(c),l
+
+	ld		hl,8
+	add	hl,bc
+	ld		c,l
+	ld		b,h
+	inc	de
+	pop	af
+	dec	a
+	jr		nz,anotherBank
+	
+#endasm
+}
+
+/*** BeginHeader eioBrdAdcMode, brdAdcMode */
+
+int eioBrdAdcMode(int datalen, int dataformat, int polarformat);
+extern struct adcinits brdAdcMode;
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ***********************************************
+eioBrdAdcMode    <EZIOBL17.LIB>
+
+SYNTAX: 		int eioBrdAdcMode(int datalen, int dataformat, int polarity);
+
+DESCRIPTION: 	This function sets the mode of the ADC.
+					
+PARAMETER1:		datalen is the length of data, the caller may select
+8, 12 or 16, pass the values BITOUT8, BITOUT12 or BITOUT16 respectively.
+
+PARAMETER2:		dataformat is whether the ADC should read MSB first or
+LSB first, pass the values MSB_FIRST or LSB_FIRST respectively.
+
+PARAMETER3:		polarity is whether the ADC read unipolar or bipolar, pass
+the values UNIPOLAR or BIPOLAR respectively.
+
+RETURN VALUE: 	-1 if one of the parameters is not a valid value.
+
+END DESCRIPTION *************************************************************/
+
+struct adcinits brdAdcMode;
+
+int eioBrdAdcMode(int datalen, int dataformat, int polarformat)
+{
+// first check for correct input values
+if ((datalen < BITOUT12) || (datalen > BITOUT16))
+	return -1;
+else
+	if ((dataformat != MSB_FIRST) && (dataformat != LSB_FIRST))
+		return -1;
+	else
+		if ((polarformat != UNIPOLAR) && (polarformat != BIPOLAR))
+			return -1;
+			
+// assign data output and clock length
+if (datalen == BITOUT8)
+	brdAdcMode.outlen = CLKOUT8;
+else
+	if (datalen == BITOUT16)
+		brdAdcMode.outlen = CLKOUT16;
+	else
+		brdAdcMode.outlen = CLKOUT12;
+		
+// assign output mode 
+brdAdcMode.outmode = (datalen<<2) | (dataformat<<1) | polarformat;
+return 1;
+
+}
+
+
+/*** BeginHeader eioBrdAdcInit */
+
+void eioBrdAdcInit(void);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ***********************************************
+eioBrdAdcInit                <EZIOBL17.LIB>
+
+SYNTAX: 		void eioBrdAdcInit()
+
+DESCRIPTION: This function initializes the mode of the ADC to unipolar,
+MSB first and 12-bit. If you need to change the mode, use eioBrdAdcMode
+to change the mode.
+
+RETURN VALUE: N/A.
+
+END DESCRIPTION *************************************************************/
+
+void eioBrdAdcInit(void)
+{
+brdAdcMode.outlen = 12;
+brdAdcMode.outmode = (BITOUT12<<2) | (MSB_FIRST<<1) | UNIPOLAR;
+}
+
+/*** BeginHeader _eioBrdAI, __eioBrdAI */
+
+unsigned _eioBrdAI(unsigned eioAddr);
+unsigned __eioBrdAI(unsigned eioAddr, char datalen);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ***********************************************
+_eioBrdAI    EZIOBL17.LIB
+
+SYNTAX: 		unsigned  _eioBrdAI(unsigned eioAddr)
+
+DESCRIPTION: This function reads back the ADC value off the ADC chip on the
+BL17xx board. Note that this function does not check the validity of the
+channel number! This function calls __eioBrdAI to actually  read from the
+device. The default mode of the ADC is set by eioBrdAdcInit, which is also
+called by eioBrdInit. If you need to change the mode, call eioBrdAdcMode.
+
+PARAMETER1:		eioAddr is an input number 0-9, select 10-14 for test voltages.
+
+RETURN VALUE: "raw data" of 0 to 4095 converted for the chosen A/D "eioAddr".
+
+END DESCRIPTION *************************************************************/
+
+unsigned _eioBrdAI(unsigned eioAddr)
+{
+	return __eioBrdAI((eioAddr<<4) | (brdAdcMode.outmode), brdAdcMode.outlen);
+}
+
+
+#asm
+__eioBrdAI::
+;	pop	bc					;	9
+;	pop	hl					;	9
+;	pop	de					;	9
+;	push	de					;	11
+;	push	hl					;	11
+;	push	bc					;	11
+
+;; reset device
+	ld		bc,_ADCADDR		; 9
+	ld		a,ADCSNEG		; 6
+	out	(c),a				;10, negate chip select
+	ld		a,ADCSAST		; 6
+	out	(c),a				;10, assert chip select
+
+	ld		h,2				; 6
+looptwice:
+	ld		bc,_ADEOC		; 9, first loop pumps data in and inaccurate data out
+wait_eoc:
+	in		a,(c)				; 9, check for end of conversion
+	bit   0,a    			; 6, if zero then conversion not done
+	jr    z,wait_eoc   	; 6 or 8
+	
+;; determine clocks
+;	ld		b,e
+		
+	ld		a,l				; 6, test bits for format
+	bit	2,a				; 6
+	jr		nz,clk16			; 6 or 8
+	ld		b,CLKOUT12		; 6, set for 12 clocks
+	jr		loadinits		; 8
+clk16:						; set for 16 clocks
+	ld		a,l				; 6
+	bit	3,a				; 6
+	jr		z,clk8			; 6 or 8
+	ld		b,CLKOUT16		; 6
+	jr		loadinits		; 8
+clk8:							; set for 8 clocks
+	ld		b,CLKOUT8		; 6
+	
+loadinits:
+	ld		a,l				; 6
+	ld 	e,0				; 6
+	ld		d,0				; 6
+clkit:						; start clocking data in and out
+	exx						; 3
+	ld 	e,0				; 6
+	rla                  ; 3, rotate left most bit 7 out to carry
+	rl    e              ; 7, rotate carry into bit 0 of reg 
+	sla	e					; 7, slide to bit 2 position
+	sla	e					; 7
+	ex		af,af'			; 4
+	ld		a,e				; 6
+	ld		bc,_ADCADDR		; 9
+	out	(c),a				;10, clock data input to device
+	or		CLKHI				; 6, include asserted chip select with clock high to data in
+	out	(c),a				;10, clock data input to device
+	in		a,(c)				; 9, clock data output from device into a register
+	rra						; 3, rotate right bit 0 to carry
+	exx						; 3
+	rl		e					; 7, rotate carry into bit 0 of reg
+	exx						; 3
+	ld		a,CLKLO			; 6
+	out	(c),a				;10, clock low
+	exx						; 3
+
+	ld		a,b				; 6
+	cp		9					; 6, save upper bits before the next 8 bits rotate in
+	jr		nz,mov8			; 6 or 8
+	ld		d,e				; 6
+	
+mov8:
+	ex		af,af'			; 4
+	djnz	clkit				; 9 or 7
+	
+	dec	h					; 4
+	jr		nz,looptwice	; 6 or 8
+	
+	ld 	h,d				; 6, return data to hl reg
+	ld		l,e				; 6
+	
+;; deselect device
+	ld		bc,_ADCADDR		; 9
+	ld		a,ADCSNEG		; 6
+	out	(c),a				;10, negate chip select
+
+	ret						; 9
+#endasm
+
+
+/*** BeginHeader eioBrdInitSafe */
+
+void eioBrdInitSafe();
+
+/*** EndHeader */
+
+void eioBrdInitSafe() {
+	auto int i;
+
+	for (i = EIO_EE_BRD_B; i < EIO_EE_BRD_B+EIO_EE_BRD_X; ++i) {
+		ee_wr(i,0);
+	}
+}
+
+/*** BeginHeader _eioBrdInit */
+
+void _eioBrdInit(int flags);
+
+/*** EndHeader */
+
+void _eioBrdInit(int flags) {
+}
+
+/*** BeginHeader _eioBeeper */
+
+void _eioBeeper(char state);
+
+/*** EndHeader */
+
+void _eioBeeper(char state) {
+}
+
+
+/*** BeginHeader sysIsRunWithDC */
+
+int sysIsRunWithDC();
+extern char OPMODE;
+
+/*** EndHeader */
+
+int sysIsRunWithDC() {
+	return !(OPMODE & 0x08);
+}
+
+
+/*** BeginHeader switchLED */
+
+int switchLED(unsigned state);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ***********************************************
+switchLED    	EZIOBL17.LIB
+
+SYNTAX: 		int switchLED(unsigned state);
+
+DESCRIPTION:	This function will switch the LED on or off.
+
+PARAMETER1:		state is an input number of 1 to turn on or 0 to turn off
+
+RETURN VALUE:	Returns 0 if state is a valid number or -1 if not.
+
+END DESCRIPTION *************************************************************/
+#asm
+switchLED::
+;	push	bc
+;	push	af
+	ld		a,h					; check upper byte
+	or		a
+	jr		nz,bad				; if not zero, then invalid state
+	ld		a,l
+	or		h
+	jr		z,ledout				; 4, if zero then turn off
+	ld		a,1					; otherwise turn on
+ledout:
+	ld		bc,_LED1
+	out	(c),a
+	ld		hl,0
+;	pop	af
+;	pop	bc
+	ret
+bad:
+	ld		a,EIO_NODEV
+	ld		hl,eioErrorCode
+	or		(hl)
+	ld		(hl),a
+	ld		hl,0xffff
+;	pop	af
+;	pop	bc
+	ret
+	
+#endasm
+
+
+/*** BeginHeader sccSw485 */
+
+int sccSw485(unsigned channel, unsigned state);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ***********************************************
+sccSw485    	EZIOBL17.LIB
+
+SYNTAX: 		int sccSw485(unsigned channel, unsigned state);
+
+DESCRIPTION:	This function will enable or disable the selected
+SCC 485 Channel.
+
+PARAMETER1:		channel represents the channel A (0x1000) or channel B (0x0000).
+Use the macros SCC_A and SCC_B.
+PARAMETER2:		state is an input number of 1 to enable or 0 to disable
+
+RETURN VALUE:	Returns 0 if channel is a valid number or -1 if not.
+
+END DESCRIPTION *************************************************************/
+
+int sccSw485(unsigned channel, unsigned state)
+{
+	if( channel == SCC_A )
+		{
+		if (state > 0)
+			outport( 0x4042, 1);			//enable
+		else
+			outport( 0x4042, 0);			//disable
+		return 0;
+		}
+	
+	if( channel == SCC_B )
+		{
+		if (state > 0)
+			outport( 0x4040, 1);			//enable
+		else
+			outport( 0x4040, 0);			//disable
+		return 0;
+		}
+	return -1;
+}
+
+/*** BeginHeader eioBrdOn485, eioBrdOff485 */
+
+void eioBrdOn485();
+
+void eioBrdOff485();
+
+/*** EndHeader */
+
+#asm
+eioBrdOn485::
+	push	af
+	push	bc
+	ld		bc, 0x4000
+	ld		a,1
+	out	(c),a
+	pop	bc
+	pop	af
+	ret
+
+eioBrdOff485::
+	push	af
+	push	bc
+	ld		bc,0x4000
+	xor	a
+	out	(c),a
+	pop	bc
+	pop	af
+	ret
+#endasm
+
+
+/*** BeginHEader */
+
+#endif
+
+/*** endHeader */

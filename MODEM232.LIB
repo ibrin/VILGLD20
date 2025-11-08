@@ -1,0 +1,296 @@
+// 1-23-96  Added SKERNEL marker to disable suspend() if using SRTK.
+// 1-6-96   Added support for the MicroG2.
+// 11-16-95 Use MicroG and LittleG to recognize boards 9 and 8, respectively.
+// 8-23-95  Recognize flash eprom for the SCoreZ1
+// 8-15-95  Recognize flash eprom for the Little Star
+// 5-11-95  Recognize flash eprom for the Rugged Giant
+// 5-3-95   Recognize flash eprom for the LittleG.
+// 4-30-95  Recognize dvboard for the SmartCoreZ1.
+// 3-30-95  Recognize flash and dvboard for the MicroG.
+// 1-27-95  Enable INT0 for boards that uses INT0 IM 2.
+//10-27-94  Rearranged turning off of PIO interrupts.
+//7-25-94   Added support for the Z104 and Z104ISA boards.
+//          Make Delay_100ms dependent on the value of sysclock.
+/* START LIBRARY DESCRIPTION *********************************************
+MODEM232.LIB
+	 Copyright (c) 1994, Z-World.
+
+DESCRIPTION: Support library for z0232.lib, s0232.lib, uart232.lib and 
+network.lib, scc232.lib (protocol switch).
+
+SUPPORT LIB'S: rtk.lib
+END DESCRIPTION **********************************************************/
+
+/*** Beginheader  */
+#define BACKSPACE  0x08
+#define ENTER      0x0d
+#define LINEFEED   0x0a
+#define SPACE      0x20
+#define SOH        0x01
+#define NAK        0x15
+#define ACK        0x06
+#define EOT        0x04
+#define CAN        0x18
+#define XCRC       0x43
+#define ESC        0x1b
+#define TAB        0x09
+/*** Endheader */
+
+/* Header for utility software delay, needed for non-RTK application */
+/* If RTK is used, delay is a suspend */
+
+/*** Beginheader Ddelay_5sec,Ddelay_1sec, Ddelay_100ms, Ddelay_1tick,
+	  Dget_modem_command */
+
+void Ddelay_5sec(void);
+void Ddelay_1sec(void);
+void Ddelay_100ms(void);
+void Ddelay_1tick(void);
+int  getcrc(char *dataarray, char count, int accum);
+int  Dget_modem_command(char *buf);
+
+/*** Endheader */
+
+// The following are modem responses that the serial communication monitors:
+char *_Modem_R[] =
+	  {
+			"\nOK",             // modem command okay
+			"\nCONNECT",        // modem connect at other bps
+			"\nRING",           // ring detected
+			"\nNO CARRIER",     // remote carrier is lost
+			"\nERROR",          // command error
+			"\nCONNECT 1200",   // connect at 1200 bps
+			"\nNO DIALTONE",    // no dial tone
+			"\nBUSY",           // line is busy
+			"\nNO ANSWER",      // no answer
+			"\nCONNECT 2400",   // connect at 2400 bps
+			"\n"                // just a line feed
+	  };
+
+/* START FUNCTION DESCRIPTION ********************************************
+Dget_modem_command           <MODEM232.LIB>  
+
+SYNTAX: int Dget_modem_command(char *buf);
+
+DESCRIPTION: Deciphers a stream for modem commands.  "buf" points to a 
+'CR' terminated serial stream.
+
+RETURN VALUE: Returns an integer corresponding to character stream defined
+in *_Modem_R[]; else -1, if no matching string was found.
+END DESCRIPTION **********************************************************/
+nodebug int Dget_modem_command(char *buf)
+{
+	 auto int i;              // make auto so multiple drivers can call it.
+
+	 for (i = 0; i < 11; i++)
+	 {
+		  if (strcmp(buf, _Modem_R[i]) == 0) 
+				return i;
+	 }
+	 return -1;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+Ddelay_1tick                 <MODEM232.LIB>  
+
+SYNTAX: void Ddelay_1tick(void);
+
+DESCRIPTION: Timing function for serial communication routines. One tick
+delay, if RTK is present else approximate 25ms software delay.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void Ddelay_1tick(void)
+{
+#ifdef RUNKERNEL
+#ifndef SKERNEL
+	 suspend(1);
+#else
+	 auto int i;              // Use "auto" so multiple drivers can call it
+
+	 i = sysclock();
+	 switch (i)
+	 {
+		  case 0x1400:
+					 for(i = 0; i < 600; i++);
+					 return;
+		  case 0x1e00:
+					 for(i = 0; i < 900; i++);
+					 return;
+		  case 0x3c00:
+					 for(i = 0; i < 1800; i++);
+					 return;
+		  default:
+					 for(i = 0; i < 1200; i++);
+						  return;
+	 }
+#endif
+#endif
+#ifndef RUNKERNEL
+	 auto int i;              // Use "auto" so multiple drivers can call it
+
+	 i = sysclock();
+	 switch (i)
+	 {
+		  case 0x1400:
+					 for(i = 0; i < 600; i++);
+					 return;
+		  case 0x1e00:
+					 for(i = 0; i < 900; i++);
+					 return;
+		  case 0x3c00:
+					 for(i = 0; i < 1800; i++);
+					 return;
+		  default:
+					 for(i = 0; i < 1200; i++);
+						  return;
+	 }
+#endif
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+Ddelay_1sec                  <MODEM232.LIB>  
+
+SYNTAX: void Ddelay_1sec(void);
+
+DESCRIPTION: Timing function for serial communication routines. One second
+delay, if RTK is present else approximate software delay.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void Ddelay_1sec(void)
+{
+#ifdef RUNKERNEL
+#ifndef SKERNEL
+	 suspend(50);             // Assumes a 20ms tick
+#else
+	 auto int j;          // Use "auto" so multiple drivers can call it.
+
+	 for (j = 0; j < 10; j++) 
+		  Ddelay_100ms();
+#endif
+#endif
+#ifndef RUNKERNEL
+	 auto int j;          // Use "auto" so multiple drivers can call it.
+
+	 for (j = 0; j < 10; j++) 
+		  Ddelay_100ms();
+#endif
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+Ddelay_100ms                 <MODEM232.LIB>  
+
+SYNTAX: void Ddelay_100ms(void);
+
+DESCRIPTION: Approximate software delay of 100 ms for serial communication
+routines.
+
+RETURN VALUE:None.
+END DESCRIPTION **********************************************************/
+nodebug void Ddelay_100ms(void)
+{
+	 auto int i;          // Use "auto" so multiple drivers can call it.
+
+	 i = sysclock();
+	 switch (i)
+	 {
+		  case 0x1400:
+					 for(i = 0; i < 2400; i++);
+					 return;
+		  case 0x1e00:
+					 for(i = 0; i < 3600; i++);
+					 return;
+		  case 0x3c00:
+					 for(i = 0; i < 7200; i++);
+					 return;
+		  default:
+					 for(i = 0; i < 4800; i++);
+						  return;
+	 }
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+Ddelay_5sec                  <MODEM232.LIB>  
+
+SYNTAX: void Ddelay_5sec(void);
+
+DESCRIPTION: 5 second delay timing function for serial communication 
+routines.
+
+RETURN VALUE:None.
+END DESCRIPTION **********************************************************/
+nodebug void Ddelay_5sec(void)
+{
+	 Ddelay_1sec();
+	 Ddelay_1sec();
+	 Ddelay_1sec();
+	 Ddelay_1sec();
+	 Ddelay_1sec();
+}
+
+/*** BeginHeader resetZ180Int */
+
+void resetZ180Int(void);
+
+/*** Endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+resetZ180Int                 <MODEM232.LIB>  
+
+SYNTAX: void resetZ180Int(void);
+
+DESCRIPTION: Disables all Z180 interrupts.  Useful before jumping 
+to an uploaded code with newbbr(...).
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void resetZ180Int(void)
+{
+	 outport(DSTAT, 0);       // DMA's
+	 outport(STAT0, 0);       // serial 0
+	 outport(STAT1, 0);       // serial 1
+	 outport(CNTR, 0x10);     // CSIO
+	 outport(TCR, 0);         // timers
+	 //outport(ITC, inport(ITC) & '\B11111101'); // disable INT1
+									  // disable INT1 only, 11-8-93
+	 outport(ITC, inport(ITC) & '\B11111000');   // 10-27-94
+																// disable INT0, INT1 and INT2
+															
+//10-27-94
+//#if ((BOARD_TYPE==Z104ISA))
+//    outport(ITC, inport(ITC) & '\B11111000');   // disable INT0, INT1, INT2
+//#endif
+
+// 10-27-94
+//#if ((BOARD_TYPE!=CPLC_BOARD)*(BOARD_TYPE!=L_STAR)*(BOARD_TYPE!=Z104ISA))
+//         outport(PIOCA,0x07); // pioA, disable interrupts
+//         outport(PIOCB,0x07); // pioB, disable interrupts
+//#endif
+
+// 10-27-94
+#if ((BOARD_TYPE==LITTLE_GIANT)+(BOARD_TYPE==TINY_GIANT))
+			outport(PIOCA,0x07); // pioA, disable interrupts
+			outport(PIOCB,0x07); // pioB, disable interrupts
+			outport(ITC,'\B11111001');     // enable INT0
+#endif
+
+// 10-27-94
+#if ((BOARD_TYPE==SMARTBLOCK)+(BOARD_TYPE==PLC_BOARD))
+			outport(PIOCA,0x07); // pioA, disable interrupts
+			outport(PIOCB,0x07); // pioB, disable interrupts
+			outport(ITC,'\B11111001');     // enable INT0
+#endif
+
+#if BOARD_TYPE==LITTLE_GIANT
+		  outport(SIOCA, 0x18); // sio chanA
+		  outport(SIOCB, 0x18); // sio chanB
+		  outport(CTC2, 0x00);  // ctc 2
+		  outport(CTC3, 0x00);  // ctc 3
+#endif
+#if (BOARD_TYPE==MicroG) || (BOARD_TYPE==MicroG2)
+			outport(PIOCA,0x07); // pioA, disable interrupts
+			outport(PIOCB,0x07); // pioB, disable interrupts
+			outport(ITC,'\B11111001');     // enable INT0
+#endif
+}

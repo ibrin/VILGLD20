@@ -1,0 +1,2336 @@
+/* START LIBRARY DESCRIPTION *********************************************
+STDIO.LIB
+	Copyright (c) 1994, Z-World.
+
+DESCRIPTION:
+	Standard I/O (with Dynamic C terminal window) functions
+
+SUPPORT LIB'S:
+END DESCRIPTION **********************************************************/
+
+/*=========================================================================*\
+	Wait for String from Keyboard Input ( Do Cooking )
+\*=========================================================================*/
+/*** Beginheader  */
+#define DEFDECDIGITS 6
+/*** endheader */
+
+/*** Beginheader gets */
+
+char *gets(char *s);
+
+/*** endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+gets                         <STDIO.LIB>
+
+SYNTAX: char *gets(char *s);
+
+KEYWORDS: keypad, input, stdio window
+
+DESCRIPTION: This function communicates through the stdio window to wait
+for a string terminated by a return.  It does not return until a return
+is typed in the stdio window.  The string returned is null terminated
+without the return.  The input string is put to the location pointed to by
+the argument "s".  The caller is responsible to make sure the location
+pointed to by "s" is big enough for the string.
+
+The user should make sure only one process calls this function at a time.
+
+RETURN VALUE: The same pointer to characters passed in, but now the pointer
+points to a null-terminated string typed from the stdio window in Dynamic
+C.
+END DESCRIPTION **********************************************************/
+useix nodebug char *gets(char *s)
+{
+	auto char *p, c;
+
+	p = s;
+	while (1)
+	{
+		hitwd();
+//#asm xmemok
+//	rst	28h	;	inserted here so the user may break execution
+//#endasm
+		c = getchar();
+		switch (c)
+		{
+			case '\b':
+				if (s != p)
+				{
+					puts("\b \b");
+					p--;
+				}
+				break;
+			case '\r':
+				*p = 0;
+				putchar('\n');
+				c = 0;
+				break;
+			default:
+				*p++= c;
+				putchar(c);
+				break;
+		}
+		if (! c)
+			break;
+	}
+	return (s);
+}
+
+/*** Beginheader getswf */
+
+int getswf(char *);
+
+/*** endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+getswf                         <STDIO.LIB>
+
+SYNTAX: int getswf(char *s);
+
+KEYWORDS: keypad, input, stdio window
+
+DESCRIPTION: This function communicates through the stdio window to wait
+for a string terminated by a return.  It does not return until a return
+is typed in the stdio window.  The string returned is null terminated
+without the return.  The input string is put to the location pointed to by
+the argument "s".  The caller is responsible to make sure the location
+pointed to by "s" is big enough for the string.
+
+The user should make sure only one process calls this function at a time.
+
+RETURN VALUE: The same pointer to characters passed in, but now the pointer
+points to a null-terminated string typed from the stdio window in Dynamic
+C.
+END DESCRIPTION **********************************************************/
+useix nodebug int getswf(char *s)
+{
+	auto res;
+	char *p, c;
+
+	res = 0;
+	costate {
+		p = s;
+		while (1)
+		{
+			waitfor(kbhit());
+			c = getchar();
+			switch (c)
+			{
+				case '\b':
+					if (s != p)
+					{
+						puts("\b \b");
+						p--;
+					}
+					break;
+				case '\r':
+					*p = 0;
+					putchar('\n');
+					c = 0;
+					break;
+				default:
+					*p++= c;
+					putchar(c);
+					break;
+			}
+			if (! c)
+				break;
+		}
+		res = 1;
+	}
+	return res;
+}
+
+/*** beginheader kbhit */
+
+#KILL kbhit
+
+int kbhit();
+
+/*** endheader */
+
+int kbhit() {
+	return !*(char *)(*( (unsigned *)(* ( (unsigned *)0x0003) + 41)) + 0x0D);
+}
+
+/*** beginheader getchar */
+
+char getchar(void);
+
+/*** endheader */
+
+/*=========================================================================*\
+	Wait for Keyboard Input
+\*=========================================================================*/
+
+/* START FUNCTION DESCRIPTION ********************************************
+getchar                      <STDIO.LIB>
+
+SYNTAX: char getchar(void);
+
+KEYWORDS: keypad, input, stdio
+
+DESCRIPTION: This function busy waits for a character to be typed from the
+stdio window in Dynamic C.
+
+The user should make sure only one process calls this function at a time.
+
+RETURN VALUE: a character typed in the stdio window in Dynamic C.
+END DESCRIPTION **********************************************************/
+useix nodebug char getchar(void)
+{
+	auto char *p;
+	auto char c;
+
+	p = (char *)*( (unsigned *)(* ( (unsigned *)0x0003) + 41)) + 0x0E;
+	while (!kbhit()) {
+//#asm xmemok
+//		rst	28h	;	inserted here so the user may break execution
+//#endasm
+		hitwd();
+		}
+	c = *p;
+	*p = 0;
+	*(p-1) = 0xff;	//	reassert request for key (cleared by compiler)
+	return (c);
+}
+
+/*** BeginHeader selectkey */
+
+int selectkey(char *selection);
+
+/*** EndHeader */
+
+int selectkey(char *selection) {
+	auto int retval;
+	auto char *p;
+	
+	retval = 0;
+	if (kbhit()) {
+		p = strchr(selection,getchar());
+		if (p) { putchar(*p); putchar('\n'); }
+		return p ? p-selection+1 : 0;
+	} else {
+		return 0;
+	}
+}
+
+
+/*** BeginHeader puts */
+
+int puts(char *s);
+
+/*** EndHeader   puts */
+
+/***************************************************************************\
+	ANSI String I/O
+
+		 int puts ( char *s );
+\***************************************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+puts                         <STDIO.LIB>
+
+SYNTAX: int puts(char *s);
+
+KEYWORDS: string, output, display, stdio window
+
+DESCRIPTION: This function displays the string pointed to by argument "s"
+on the stdio window in Dynamic C.  The stdio window is responsible to
+interpret any escape code sequences contained in the string.
+
+The user should make sure only one process calls this function at a time.
+
+RETURN VALUE: Returns 1 if successful.
+END DESCRIPTION **********************************************************/
+
+useix nodebug int puts(char *s)
+{
+	while (*s) {
+		putchar(*s++);
+		hitwd();
+	}
+	return (1);
+}
+
+/*** BeginHeader putchar */
+
+void putchar(int ch);
+
+/*** EndHeader   putchar */
+
+char __putcbuf[2];           // Output Buffer for Dynamic C
+
+/* START FUNCTION DESCRIPTION ********************************************
+putchar                      <STDIO.LIB>
+
+SYNTAX: void putchar(int ch);
+
+KEYWORDS: display, stdio window
+
+DESCRIPTION: Puts a single character to STDOUT.  The user should make sure
+only one process calls this function at a time.
+
+RETURN VALUE: none.
+END DESCRIPTION **********************************************************/
+
+#asm  nodebug fast
+
+; PUTCHAR : Put a Single Character to STDOUT
+;
+; INPUT  :
+;          None
+; OUTPUT :
+;          None
+
+putchar::
+	   ld       a,0ah                ; Expand CR to CR/LF
+	   cp       l
+	   jr       nz,putbin
+	   push     hl
+	   ld       l,0dh
+	   call     putbin
+	   pop      hl
+
+putbin::
+	   ld       (__putcbuf),hl       ; Output Character
+	   xor      a
+	   ld       (__putcbuf+1),a
+	   push     ix
+	   ld       hl,__putcbuf
+	   rst      8
+	   pop      ix
+	   ret
+
+#endasm
+
+/*** BeginHeader sprintf */
+
+void sprintf(char *buffer, char *format, ...);
+
+/*** EndHeader   sprintf */
+
+/***************************************************************************\
+   void  sprintf ( char *buffer, char *format, ... );
+
+   Notes:
+	   ANSI Specifies Number of Characters Printed as Return Value. This
+		   Implementation has no Useful Return Value.
+	   This Routine is not Multitasking, but is Reentrant.
+\***************************************************************************/
+
+char *__sprintfbuf;
+
+nodebug indirect void __qe(c)
+int c;
+
+{
+	*__sprintfbuf++= c;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+sprintf                      <STDIO.LIB>
+
+SYNTAX: void sprintf(char *buffer, char *format, ...);
+
+KEYWORDS:
+
+DESCRIPTION:  This function takes a "format" string (pointed to by "format"),
+arguments of the format, and output the formatted string to "buffer"
+(pointed to by "buffer").  The user should make sure
+
+(1) there are enough arguments after "format" to fill in the format
+    parameters in the format string
+
+(2) the types of arguments after "format" match the format fields in
+	 "format"
+    
+(3) buffer is large enough to hold the longest possible formatted
+    string
+
+The following is a short list of possible format parameters in the
+format string.  For more details, please refer to any C language
+books.
+
+%d		decimal integer (expects type int)
+%u		decimal unsigned integer (expects type unsigned int)
+%x		hexidecimal integer (expects type signed int or unsigned int)
+%s		a string (not interpreted, expects type (char *))
+%f		a float (expects type float)
+
+Example: sprintf(buffer,"%s=%x","variable x",256) should put the
+string "variable x=100" into buffer.
+
+This function can be called by processes of different priorities.
+
+RETURN VALUE: none
+END DESCRIPTION **********************************************************/
+
+nodebug void sprintf(char *buffer, char *format, ...)
+
+{
+	auto char *temp;         // 060293 changed to auto by TAK
+
+	temp = __sprintfbuf;     // Allow Reentrancy
+	__sprintfbuf = buffer;
+	doprnt(__qe, format, (char *) ((char *) &format + sizeof (format)), NULL);
+	__qe(0);                 // Null Terminator
+	__sprintfbuf = temp;
+}
+
+/*** BeginHeader _rst8 */
+
+void _rst8(char *buf);
+
+/*** EndHeader */
+
+#asm
+_rst8::
+	ld		a,i
+	push	af
+	di
+	xor	a
+	ld		(_comattn),a
+	push  hl
+	rst   08h
+	pop   hl
+	pop	af
+	jp		po,__cont
+	ei
+__cont:
+	ret
+#endasm
+
+/*** BeginHeader _printf */
+
+void _printf(char *fmt, char *args);
+
+/*** EndHeader   printf */
+
+/***************************************************************************\
+   Buffered Printf for Dynamic C
+	   Copyright (c) 1989, Z-World
+\***************************************************************************/
+
+char *__printfbuf;
+int __printfcnt;
+nodebug indirect fast void
+__qe2(c)
+int c;
+
+{
+	if (__printfcnt) {
+		*__printfbuf++= c;
+		if (!--__printfcnt) *(__printfbuf-1) = '\0';
+	}
+}
+
+nodebug void _printf(char *fmt,char *args)
+{
+	// 8-18-94 aoc static char buffer[128];
+	// 8-20-94 printf need not be reentable
+	// 8-20-94 auto char buffer[128];      // 8-18-94, aoc
+	// 8-20-94 auto char *temp;            // 8-18-94, aoc
+
+	// 8-20-94 temp = __printfbuf;         // 8-18-94, aoc
+	static char buffer[128];                // 8-20-94
+	__printfbuf = buffer;
+	__printfcnt = sizeof(buffer);
+	doprnt(__qe2, fmt, args, NULL);
+	__qe2(0);
+	// 8-20-94 __printfbuf = temp;         // 8-18-94, aoc
+	_rst8(buffer);
+}
+
+
+/*** BeginHeader printf */
+
+void printf(char *fmt,...);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+printf                       <STDIO.LIB>
+
+SYNTAX: void printf(char *fmt, ...);
+
+KEYWORDS: display
+
+DESCRIPTION: Similar to sprintf, but outputs the formatted string to the
+stdio window in Dynamic C.  Please refer to the description of sprintf for
+more details.  Unlike sprintf, only process should use this function at
+any time.
+
+RETURN VALUE: none.
+END DESCRIPTION **********************************************************/
+
+void printf(char *fmt,...) {
+	while (!LockTestAndSet(&_comattn,1));
+	_printf(fmt,((char*)&fmt+sizeof(fmt)));
+}
+
+/*** BeginHeader printfwf */
+
+extern char _comattn;
+int printfwf(char *fmt, ...);
+
+/*** EndHeader */
+
+int printfwf(char *fmt, ...) {
+	if (!LockTestAndSet(&_comattn,1)) return 0;
+	else {
+		_printf(fmt,((char*)&fmt+sizeof(fmt)));
+		return 1;
+	}
+}
+
+/*** BeginHeader doprnt */
+
+void doprnt(int (*putc) (), char *fmt, void *arg1, void *instanceParam);
+
+/*** EndHeader   doprnt */
+
+/***************************************************************************\
+   DOPRNT - Formatted Output Routine
+	   Copyright (c) 1989, Z-World
+\***************************************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+doprnt                       <STDIO.LIB>
+
+SYNTAX: void doprnt(int (*putc) (), char *fmt, void *arg1, void *instanceParam);
+
+KEYWORDS:
+
+DESCRIPTION: Formatted output routine.  This is the support routine behind
+all ...printf routines.  "putc" is a function that outputs one byte, it is
+called by doprnt whenever doprnt outputs a character.  "fmt" is the format
+string that specifies the output.  "arg1" points to the address of the
+first parameter to be used by the formatted string.  The interpretation of
+the parameters depends on the format fields in the format string.  This
+routine brings in many math functions.
+
+This routine can be called from processes of different priorities.
+
+RETURN VALUE: none.
+END DESCRIPTION **********************************************************/
+
+union dop_p {
+				int         *argptr;
+				long int    *largptr;
+				float       *fargptr;
+				char        **pargptr;
+			};      // 8-18-94, aoc
+
+union   rra {
+				float       round;
+				char        cround[4];
+			};      // 8-18-94, aoc
+			
+
+nodebug useix void doprnt(int (*putc) (), char *fmt, void *arg1, void *instanceParam)
+{
+/*      8-18-94, aoc
+		union
+	{
+		int *argptr;
+		long int *largptr;
+		float *fargptr;
+		char **pargptr;
+	} p;
+*/
+	auto union dop_p p;     // 8-18-94, aoc
+	auto long int alnum;    // 8-18-94, aoc     long int alnum;
+	auto int 	lng, width, prec,
+					FmtSpecified, temp, j, anum, length;
+	auto char code, flag;
+	auto char *fptr, *sptr;
+	auto digits;
+							// 8-18-94, aoc     static char nextc();
+	static float rounds[9] =
+			 {
+				 .5, .05, .005, .0005, .00005, .000005,
+				 .0000005, .00000005, .000000005
+			 };
+	auto union rra r;       // 8-18-94, aoc     
+/*  8-18-94, aoc    
+	static union rra
+	{
+		float round;
+		char cround[4];
+	} r;
+*/
+
+	p.argptr = arg1;         // pointer to stack of args
+	fptr = fmt;
+loop:
+	lng = FmtSpecified = flag = 0;
+	prec = -1;
+
+  // 8-18-94, aoc while ((temp = nextc()) != '%' && temp != 0)
+	while((temp = *fptr++) != '%' && temp != 0)   // 8-18-94, aoc      
+		(*putc) (temp,instanceParam);
+	if (! temp)
+		return;
+//	__getprtspec();
+	if (*fptr == '-' || *fptr == '0')
+	{
+		flag = *fptr;
+		*fptr++;            // 8-18-94, aoc     nextc();
+	}
+
+/* convert width */
+
+	if (*fptr == '*') {
+		width = *p.argptr++;
+	} else {
+		width = (int) strtol(fptr, &fptr, 10);		//	total length
+	}
+	
+	if (*fptr == '.')
+	{
+		++fptr;
+		if (*fptr == '*') {
+			prec = *p.argptr++;
+			FmtSpecified = 1;
+		} else {
+			prec = (int) strtol(fptr, &fptr, 10);
+				//	places after decimal pt.
+			FmtSpecified = 1;              // specify that precision specified
+		}
+	}
+	else
+	{
+		prec = -1;	//	DEFDECDIGITS;
+	}
+	
+	code = *fptr++;         // 8-18-94, aoc     code = nextc();
+	if (tolower(code) == 'l')
+	{
+		lng = 1;
+		code = tolower( *fptr++ );     // 8-18-94, aoc     
+									   // code = tolower(nextc());
+	}
+
+	switch (code)
+	{
+		case '%' :
+			(*putc) ('%',instanceParam);
+			goto loop;
+		case 's' :
+			sptr = *p.pargptr++;
+			length = strlen(sptr);
+			if ((prec>0) && (length > prec)) length = prec;
+			if (width > length) temp = width - length;
+			else temp = 0;
+			if (flag != '-' && temp > 0)
+				outchrs(' ', temp, putc,instanceParam);
+			for (j = 0; j < length; j++)
+				(*putc) (*sptr++,instanceParam);
+			if (flag == '-' && temp > 0)
+				outchrs(' ', temp, putc,instanceParam);
+			goto loop;
+		case 'd' :
+		case 'u' :
+			if (prec<0) prec = 1;
+			if (width && (width < prec)) width = prec;
+			if (! lng)
+				pint(flag, code, width, putc, *p.argptr++,instanceParam);
+			else
+				plint(flag, code, width, putc, *p.largptr++,instanceParam);
+			goto loop;
+		case 'f' :
+		case 'g' :
+			if (prec<0) prec = DEFDECDIGITS;
+			r.round = *p.fargptr++;
+			if (FmtSpecified && prec < 9)
+			{
+				if (r.cround[3] & 0x80)
+				{
+					r.round = r.round - rounds[prec];
+				}
+				else
+					r.round = r.round + rounds[prec];
+			}
+			pflt(
+				flag,
+				code,
+				width,
+				prec,
+				putc,
+				r.round,
+				FmtSpecified,
+				instanceParam);
+			goto loop;
+		case 'e' :
+			if (prec<0) prec = DEFDECDIGITS;
+			r.round = *p.fargptr++;
+//			digits = log(abs(r.round));
+			if (r.round != 0)
+				r.round +=
+					((r.cround[3] & 0x80) ? -1 : 1) * rounds[prec] *
+						pow10(floor(log10(fabs(r.round))));
+			pflt(
+				flag,
+				code,
+				width,
+				prec ,
+				putc,
+				r.round,
+				FmtSpecified,
+				instanceParam);
+			goto loop;
+		case 'x' :
+			if (prec<0) prec = 1;
+			if (width && (prec > width)) width = prec;
+			if (!lng)
+				phex(flag, width, putc, *p.argptr++,instanceParam);
+			else
+				plhex(flag, width, putc, *p.largptr++,instanceParam);
+			goto loop;
+		case 'c' :
+			(*putc) (*p.argptr++,instanceParam);
+			goto loop;
+		default :
+			goto loop;
+	}
+/* 8-18-94, aoc    
+subfunc nextc:
+	{
+		*fptr++;
+	}
+*/
+}
+
+/*** BeginHeader plhex */
+
+void plhex(char left, int n1, int (*putc)(), long int num, void *instanceParam);
+
+/*** EndHeader   plhex */
+
+/*=========================================================================*\
+ print a long integer in hex
+ left == '-' for left justification, else right justification
+ n1 is field width, or zero if field width not specified
+ putc is a routine called to output chars left to right
+ num is the number to be converted - 16 bits
+\*=========================================================================*/
+
+/* START _FUNCTION DESCRIPTION ********************************************
+plhex                        <STDIO.LIB>
+
+SYNTAX: void plhex(char left, int n1, int (*putc)(), long int num,void *instanceParam);
+
+KEYWORDS:
+
+DESCRIPTION: Prints a long integer in hex.  "left" specifies the padding
+character that goes to the left hand side of the actual hexidecimal number.
+If "left" is '-', the white space is used as a padding character.  "n1"
+is the expected length of the output.  If the number "num" requires more
+width than "n1", n1 astrieks will be output.  Otherwise, the padding
+character "left" will be used to make up the remaining spaces.  "putc"
+is the function used by this function to output one character.  The
+function pointed to by "putc" should take a character argument.  "num" is
+the number to be converted and output.
+
+This function can be called from processes of different priorities.
+
+RETURN VALUE: none.
+END DESCRIPTION **********************************************************/
+
+int      hltoa();
+
+useix nodebug void plhex(char left, int n1, int (*putc)(), long int num,void *instanceParam)
+{
+	auto int spaces;
+	auto char array[9];         // 8-18-94, aoc     char     array[9];
+	auto char *ptr;
+	auto int i;
+	
+	ptr = (char*)&num;
+	for (i=3; i >= 0; --i) {
+		if (!i || *(ptr+i)) break;
+	}
+	if ((unsigned)*(ptr+i) >= 16) {
+		i=i*2+1;
+		++i;
+	} else {
+		i = i * 2 + 1;
+	}
+	spaces = n1 - i;
+	hltoa(num, array);
+	if (n1 == 0)
+		spaces = 0;             // if width unspecified, no spaces
+	if (spaces < 0)
+		outchrs('*', n1, putc,instanceParam); // astrisk fill if no fit
+	else if (left == '-')
+	{
+		outstr(array, putc,instanceParam);
+		outchrs(' ', spaces, putc,instanceParam);
+	}
+	else
+	{
+		outpad(left, spaces, putc,instanceParam);
+		outstr(array, putc,instanceParam);
+	}
+}
+
+/*** BeginHeader __divmod10 */
+
+/*** EndHeader */
+
+#asm
+;	hl	has the address of the dest (pointing to MSByte)
+;	de	has the address of the operand (pointing to MSByte)
+;	c has the number of bytes to deal with	(at least one)
+;	a returns the result of mod
+;	consumes all of af bc de hl, as well as the stuff pointed to by
+;	de
+;	about 2110 states
+__divmod10::
+	xor	a			;	4
+	ld		b,c
+	push	hl
+clrDest:
+	ld		(hl),a	;	6
+	dec	hl			;	4
+	djnz	clrDest
+
+	pop	hl
+	ex		de,hl		;	3
+
+	xor	a			;	4
+	sla	(hl)		;	13
+	rla				;	3
+	sla	(hl)		;	13
+	rla				;	4
+	sla	(hl)		;	13
+	rla				;	4
+	ld		b,5		;	6
+	
+dmNextBit:
+	sla	(hl)		;	13
+	rla				;	4
+
+	sub	0xa		;	6
+	jr		nc,dmFixBit	;	6/8
+	add	a,0xa		;	6
+dmFixBit:
+	ccf				;	3
+	ex		de,hl		;	3
+	rl		(hl)		;	13
+	ex		de,hl		;	3
+	djnz	dmNextBit	;	7/9
+	dec	de			;	4
+	dec	hl			;	4
+	dec	c			;	4
+	ld		b,8		;	6
+	jr		nz,dmNextBit	;	6/8
+	ret				;	9
+#endasm
+
+/*** BeginHeader ltoa, ltoan, gtoa, gtoan */
+
+char *ltoa(long num, char *ibuf);
+int ltoan(long num);
+char *gtoa(unsigned long num, char *ibuf);
+int gtoan(unsigned long num);
+char *_gltoa(unsigned long int num, char *ibuf, char neg);
+
+/*** EndHeader   ltoa, ltoan */
+
+/*=========================================================================*\
+ Convert (un)signed long to ascii. Pass long and pointer to 12 byte field.
+ Returns count of digits generated including minus sign if any.
+ For example: -500 generates "-500" and returned value of 4.
+ Returned string terminated by null. Provide 12 bytes in buf
+ for longest possible number.  330 bytes 1.1 millisecond 9mhz 64180.
+
+ *** performance not checked under new version
+\*=========================================================================*/
+
+unsigned long int __ltens[] =
+		 {
+			 1000000000, 100000000, 10000000, 1000000, 100000,
+			 10000, 1000, 100, 10, 1, 2
+		 };
+
+/* START _FUNCTION DESCRIPTION ********************************************
+_gltoa                       <STDIO.LIB>
+
+SYNTAX: char *_gltoa(unsigned long int num, char *ibuf, char neg);
+
+KEYWORDS:
+
+DESCRIPTION: Converts (un)signed long to ascii. Passes long and pointer
+to 12 byte field. "num" is the unsigned long int to be converted to a
+string, "ibuf" is a pointer to the array that will hold the ASCII string
+representing "num", and "neg" indicates whether or not "num" should be
+displayed as a negative number.  The user should make sure the string
+pointed to by "ibuf" is large enough to hold the string.
+
+RETURN VALUE: Pointer to string.
+END DESCRIPTION **********************************************************/
+nouseix nodebug nouseix fast char *_gltoa(unsigned long int num, char *ibuf, char neg)
+{
+	auto unsigned long tmpL;   // 8-18-94, aoc unsigned long thisDigit;
+	auto char *beginStr;            // 8-18-94, aoc char *beginStr;
+
+	beginStr = ibuf;
+#asm xmemok
+	ld		hl,@SP+neg
+	add	hl,sp
+	ld		a,(hl)
+	or		a
+	jr		z,notNeg
+	ld		hl,@SP+num
+	add	hl,sp
+	inc	hl
+	inc	hl
+	inc	hl
+	bit	7,(hl)
+	jr		z,notNeg
+	;	negate the entire number now
+	dec	hl
+	dec	hl
+	dec	hl
+	ld		a,(hl)
+	cpl
+	or		a		;	clear carry
+	inc	a
+	jp		po,noOv
+	scf
+noOv:
+	ld		(hl),a
+	inc	hl
+	ld		a,(hl)
+	cpl
+	adc	a,0
+	ld		(hl),a
+	inc	hl
+	ld		a,(hl)
+	cpl
+	adc	a,0
+	ld		(hl),a
+	inc	hl
+	ld		a,(hl)
+	cpl
+	adc	a,0
+	ld		(hl),a
+
+	;	num = -num now
+
+	ld		hl,@SP+ibuf
+	add	hl,sp
+	push	hl
+	ld		b,(hl)
+	inc	hl
+	ld		h,(hl)
+	ld		l,b
+	ld		a,'-'
+	ld		(hl),a
+	inc	hl
+	ex		de,hl
+	pop	hl
+	ld		(hl),e
+	inc	hl
+	ld		(hl),d
+	push	de
+	jr		makeStr
+	
+notNeg:
+	ld		hl,@SP+ibuf
+	add	hl,sp
+	ld		a,(hl)
+	inc	hl
+	ld		h,(hl)
+	ld		l,a
+	push	hl
+	
+makeStr:
+	ld		hl,@SP+num+3+2	;	point to MSByte
+	add	hl,sp
+	push	hl
+	ld		hl,@SP+tmpL+3+4
+	add	hl,sp
+	pop	de
+	;	now de points to num, hl points to tmpL
+	ld		c,4
+anotherDigit:
+findMSB:
+	ld		a,(de)
+	or		a
+	jr		nz,doIt
+	dec	c
+	jr		z,done
+	dec	de
+	dec	hl
+	jr		findMSB
+
+	;	now we found MSB
+doIt:
+	push	de
+	push	hl
+	push	bc
+	call	__divmod10
+	
+	ld		hl,@SP+ibuf+8	;	*ibuf++ = regA+'0'
+	add	hl,sp
+	push	hl
+	ld		b,(hl)
+	inc	hl
+	ld		h,(hl)
+	ld		l,b
+	add	a,'0'
+	ld		(hl),a
+	inc	hl
+	ex		de,hl
+	pop	hl
+	ld		(hl),e
+	inc	hl
+	ld		(hl),d
+
+	pop	bc	
+	pop	de			;	tricky: we swap de and hl now!
+	pop	hl
+
+	;	readjust hl
+	jr		anotherDigit
+	
+done:
+	;	all done now
+	ld		hl,@SP+ibuf+2
+	add	hl,sp
+	ld		a,(hl)
+	inc	hl
+	ld		h,(hl)
+	ld		l,a
+	pop	de
+	push	hl
+	;	hl is end, de is beg of numeral string
+	xor	a
+	sbc	hl,de
+	pop	hl
+	jr		z,is0
+	push	hl
+	dec	hl
+	jr		flip
+
+is0:
+	ld		a,'0'
+	ld		(hl),a
+	inc	hl
+	jr		putNullEnd
+
+flip:
+	push	hl
+	or		a
+	sbc	hl,de
+	pop	hl
+	jr		z,endFlip
+	jr		c,endFlip
+	ld		b,(hl)
+	ld		a,(de)
+	ex		de,hl
+	ld		(de),a
+	ld		(hl),b
+	ex		de,hl
+	dec	hl
+	inc	de
+	jr		flip
+endFlip:
+	pop	hl
+putNullEnd:
+	ld		a,0
+	ld		(hl),a
+#endasm
+	return beginStr;
+}
+
+/* returns number of digits needed in field 1-11 for (un)signed long int */
+
+/* START _FUNCTION DESCRIPTION ********************************************
+_gltoan                      <STDIO.LIB>
+
+SYNTAX: int _gltoan(unsigned long num, char neg)
+
+KEYWORDS:
+
+DESCRIPTION:  This function determines how many decimal digits are
+required to display "num", "neg" indicates whether the number is negative
+or not.
+
+RETURN VALUE: Number of decimal digits needed in field 1-11 for (un)signed
+long int.
+END DESCRIPTION **********************************************************/
+
+nodebug int _gltoan(unsigned long num, char neg)
+{
+	auto int dig, j;            // 8-18-94, aoc     int dig, j;
+
+	dig = 10;
+	if (neg && (((long) num) < 0))
+	{
+		num = ~num + 1;
+		dig = 11;
+	}
+	for (j = 0; j < 10; j++)
+	{
+		if (__ltens[j] <= num)
+			goto lt1;
+		dig--;
+	}
+	dig++;                   // if zero
+lt1:
+	return (dig);
+}
+
+/* START _FUNCTION DESCRIPTION ********************************************
+gtoa                         <STDIO.LIB>
+
+SYNTAX: char *gtoa(unsigned long num, char *ibuf);
+
+KEYWORDS:
+
+DESCRIPTION:
+
+RETURN VALUE:
+END DESCRIPTION **********************************************************/
+nodebug char *gtoa(unsigned long num, char *ibuf)
+{
+	return _gltoa(num, ibuf, 0);
+}
+
+/* START _FUNCTION DESCRIPTION ********************************************
+ltoa                         <STDIO.LIB>
+
+SYNTAX: char *ltoa(long num, char *ibuf)
+
+KEYWORDS:
+
+DESCRIPTION:  This function uses _gltoa to output a signed long int "num"
+to the character array pointed to by "ibuf".
+
+RETURN VALUE: Pointer to the same array passed in to hold the result.
+END DESCRIPTION **********************************************************/
+nodebug char *ltoa(long num, char *ibuf)
+{
+	return _gltoa((unsigned long) num, ibuf, 1);
+}
+
+
+/* returns number of digits needed in field 1-11 for unsigned long int */
+
+/* START _FUNCTION DESCRIPTION ********************************************
+gtoan                        <STDIO.LIB>
+
+SYNTAX: int gtoan(unsigned long num);
+
+KEYWORDS:
+
+DESCRIPTION:  This function uses _gltoa to output an unsigned long int
+"num" to the character array pointed to by "ibuf"
+
+RETURN VALUE: Pointer to the same array passed in to hold the result.
+END DESCRIPTION **********************************************************/
+nodebug int gtoan(unsigned long num)
+{
+	return _gltoan(num, 0);
+}
+
+/* START _FUNCTION DESCRIPTION ********************************************
+ltoan                        <STDIO.LIB>
+
+SYNTAX: int ltoan(long num)
+
+KEYWORDS:
+
+DESCRIPTION:  This function returns the number of characters required to
+display a signed long int "num".
+
+RETURN VALUE: The number of characters to display "num".
+END DESCRIPTION **********************************************************/
+nodebug int ltoan(long num)
+{
+	return _gltoan((unsigned long) num, 1);
+}
+
+/*** BeginHeader plint */
+
+void plint(char left, char code, int n1, int (*putc) (), long num,void *instanceParam);
+
+/*** EndHeader   plint */
+
+/*=========================================================================*\
+ print a long integer
+ left == '-' for left justification, else right justification
+ n1 is field width, or zero if field width not specified
+ putc is a routine called to output chars left to right
+ num is the number to be converted - 16 bits
+\*=========================================================================*/
+
+/* START _FUNCTION DESCRIPTION ********************************************
+plint                        <STDIO.LIB>
+
+SYNTAX: void plint(char left, char code, int n1, int (*putc)(), long num,void *instanceParam);
+
+KEYWORDS:
+
+DESCRIPTION:  "left" is the padding character to the left of the number.
+"code" indicates how the number is printed.  
+
+RETURN VALUE:
+END DESCRIPTION **********************************************************/
+useix nodebug void plint(char left, char code, int n1, int (*putc) (), long int num,void *instanceParam)
+{
+	auto int spaces;
+	auto char array[14];        // 8-18-94, aoc     char array[14];
+	auto char isSigned;
+
+/* TAK: 03251993 add support for unsigned long */
+/* ### */
+	if (isSigned = ((code | 0x20) == 'd'))
+	{
+		spaces = n1 - ltoan(labs(num)) - ((num < 0)?1:0);
+		ltoa((num<0)?-num:num, array);
+	}
+	else
+	{
+		spaces = n1 - gtoan((unsigned long) num);
+		gtoa((unsigned long) num, array);
+	}
+	if (n1 == 0)
+		spaces = 0;          // if field width not specified, no spaces
+	if (spaces < 0)
+		outchrs('*', n1, putc,instanceParam);// astrisk fill if no fit
+	else if (left == '-')
+	{
+		if ((num < 0) && isSigned) outchrs('-',1,putc,instanceParam);
+		outstr(array, putc,instanceParam);
+		outchrs(' ', spaces, putc,instanceParam);
+	}
+	else
+	{
+		if (left != '0') outpad(left,spaces,putc,instanceParam);
+		if ((num < 0) && isSigned) outchrs('-',1,putc,instanceParam);
+		if (left == '0') outpad(left, spaces, putc,instanceParam);
+		outstr(array, putc,instanceParam);
+	}
+}
+
+
+/*** BeginHeader ftoa */
+
+int ftoa(float f, char *buf);
+
+/*** EndHeader   ftoa */
+
+/*=========================================================================*\
+ convert a floating number to character string
+ places signed string in buf no more than 12 chars long
+ and returns exponent as for 10**n
+\*=========================================================================*/
+
+/* START _FUNCTION DESCRIPTION ********************************************
+ftoa                         <STDIO.LIB>
+
+SYNTAX: int ftoa(float f, char *buf);
+
+KEYWORDS: convert
+
+DESCRIPTION:  Converts the floating pointer number "f" to a character
+string into "buf".  The string is no longer than 12 characters long.
+The character string only displays the mantissa up to 12 digits, no
+decimal points.  The function returns the exponent (of 10) that should
+be used to compensate for the string.  I.e., ftoa(1.0,buf) yields
+buf="1000000000", and returns -10.
+
+RETURN VALUE: the exponent of the number.
+END DESCRIPTION **********************************************************/
+
+nodebug int ftoa(float f, char *buf)
+{
+/* index on upper 4 bits of exponent */
+
+	static
+	float mtab[] =
+	  {
+		  1e37, 1e37, 1e34, 1e29, 1e24, 1e19, 1e14, 1e10,
+		  1e5, 1e0, 1e-5, 1e-10, 1e-14, 1e-19, 1e-24, 1e-29
+	  };
+
+/* adjustment to 10's exponent for each */
+
+	static
+	int etab[] =
+	{
+			-37, -37, -34, -29, -24, -19, -14, -10, -5,
+		0, 5, 10, 14, 19, 24, 29
+	};
+
+	auto int sgn, texp, k;          // 8-18-94, aoc int sgn, texp, k;
+	auto int exp;                   // 8-18-94, aoc static int exp;
+									// 8-18-94, aoc long int FNULLl();
+	auto long int lng;              // 8-18-94, aoc long int lng;
+
+	exp = texp = sgn = 0;
+	if (f < 0.0)
+	{
+		f = - f;
+		sgn = 1;
+	}
+	if (f == 0.0)
+		goto loop2;
+	f;                       // get number to bcde
+
+#asm nodebug xmemok
+	   rl       c
+	   rl       b                    ; exp to b
+	   ld       l,b
+	   ld       h,0                  ; hl has exp
+	   srl      l
+	   srl      l
+	   srl      l
+	   srl      l
+	   ; 8-18-94, aoc ld       (exp),hl    ; save upper 4 bits of exp
+		ld      b, h            ; 8-18-94, aoc
+		ld      c, l            ; 8-18-94, aoc
+		ld      hl, exp+@S      ; 8-18-94, aoc
+		add     hl, sp          ; 8-18-94, aoc
+		ld      (hl), c         ; 8-18-94, aoc
+		inc     hl              ; 8-18-94, aoc
+		ld      (hl), b         ; 8-18-94, aoc
+#endasm
+
+	texp = etab[exp];
+	f = f * mtab[exp];       // initial reduction
+	k = 5;
+loop:
+	f;                       // get f to bcde
+#asm xmemok
+	   rl       c
+	   rl       b
+	   ld       l,b
+	   ; 8-18-94, aoc       ld       h,0
+	   ; 8-18-94, aoc       ld       (exp),hl            ; exponent to hl
+		ld      hl, exp+@S      ; 8-18-94, aoc
+		add     hl, sp          ; 8-18-94, aoc
+		ld      (hl), b         ; 8-18-94, aoc
+		inc     hl              ; 8-18-94, aoc
+		ld      (hl), 0         ; 8-18-94, aoc
+#endasm
+
+	if (exp > 150 && exp < 156)
+		goto loop2;
+	if (exp < 145)
+	{
+		f = f * 1e3;
+		texp = texp - 3;
+	}
+	else if (exp < 148)
+	{
+		f = f * 1e2;
+		texp = texp - 2;
+	}
+	else if (exp < 151)
+	{
+		f = f * 1e1;
+		texp = texp - 1;
+	}
+	else if (exp > 161)
+	{
+		f = f * 1e-3;
+		texp = texp + 3;
+	}
+	else if (exp > 157)
+	{
+		f = f * 1e-2;
+		texp = texp + 2;
+	}
+	else if (exp > 155)
+	{
+		f = f * 1e-1;
+		texp = texp + 1;
+	}
+	k--;
+	if (k)
+		goto loop;
+loop2:
+	lng = (long) f;
+/*
+	   f;
+
+#asm xmemok
+	   call     Bf.Bl                ; convert to long
+#endasm
+
+	   lng = FNULLl();
+*/
+	if (sgn)
+		lng = - lng;
+	ltoa(lng, buf);
+	return (texp);
+}
+
+/*** BeginHeader outpad */
+void outpad(char left, int count, int (*putc) (),void *instanceParam);
+/*** EndHeader outpad */
+
+void outpad(char left, int count, int (*putc) (),void *instanceParam)
+{
+	auto char k;            // 8-18-94, aoc     char k;
+
+	if (left == '0')
+		k = '0';
+	else
+		k = ' ';
+	outchrs(k, count, putc, instanceParam);
+}
+
+/*** BeginHeader phex */
+
+void phex(char left, int n1, int (*putc) (), int num, void *instanceParam);
+
+/*** EndHeader   phex */
+
+
+
+
+/*=========================================================================*\
+ print an integer in hex
+ left == '-' for left justification, else right justification
+ n1 is field width, or zero if field width not specified
+ putc is a routine called to output chars left to right
+ num is the number to be converted - 16 bits
+\*=========================================================================*/
+
+/* START _FUNCTION DESCRIPTION ********************************************
+phex                         <STDIO.LIB>
+
+SYNTAX: void phex(char left, int n1, int (*putc) (), int num, void *instanceParam);
+
+KEYWORDS:
+
+DESCRIPTION:  Similar to plhex, except this function prints the hex.
+representation for an int or unsigned int.  Please refer to the
+description of plhex for details.
+
+RETURN VALUE: none.
+END DESCRIPTION **********************************************************/
+
+useix void phex(char left, int n1, int (*putc) (), int num, void *instanceParam)
+{
+	auto int spaces;
+	auto char array[5];         // 8-18-94, aoc     char array[5];
+
+	spaces = n1 - (((unsigned)num < 16) ? 1 :
+						((unsigned)num < 256) ? 2 :
+						((unsigned)num < 4096) ? 3 : 4);
+	htoa(num, array);
+	if (n1 == 0)
+		spaces = 0;          // if field width not specified, no spaces
+	if (spaces < 0)
+		outchrs('*', n1, putc,instanceParam);// astrisk fill if no fit
+	else if (left == '-')
+	{
+		outstr(array, putc,instanceParam);
+		outchrs(' ', spaces, putc,instanceParam);
+	}
+	else
+	{
+		outpad(left, spaces, putc,instanceParam);
+		outstr(array, putc,instanceParam);
+	}
+}
+
+/*** BeginHeader pint */
+
+void pint(char left, char code, int n1, int (*putc) (), int num, void *instanceParam);
+
+/*** EndHeader   pint */
+
+/*=========================================================================*\
+ print an integer
+ left == '-' for left justification, 0 for left zero pad,
+ else right justification
+ code == 'd' or 'D' for signed int, else unsigned
+ n1 is field width, or zero if field width not specified
+ putc is a routine called to output chars left to right
+ num is the number to be converted - 16 bits
+\*=========================================================================*/
+
+/* START _FUNCTION DESCRIPTION ********************************************
+pint                         <STDIO.LIB>
+
+SYNTAX: void pint(char left, char code, int n1, int (*putc) (), int num, void *instanceParam);
+
+KEYWORDS:
+
+DESCRIPTION:  Similar to plint, except this function outputs int or
+unsigned ints.  Please refer to plint for details.
+
+RETURN VALUE: none.
+END DESCRIPTION **********************************************************/
+
+useix void pint(char left, char code, int n1, int (*putc) (), int num, void *instanceParam)
+{
+	auto int spaces;
+	auto char array[7];         // 8-18-94, aoc     char array[7];
+	auto char isSigned;
+
+	if (isSigned = ((code | 0x20) == 'd'))
+	{
+		spaces = n1 - itoan(abs(num))-((num<0)?1:0);
+		itoa(abs(num), array);
+	}
+	else
+	{
+		spaces = n1 - utoan(num);
+		utoa(num, array);
+	}
+	if (n1 == 0)
+		spaces = 0;          // if field width not specified, no spaces
+	if (spaces < 0)
+		outchrs('*', n1, putc,instanceParam);// astrisk fill if no fit
+	else if (left == '-')
+	{
+		if ((num < 0) && isSigned) outchrs('-',1,putc,instanceParam);
+		outstr(array, putc, instanceParam);
+		outchrs(' ', spaces, putc, instanceParam);
+	}
+	else
+	{
+		if (left != '0') outpad(left,spaces,putc,instanceParam);
+		if ((num < 0) && isSigned) outchrs('-',1,putc, instanceParam);
+		if (left == '0') outpad(left, spaces, putc, instanceParam);
+		outstr(array, putc, instanceParam);
+	}
+}
+
+/*** BeginHeader pflt */
+
+void pflt(char left, char code, int n1, int n2, int (*putc) (),
+	float f, int n3, void *instanceParam);
+
+/*** EndHeader   pflt */
+
+/*=========================================================================*\
+   PFLT - Formatted Output of Floating Point Numbers
+	  Copyright (c) 1989, Z-World
+\*=========================================================================*/
+
+/* START _FUNCTION DESCRIPTION ********************************************
+pflt                         <STDIO.LIB>
+
+SYNTAX: void pflt(char left, char code, int n1, int n2, int (*putc)(),
+			float f, int n3, void *instanceParam);
+
+KEYWORDS:
+
+DESCRIPTION:  This function outputs the ASCII representation of a floating
+point number using the passed in function "putc".  "putc" should take a
+character parameter.  "left" is the filler character to the left of the
+number.  "code" specifies how the floating point number should be printed.
+"n1" is the maximum total length of the output.  "n2" specifies the
+precision (digits after the decimal point), and "n3" indicates whether
+"n2" should be used as the precision (default is 6 if "n3" is zero).
+
+RETURN VALUE: none.
+END DESCRIPTION **********************************************************/
+
+#define DEFMANTISSA 12
+
+nodebug useix void pflt(
+		char left,
+		char code,
+		int TotalLength,
+		int DigitsAfterDecPt,
+		int (*putc)(),
+		float f,
+		int FmtSpecified,
+		void *instanceParam)
+
+{
+	auto char buf[DEFMANTISSA+30];
+	auto int sgn, mdig, npow, prec;
+	auto int xcode, lenf, lene, expp;
+	auto int k, j, q;
+/* 8-18-94, aoc
+	static int putnext(), astrisks(), put_0(), spacefill(), azerofill();
+*/
+	if (FmtSpecified)
+		prec = DigitsAfterDecPt;
+	else
+		prec = DEFDECDIGITS;
+	npow = ftoa(f, buf);				//	know the exponent of f, and try print
+	if (buf[0] == '-')				//	negative number
+		sgn = 1;
+	else
+		sgn = 0;							//	or positive number
+	mdig = strlen(buf) - sgn;		//	actual mantissa digits
+
+	xcode = code | 0x20;				//	change code to lower case
+
+	if ((k = mdig + npow) >= 0)	//	k is the actual exponent (10)
+		lenf = sgn + k + prec + 1;	//	greater than or equal to 1
+	else
+		lenf = sgn + prec + 1;		//	less than 1
+	//	lenf stores the number of characters needed to display f
+	lene = prec + sgn + 6;			//	lene is the default
+	expp = npow + mdig - 1;			//	expp is k-1
+	if (expp < 10 && expp > -10)	//	out of normal range, exponent display
+		lene = lene - 1;
+	j = 0;
+	if (xcode == 'e' || (xcode == 'g' && lene < lenf))
+		goto eformat;
+
+	lene = lenf;						//	not e-format, lenf is the required # char
+	if (TotalLength)								//	output field size
+	{
+		if (TotalLength < lenf)					//	is not big enough
+		{
+			outchrs('*', TotalLength, putc, instanceParam);     //8-18-94, aoc  astrisks();
+			return;						//	and return
+		}
+		if (left != '-')
+		{
+			if (left == '0')
+			{
+				if (sgn)
+				{
+					(*putc)(buf[j++], instanceParam);  // 8-18-94, aoc     putnext();
+					sgn = 0;
+				}
+				if( TotalLength > lene) outchrs('0', TotalLength - lene, putc, instanceParam); //8-18-94, aoc
+										// 8-18-94, aoc     azerofill();
+			}
+			else
+			{
+				if (k <= 0) 
+					--TotalLength;
+				if( TotalLength > lene) outchrs(' ', TotalLength - lene, putc, instanceParam); // 8-18-94, aoc
+										// 8-18-94, aoc     spacefill();
+			}
+		}
+	}
+
+	if (sgn)
+		(*putc) (buf[j++], instanceParam);             // 8-18-94, aoc     putnext();
+
+	if (k <= 0 && left != '0')
+		(*putc) ('0', instanceParam);                  // 8-18-94, aoc     put_0();
+
+	while (k > 0)
+	{
+		if (buf[j])
+			(*putc) (buf[j++],instanceParam);         // 8-18-94, aoc     putnext();
+		else
+			(*putc) ('0',instanceParam);              // 8-18-94, aoc     put_0();
+		k--;
+	}
+	(*putc) ('.',instanceParam);
+
+	while (k < 0)
+	{
+		(*putc) ('0',instanceParam);                  // 8-18-94, aoc     put_0();
+		prec--;
+		k++;
+		if (prec <= 0)
+			break;
+	}
+	while (prec-- > 0)
+		if (buf[j])
+			(*putc) (buf[j++],instanceParam);         // 8-18-94, aoc     putnext();
+		else
+			(*putc) ('0',instanceParam);              // 8-18-94, aoc     put_0();
+
+	lene = lenf;
+	goto eformat2;
+
+eformat:
+	if (TotalLength)
+	{
+		if (TotalLength < lene)
+		{
+			outchrs('*', TotalLength, putc,instanceParam);     // 8-18-94, aoc     astrisks();
+			return;
+		}
+		if (left != '-')
+		{
+			if (left == '0')
+				if( TotalLength > lene) outchrs('0', TotalLength - lene, putc,instanceParam); //8-18-94, aoc
+										// 8-18-94, aoc     azerofill();
+			else
+				if( TotalLength > lene) outchrs(' ', TotalLength - lene, putc, instanceParam); // 8-18-94, aoc
+										// 8-18-94, aoc     spacefill();
+		}
+	}
+
+	q = sgn + 1;
+	while (q-- > 0)
+		(*putc) (buf[j++],instanceParam);             // 8-18-94, aoc     putnext();
+
+	(*putc) ('.',instanceParam);
+	while (prec-- > 0)
+		if (buf[j] != 0)
+			(*putc) (buf[j++],instanceParam);         // 8-18-94, aoc     putnext();
+		else
+			(*putc) ('0',instanceParam);              // 8-18-94, aoc     put_0();
+
+	outstr("E", putc,instanceParam);
+	if (expp >= 0)
+		(*putc) ('+',instanceParam);
+	itoa(expp, buf);
+	outstr(buf, putc,instanceParam);
+
+eformat2:
+	if (left == '-' && TotalLength)
+		if( TotalLength > lene) outchrs(' ', TotalLength - lene, putc,instanceParam); // 8-18-94, aoc
+										// 8-18-94, aoc     spacefill();
+	return;
+
+/* 8-18-94, aoc
+	subfunc putnext: (*putc) (buf[j++],instanceParam);
+	subfunc astrisks: outchrs('*', TotalLength, putc,instanceParam);
+	subfunc put_0: (*putc) ('0',instanceParam);
+	subfunc spacefill: if (TotalLength > lene) outchrs(' ', TotalLength - lene, putc,instanceParam);
+	subfunc azerofill: if (TotalLength > lene) outchrs('0', TotalLength - lene, putc,instanceParam);
+*/
+}
+
+/*** BeginHeader itoa */
+
+char *itoa(int value, char *buf);
+
+/*** EndHeader   itoa */
+
+// 060293 TAK: changed to fast
+
+/* START FUNCTION DESCRIPTION ********************************************
+itoa                         <STDIO.LIB>
+
+SYNTAX: char *itoa(int value, char *buf);
+
+KEYWORDS: string
+
+DESCRIPTION: Places up to 5 digit character string at *buf, representing
+value of signed number, with minus sign in first place, when appropriate.
+Supresses leading zeros, but leaves one zero digit for value = 0. Max =
+65535. 73 program bytes. Executes in about 200us on 9 mhz hd64180.
+
+RETURN VALUE: pointer to the end (null terminator) of the string in buf.
+END DESCRIPTION **********************************************************/
+#asm nodebug fast
+
+; 153 bytes, 3 routines
+;
+; char *itoa(int value, char *buf)
+; same as utoa below, but places minus sign first in buffer if neg
+
+itoa::
+	   pop      bc                ; ret
+	   pop      de                ; value
+	   pop      hl                ; pointer
+	   ld       a,d
+	   or       a
+	   jp       p,itoa2           ; not neg
+	   ld       a,e
+	   cpl
+	   ld       e,a
+	   ld       a,d
+	   cpl
+	   ld       d,a
+	   inc      de                ; de neg value
+	   ld       (hl),'-'          ; minus to buffer
+	   inc      hl
+itoa2:
+	   push     hl
+	   push     de
+	   push     bc
+	   jp       utoa              ; continue as unsigned
+
+#endasm
+
+/*** BeginHeader utoa */
+
+char *utoa(unsigned value, char *buf);
+
+/*** EndHeader   utoa */
+
+/* START _FUNCTION DESCRIPTION ********************************************
+utoa                         <STDIO.LIB>
+
+SYNTAX: char *utoa(unsigned value, char *buf);
+
+KEYWORDS: string
+
+DESCRIPTION: Places up to 5 digit character string at *buf representing
+value of unsigned number.  Supresses leading zeros, but leaves one zero
+digit for value = 0. Max = 65535. 73 program bytes. Executes in about
+200us on 9 mhz hd64180.
+
+RETURN VALUE: Pointer to null at end of string.
+END DESCRIPTION **********************************************************/
+#asm nodebug fast
+
+; char *utoa(unsigned int value, char *buf )
+; places up to 5 digit character string at *buf representing
+; value of unsigned number. returns pointer to null at end of string.
+; supresses leading zeros. places one zero digit for zero. max 65535.
+; 73 program bytes. Exectes in about 200us on 9 mhz hd64180.
+
+utoa::
+	  pop      bc                ; return
+	  pop      hl                ; value
+	  exx
+	  pop      hl                ; pointer to buf
+	  ld       de,__tens         ; pointer to power of tens
+	  ld       c,0               ; c' is first non zero flag
+	  exx
+	  push     hl
+	  push     hl
+	  push     bc                ; return
+; hl value, hl' pointer to buf, de' pointer to tens, c' nozero flag
+	  ld       b,5               ; number of steps
+loop:  exx
+	  ld       a,(de)            ; get power of ten
+	  inc      de
+	  exx
+	  ld       e,a               ; to de
+	  exx
+	  ld       a,(de)
+	  inc      de
+	  exx
+	  ld       d,a             ; de is power of 10
+	  or       a                 ; clc
+	  ld       c,-1              ; digit
+loopi:
+	  inc      c                 ; digit
+	  sbc      hl,de             ; sub a power of ten
+	  jp       nc,loopi          ; carry means done
+	  add      hl,de             ; restore value
+; c has digit
+	  ld       a,c
+	  exx
+	  or       c                 ; first nonzero flag
+	  ld       c,a               ; save
+	  exx
+	  jr       z,loop2           ; if digit not encountered yet
+	  ld       a,c               ; digit
+	  add      a,'0'             ; to ascii
+	  exx
+	  ld       (hl),a            ; to *buf++
+	  inc      hl
+	  exx
+loop2:
+	  djnz     loop              ; do 5 times b=b-1
+	  exx
+	  ld       a,c
+	  or       c                 ; any digits in entire process
+	  jr       nz,loop3          ; yes
+	  ld       a,'0'
+	  ld       (hl),a            ; put one zero if none at all
+	  inc      hl
+loop3:
+	  xor      a
+	  ld       (hl),a            ; term null
+	  ret                        ; pass pointer back in hl
+__tens:
+	  dw       10000,1000,100,10,1
+
+; returns number of digits needed to express unsigned int
+; never less than 1
+; int utoan(int num)
+
+utoan::
+	  ld       b,5               ; max possible
+	  ld       iy,__tens         ; pointer to array
+utoan1:
+	  ld       e,(iy)
+	  inc      iy
+	  ld       d,(iy)
+	  inc      iy
+	  push     hl
+	  or       a
+	  sbc      hl,de
+	  pop      hl
+	  jr       nc,utoan3         ; if hl>= tenpower, need this many digs
+	  djnz     utoan1            ; loop
+	  inc      b                 ; at least 1 digit
+utoan3:
+	  ld       l,b               ; count
+	  ld       h,0               ; return in hl
+	  ret
+
+; routine to return number of digits in signed integer
+; same as utoan, but one more for sign
+
+itoan::
+	  bit      7,h
+	  jr       z,utoan           ; unsigned
+	  ex       de,hl
+	  ld       hl,0
+	  or       a
+	  sbc      hl,de             ; negate
+	  call     utoan
+	  inc      hl                ; 1 more for sign
+	  ret
+
+#endasm
+
+/*** BeginHeader htoa */
+
+char *htoa(int value, char *buf);
+
+/*** EndHeader   htoa */
+
+/* START _FUNCTION DESCRIPTION ********************************************
+htoa                         <STDIO.LIB>
+
+SYNTAX: char *htoa(int value, char *buf);
+
+KEYWORDS: math
+
+DESCRIPTION: Converts integer "value" to hex number and put result into
+"buf".
+
+RETURN VALUE: Pointer to end (null terminator) of string in buf.
+END DESCRIPTION **********************************************************/
+#asm nodebug fast
+
+; convert integer to hex number
+; char * htoa(int value, char *buf)
+
+_ls4:
+		ld		b,4
+_lsloop:
+		or		a
+		rl		e
+		rl		d
+		djnz	_lsloop
+		ret
+
+htoa::
+	   ex       de,hl
+	   ld       hl,4
+	   add      hl,sp
+	   ld       a,(hl)
+	   inc      hl
+	   ld       h,(hl)
+	   ld       l,a               ; pointer to output buf
+htoa0:
+	   ld			a,d
+	   cp			010h
+	   jr			c,_3orLess
+	   ld			c,4
+	   jr			htoa1
+
+_3orLess:
+		call		_ls4
+		ld			a,d
+		cp			010h
+		jr			c,_2orLess
+		ld			c,3
+		jr			htoa1
+
+_2orLess:
+		call		_ls4
+		ld			a,d
+		cp			010h
+		jr			c,_1
+		ld			c,2
+		jr			htoa1
+_1:
+		call		_ls4
+		ld			c,1
+htoa1:
+	   ld       b,4               ; shift count
+	   ld       a,0
+htoa2:
+	   rl       e
+	   rl       d
+	   rla
+	   djnz     htoa2
+	   cp       10
+	   jr       c,htoa3           ; 0-9
+	   add      a,'A'-10
+	   jr       htoa4
+htoa3:
+	   add      a,'0'
+htoa4:
+	   ld       (hl),a
+	   inc      hl
+	   dec      c
+	   jr       nz,htoa1          ; 4 hex digits
+	   ld       (hl),0            ; terminal null
+	   ret
+
+; char * hltoa(long int value, char *buf)
+; convert long to hex
+
+hltoa::
+	   ld       hl,6
+	   add      hl,sp
+	   ld       a,(hl)
+	   inc      hl
+	   ld       h,(hl)
+	   ld       l,a               ; pointer to buffer now in hl
+	   push     de                ; save least
+	   push     hl                ; pointer
+	   ld       d,b
+	   ld			a,d
+	   ld       e,c               ; arg must be in hl too
+	   or			e
+	   jr			z,lobyteonly
+	   call     htoa0          ; 4 digits, hl returns pointer
+	   pop      bc                ; clean stack
+	   pop      de                ; next 16 bits
+		ld			c,4
+	   call     htoa1
+	   ret
+
+lobyteonly:
+		pop		bc
+		pop		de
+		call		htoa0
+		ret
+#endasm
+
+/*** BeginHeader outchrs,outstr */
+
+char outchrs(char c, int n, int (*putc) (),void *instanceParam);
+char *outstr(char *string, int (*putc) (),void *instanceParam);
+
+/*** EndHeader   outchrs,outstr */
+
+/* 060293 TAK changed to root because fast does not ensure CBR not
+		changed */
+
+/* START _FUNCTION DESCRIPTION ********************************************
+outchrs                      <STDIO.LIB>
+
+SYNTAX: char outchrs(char c, int n, int (*putc) (), void *instanceParam);
+
+KEYWORDS:
+
+DESCRIPTION:  Use "putc" to output "n" times the character "c".  The
+function pointed to by "putc" should take a character parameter.
+
+RETURN VALUE: The character in parameter "c".
+END DESCRIPTION **********************************************************/
+
+/* START _FUNCTION DESCRIPTION ********************************************
+outstr                       <STDIO.LIB>
+
+SYNTAX: char *outstr(char *string, int (*putc)(), void *instanceParam );
+
+KEYWORDS:
+
+DESCRIPTION: Output the string pointed to by "string" via calls to "putc".
+"putc" should take one character parameter.
+
+RETURN VALUE: Pointer to null at end of string.
+END DESCRIPTION **********************************************************/
+nodebug root speed
+char outchrs(char c, int n, int (*putc) (),void *instanceParam) {
+#asm
+repeatOut:
+	ld		hl,@SP+n
+	add	hl,sp
+	ld		e,(hl)
+	inc	hl
+	ld		d,(hl)
+	ld		a,d
+	or		e
+	jr		z,endFunc
+	
+	dec	de
+	ld		(hl),d
+	dec	hl
+	ld		(hl),e
+	
+	ld		hl,@SP+instanceParam
+	add	hl,sp
+	ld		e,(hl)
+	inc	hl
+	ld		d,(hl)
+	push	de
+	
+	ld		hl,@SP+c+2
+	add	hl,sp
+	ld		e,(hl)
+	inc	hl
+	ld		d,(hl)
+	push	de
+	
+	ld		de,retAddr
+	push	de
+	
+	ld		hl,@SP+putc+6
+	add	hl,sp
+	ld		a,(hl)
+	inc	hl
+	ld		h,(hl)
+	ld		l,a
+	jp		(hl)
+retAddr:
+	pop	bc
+	pop	bc
+	jr		repeatOut
+endFunc:
+#endasm
+	return c;
+}
+
+nodebug root speed
+char *outstr(char *string, int (*putc) (),void *instanceParam) {
+	auto char *ptr;
+
+	ptr = string;
+#asm
+repeatOut:
+	ld		hl,@SP+ptr
+	add	hl,sp
+	ld		e,(hl)
+	inc	hl
+	ld		d,(hl)
+	ld		a,(de)
+	or		a
+	jr		z,endFunc
+
+	inc	de
+	ld		(hl),d
+	dec	hl
+	ld		(hl),e
+	
+	ld		hl,@SP+instanceParam
+	add	hl,sp
+	ld		e,(hl)
+	inc	hl
+	ld		d,(hl)
+	push	de
+
+	ld		e,a
+	ld		d,0
+	push	de
+	
+	ld		de,retAddr
+	push	de
+	
+	ld		hl,@SP+putc+6
+	add	hl,sp
+	ld		a,(hl)
+	inc	hl
+	ld		h,(hl)
+	ld		l,a
+	jp		(hl)
+retAddr:
+	pop	bc
+	pop	bc
+	jr		repeatOut
+endFunc:
+#endasm
+	return string;
+}
+
+#if 0
+#asm nodebug fast
+; outchrs(char c, int n,int (*putc)(),void *instanceParam)
+; outputs n 'c' 's using the specified routine
+
+outchrs::
+	   pop      bc                ; ret
+	   exx
+	   pop      bc                ; character to output
+	   pop      de                ; count
+	   pop      iy                ; pointer to sub
+	   push     iy
+	   push     de
+	   push     bc
+	   exx
+	   push     bc                ; ret
+	   exx
+	   push     bc                ; save thing to output
+
+; enter here with output char pushed on stack
+
+outsp2:
+	   ld       a,e
+	   or       d                 ; zero count?
+	   jr       z,outsp4          ; done
+	   pop      hl                ; thing to output
+	   push     hl
+	   dec      de                ; count
+	   push     de                ; save count
+	   push     iy                ; save addr
+	   push     hl                ; arg
+	   ld       de,outsp3         ; return
+	   push     de
+	   jp       (iy)              ; call sub
+outsp3:
+	   pop      de                ; clean arg
+	   pop      iy                ; sub addr
+	   pop      de                ; count
+	   jr       outsp2
+outsp4:
+	   pop      bc                ; clean output arg
+	   ret                        ; done
+
+; char *outstr(char *string,int (*putc)(),void *instanceParam)
+; returns pointer to null at end of string
+
+outstr::
+	   pop      bc                ; ret
+	   pop      hl                ; pointer to string
+	   pop      de                ; sub
+	   push     de
+	   push     hl
+	   push     bc
+outstr1:
+	   ld       a,(hl)
+	   or       a
+	   jr       z,outstr4         ; done
+	   inc      hl
+	   push     hl
+	   push     de
+	   ld       l,a
+	   ld       h,0               ; arg, char to send in hl
+	   push     hl
+	   push     de                ; address to call
+	   pop      iy
+	   ld       de,outstr2
+	   push     de                ; ret
+	   jp       (iy)              ; call
+outstr2:
+	   pop      bc                ; clean stack
+	   pop      de                ; sub ptr
+	   pop      hl                ; pointer to data
+	   jr       outstr1
+outstr4:
+	   ret                        ; return pointer to null in hl
+
+#endasm
+#endif
+/*** BeginHeader _tmtoa */
+
+char * _tmtoa(long t, char *str);
+
+/*** EndHeader */
+
+char * _tmtoa(long t, char *str) {
+	auto struct tm ts;
+	sprintf(str,"%2d:%02d:%02d",
+		(int)(t/3600),
+		(int)((t%3600)/60),
+		(int)(t%60));
+	return str;
+}
+
+/*** BeginHeader _dtmonname */
+
+extern char *_dtmonname[13];
+
+/*** EndHeader */
+
+char *_dtmonname[13] = {
+	"???","Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Nov","Dec"
+};
+
+/*** BeginHeader _dttoa */
+
+char * _dttoa(int t, char *str);
+
+/*** EndHeader */
+
+char * _dttoa(int d, char *str) {
+	auto struct tm ts;
+	_mktm_date(&ts,d);
+	sprintf(str,"%d/%d/%02d", ts.tm_mon, ts.tm_mday, ts.tm_year % 100);
+	return str;
+}
+
+/*** BeginHeader _atotm */
+
+long _atotm(char *str);
+
+/*** EndHeader */
+
+long _atotm(char *str) {
+	auto long time;
+	auto int i;
+	auto char *tail;
+
+	i = (int)strtol(str, &tail, 10);
+	if (i >= 0 && i < 24) {
+		time = i * 3600L;
+	} else {
+		return -1;
+	}
+
+	if (*tail != ':') return -1;
+	++tail;
+	i = (int)strtol(tail, &tail, 10);
+	if (i >= 0 && i < 60) {
+		time += i * 60L;
+	} else {
+		return -1;
+	}
+
+	if (*tail != ':') return -1;
+	++tail;
+	i = (int)strtol(tail, &tail, 10);
+	if (i >= 0 && i < 60) {
+		return time + i;
+	} else {
+		return -1;
+	}
+}
+
+/*** BeginHeader _atodt */
+
+int _atodt(char *str);
+
+/*** EndHeader */
+
+int _atodt(char *str) {
+	auto int date;
+	auto char *tail;
+	auto int i;
+	auto struct tm t;
+
+	i = (int)strtol(str, &tail, 10);
+	if (i >= 1 && i < 13) {
+		t.tm_mon = i;
+	} else {
+		return -1;
+	}
+
+	if (*tail != '/') return -1;
+	++tail;
+
+	i = (int)strtol(tail, &tail, 10);
+	if (i >= 1) {
+		t.tm_mday = i;
+	} else {
+		return -1;
+	}
+
+	if (*tail != '/') return -1;
+	++tail;
+
+	i = (int)strtol(tail, &tail, 10);
+	if (	(i >= 1980 && i <= 2079) || (i >= 0 && i <= 99)) {
+		t.tm_year = i % 100;
+		if (t.tm_year < 80) t.tm_year += 100;
+	} else {
+		return -1;
+	}
+
+	if (t.tm_mday < __dom[!(t.tm_year % 4)][t.tm_mon-1]+1) {
+		return _mktime_date(&t);
+	} else {
+		return -1;
+	}
+}

@@ -1,0 +1,2276 @@
+/* START LIBRARY DESCRIPTION *********************************************
+V256x64.LIB
+	Copyright (c) 1997, Z-World.
+
+DESCRIPTION: VFD (Noretaki 256x64) specific stuff
+
+END DESCRIPTION **********************************************************/
+
+/*** Beginheader */
+
+#ifndef _V256x64_LIB
+#define _V256x64_LIB
+
+#use lp.lib
+
+//#use kdi.lib
+
+//#define VFDCMND  LCDWR+1
+//#define VFDDATA  LCDWR
+//#define VFDREAD  LCDRD
+
+/*** EndHeader */
+
+/*** BeginHeader _wtRevBit */
+
+char _wtRevBit(char x);
+
+/*** EndHeader */
+
+#asm
+_wtRevBit::
+	rl	l
+	rr h
+	rl l
+	rr h
+	rl l
+	rr h
+	rl l
+	rr h
+	rl	l
+	rr h
+	rl l
+	rr h
+	rl l
+	rr h
+	rl l
+	rr h
+	ld l,h
+	ld h,0
+	ret
+#endasm
+
+/*** BeginHeader wtReadData */
+
+#define wtReadData kdiReadThru
+
+/*** EndHeader */
+
+///*** BeginHeader wtSetThru */
+//
+//#define wtSetThru kdiSetThru
+//
+///*** EndHeader */
+//
+///*** BeginHeader wtBlindWriteByte */
+//
+//#define wtBlindWriteByte kdiBlindWrite
+//
+///*** EndHeader */
+//
+///*** BeginHeader wtBlindReadByte */
+//
+//#define wtBlindReadByte kdiBlindRead
+
+/*** EndHeader */
+
+/*** BeginHeader wtSetCSn12 */
+
+#define wtSetCSn12 kdiSetCSn12
+
+/*** EndHeader */
+
+///*** BeginHeader wtSetStatus */
+//
+//#define wtSetStatus kdiSetIThru
+//
+///*** EndHeader */
+
+/*** BeginHeader wtDisplaySw */
+
+int wtDisplaySw(int onOff);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+wtDisplaySw
+
+SYNTAX: int wtDisplaySw(int onOff)
+
+KEYWORDS: internal LCD specific
+
+DESCRIPTION: This function switches the display on and off.
+
+PARAMETER1: If this parameter is 1, the display is turned on.
+If this parameter is 0, the display is turned off.
+
+RETURN VALUE:  Status of the LCD after the operation.
+
+END DESCRIPTION **********************************************************/
+
+
+int wtDisplaySw(int onOff) {
+	lpOutCmd(onOff ? 0x01 : 0x00);
+//	outport(VFDCMND, onOff ? 0x01 : 0x00);
+}
+
+/*** BeginHeader wtSetAddress */
+
+int wtSetAddress(int offset);
+
+/*** EndHeader */
+
+int wtSetAddress(int addr) {
+  // set cursor address to location addr in the 2K graphics region
+  // addr 0x0000 = upper left corner
+  // addr 0x0007 = lower left corner
+  // addr 0x07F0 = upper right corner
+  // addr 0x07F7 = lower right corner
+  lpOutCmd(0xe);
+//  outport(VFDCMND, 0x0E);
+	lpOutData(addr & 0x00FF);
+//  outport(VFDDATA, addr & 0x00FF);         // send lower 8 bits of address
+  lpOutCmd(0xf);
+//  outport(VFDCMND, 0x0F);
+	lpOutData((addr >> 8) & 0x001F);
+//  outport(VFDDATA, (addr >> 8) & 0x001F);  // send upper 5 bits of address
+  return 0;
+}
+
+/*** BeginHeader wtWriteDisplay */
+
+int wtWriteDisplay(int data);
+
+/*** EndHeader */
+
+int wtWriteDisplay(int ch) {
+  // within a graphics address, the top pixel is controlled by the MSB of ch
+  // the bottom pizel by the LSB of ch
+  lpOutCmd(0x8);
+//  outport(VFDCMND, 0x08);
+	lpOutData(ch);
+//  outport(VFDDATA, ch);
+  return 0;
+}
+
+/*** BeginHeader wtReadDisplay */
+
+int wtReadDisplay();
+
+/*** EndHeader */
+
+int wtReadDisplay(void) {
+	lpOutCmd(0x9);
+//  outport(VFDCMND, 0x09 );
+#asm xmemok
+	nop
+	nop
+	nop
+	nop
+	nop
+#endasm
+	lpInData();
+//  inport(VFDREAD);          // throw away first result
+
+  return lpInData();
+//  return inport(VFDREAD);
+}
+
+/*** BeginHeader wtBrushType */
+
+#define WT_SET 0x0
+#define WT_CLEAR 0x1
+#define WT_XOR 0x2
+#define WT_BLOCK 0x3
+
+extern int wtBrushType;
+
+/*** EndHeader */
+
+int wtBrushType;
+
+/*** BeginHeader wtSetBrushType */
+
+void wtSetBrushType(int type);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+wtSetBrushType
+
+SYNTAX: void wtSetBrushType(int type)
+
+KEYWORDS: internal LCD specific
+
+DESCRIPTION: This function sets the brush type for all following graphics
+operations. It controls how pixels are drawn on the screen with respect
+to existing pixels. This function is exported to the GLCD.LIB as
+glSetBrushType(), end-users should use that function instead.
+
+PARAMETER1: This is the type of the brush.
+
+RETURN VALUE:  None.
+
+END DESCRIPTION **********************************************************/
+
+
+void wtSetBrushType(int type) {
+	wtBrushType = type;
+}
+
+/*** BeginHeader wtBrushOneByte */
+
+int wtBrushOneByte(int oldByte, int brushByte);
+
+/*** EndHeader */
+
+int wtBrushOneByte(int oldByte, int brushByte) {
+	auto int result;
+
+	switch (wtBrushType) {
+		case WT_SET:
+			return (oldByte | brushByte);
+		case WT_CLEAR:
+			return (oldByte & (~brushByte));
+		case WT_XOR:
+			return (oldByte ^ brushByte);
+		case WT_BLOCK:
+			return (brushByte);
+		default:
+			return -1;
+	}
+}
+
+/*** BeginHeader wtPlotDot */
+
+int wtPlotDot(int x, int y);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+wtPlotDot
+
+SYNTAX: int wtPlotDot(int x, int y)
+
+KEYWORDS: internal LCD specific
+
+DESCRIPTION: This function plots one pixel on the screen at coordinate
+(x,y). This function is exported to GLCD.LIB as glPlotDot. End users
+should use that function instead.
+
+PARAMETER1: the x-coordinate of the pixel to be drawn.
+
+PARAMETER2: the y-coordinate of the pixel to be drawn.
+
+RETURN VALUE: Status of the LCD after the operation.
+
+END DESCRIPTION **********************************************************/
+
+
+int wtPlotDot(int x, int y) {
+	auto char newByte;
+	wtSetAddress(x * 8 + y / 8);
+	newByte = wtBrushOneByte(wtReadDisplay(), __bitmap[7-(y & 7)]);
+	wtSetAddress(x * 8 + y / 8);
+	wtWriteDisplay(newByte);
+	return 0;
+}
+
+/*** BeginHeader wtBufOpen */
+
+struct wtBuf {
+	char lastCS;			//	0,1 or 2. if 0, none selected
+	char lastPage;			//	0 to 7
+	char lastAddress;		//	0 to 63
+	char lastContent;		//	8-bit bitmap
+};
+
+void wtBufOpen(struct wtBuf *pBuf);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+wtBufOpen
+
+SYNTAX: void wtBufOpen(struct wtBuf *pBuf)
+
+KEYWORDS: internal LCD specific
+
+DESCRIPTION: This function opens (initializes) a buffer for buffered
+graphics operations. This function is exported to GLCD.LIB as glBufOpen.
+End-users should use that function instead.
+
+PARAMETER1: points to the buffer structure to be opened.
+
+RETURN VALUE:  None.
+
+END DESCRIPTION **********************************************************/
+
+
+void wtBufOpen(struct wtBuf *pBuf) {
+}
+
+/*** BeginHeader wtBufFlush */
+
+void wtBufFlush(struct wtBuf *pBuf);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+wtBufFlush
+
+SYNTAX: void wtBufFlush(struct wtBuf *pBuf)
+
+KEYWORDS: internal LCD specific
+
+DESCRIPTION: This function flushes all pending operations at the graphics
+LCD buffer. This function is exported to GLCD as glBufFlush. End-users
+should use that function instead.
+
+PARAMETER1: points to the buffer to be flushed.
+
+RETURN VALUE: None.
+
+END DESCRIPTION **********************************************************/
+
+void wtBufFlush(struct wtBuf *pBuf) {
+}
+
+/*** BeginHeader wtBufPlotMask */
+
+int wtBufPlotMask(struct wtBuf *pBuf, int x, int y_row, int mask);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+wtBufPlotMask
+
+SYNTAX: int wtBufPlotMask(struct wtBuf *pBuf,
+							int x, int y, int mask)
+
+KEYWORDS: internal LCD specific
+
+DESCRIPTION: This function plots a mask to the bitmap at the
+LCD memory location corresponding to coordinate (x,y).
+
+PARAMETER1: points to the buffer.
+
+PARAMETER2: x-coordinate of the LCD memory location.
+
+PARAMETER3: y-coordinate of the LCD memory location.
+
+PARAMETER4: the mask to use to change the LCD memory location.
+
+RETURN VALUE: The bitmap at the corresponding LCD memory location.
+
+END DESCRIPTION **********************************************************/
+
+
+ASM_NOIX int wtBufPlotMask(struct wtBuf *pBuf, int x, int y_row, int mask) {
+	auto int temp;
+
+	wtSetAddress(x * 8 + y_row);
+	if (mask < 0x100) {
+		temp = wtBrushOneByte(wtReadDisplay(), mask);
+		wtSetAddress(x * 8 + y_row);
+		wtWriteDisplay(temp);
+		return temp;
+	} else {
+		return wtReadDisplay();
+	}
+}
+
+/*** BeginHeader wtDoPlotMask */
+
+int wtDoPlotMask(struct wtBuf *pBuf, int x, int y_row, int mask);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+wtDoPlotMask
+
+SYNTAX: int wtDoPlotMask(struct wtBuf *pBuf,
+							int x, int y, int mask)
+
+KEYWORDS: internal LCD specific
+
+DESCRIPTION: This function plots a mask to the bitmap at the
+LCD memory location corresponding to coordinate (x,y).
+
+PARAMETER1: points to the buffer.
+
+PARAMETER2: x-coordinate of the LCD memory location.
+
+PARAMETER3: y-coordinate of the LCD memory location.
+
+PARAMETER4: the mask to use to change the LCD memory location.
+
+RETURN VALUE: The bitmap at the corresponding LCD memory location.
+
+END DESCRIPTION **********************************************************/
+
+#asm
+wtDoPlotMask::
+	jp	wtBufPlotMask
+#endasm
+
+/*** BeginHeader wtBufPlotDot */
+
+void wtBufPlotDot(struct wtBuf *pBuf, int x, int y);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+wtBufPlotDot
+
+SYNTAX: void wtBufPlotDot(struct wtBuf *pBuf, int x, int y)
+
+KEYWORDS: internal LCD specific
+
+DESCRIPTION: This function plots a pixel at coordinate (x,y). This
+function is exported to GLCD.LIB as glBufPlotDot. End-users should use
+that function instead.
+
+PARAMETER1: points to the buffer to buffer the operation.
+
+PARAMETER2: x-coordinate of the pixel.
+
+PARAMETER3: y-coordinate of the pixel.
+
+RETURN VALUE:  None.
+
+END DESCRIPTION **********************************************************/
+
+
+ASM_NOIX void wtBufPlotDot(struct wtBuf *pBuf, int x, int y) {
+	auto int temp;
+
+	wtBufPlotMask(pBuf,x,y>>3,__bitmap[7-(y & 7)]);
+}
+
+/*** BeginHeader wtFastPutBitmap */
+
+void wtFastPutBitmap(int x, int y, int bmWidth, int bmHeight, char *bm);
+
+/*** EndHeader */
+
+ASM_NOIX void wtFastPutBitmap(int x, int y, int bmWidth, int bmHeight, char *bm) {
+	auto char locBuf[10];	//	local buffer to store one column of to-be-drawn bitmap
+	auto int xCurrent, xEnd, yStart, yEnd;
+	auto int yCount;
+	auto int colStride;
+	auto char *pBm;
+	auto char shiftIdx, leftOver, ySize, alwaysBm;
+
+	colStride = (bmHeight + 7) / 8;
+	xEnd = (x + bmWidth > 256) ? 256 : x + bmWidth;
+	yEnd = (y + bmHeight > 64) ? 64 : y + bmHeight;
+	yStart = ((y < 0) ? 0 : y) / 8;
+	ySize = (yEnd + 7) / 8 - yStart;
+	shiftIdx = y & 7;
+	alwaysBm = (yEnd / 8) > 7;
+	if (ySize) {
+		xCurrent = (x < 0) ? 0 : x;
+		pBm = bm + colStride * (xCurrent - x) + ((y < 0) ? -y : 0) / 8;
+		for (; xCurrent < xEnd; ++xCurrent) {
+			yCount = ySize;
+			wtSetAddress(xCurrent * 8 + yStart);
+			lpOutCmd(0x9);
+//			outport(VFDCMND, 0x09 );
+#asm
+			nop
+			nop
+			nop
+			nop
+			nop
+			call	lpInData
+;			in0	a,(VFDREAD)
+			ld		b,8
+			ld		hl,@SP+locBuf
+			add	hl,sp
+;			inc	hl
+getByte:
+			push	hl
+			call	lpInData
+			ld		a,l
+			pop	hl
+;			in0	a,(VFDREAD)
+			ld		(hl),a
+			inc	hl
+			djnz	getByte
+#endasm
+			//	at this point, we have the original bitmap of the column
+			//	stored in locBuf.
+			wtSetAddress(xCurrent * 8 + yStart);
+			lpOutCmd(0x8);
+//			outport(VFDCMND, 0x08);
+			leftOver = 0;
+			yCount = ySize;
+			//	the following line must preceded the #asm immediately!!!
+
+			pBm;
+#asm
+			push	hl
+			ld		hl,@SP+shiftIdx+2
+			add	hl,sp
+			ld		c,(hl)
+			ld		hl,@SP+locBuf+2
+			add	hl,sp
+			ld		e,l
+			ld		d,h
+			pop	hl
+doByte:
+			ld		a,c
+			or		a
+			jr		z,getBm
+			push	hl
+			ld		hl,@SP+alwaysBm+2
+			add	hl,sp
+			ld		a,(hl)
+			or		a
+			jr		nz,popAndGetBm
+			
+			ld		hl,@SP+yCount+2
+			add	hl,sp
+			ld		a,(hl)
+			cp		1
+			jr		nz,popAndGetBm
+			inc	hl
+			ld		a,(hl)
+			or		a
+			jr		nz,popAndGetBm
+			pop	hl
+			xor	a
+			jr		noGetBm
+popAndGetBm:
+			pop	hl
+getBm:
+			ld		a,(hl)
+			inc	hl
+noGetBm:
+			push	hl
+			ld		l,a
+			ld		h,0
+			ld		a,c
+			or		a
+			jr		z,noShift
+			ld		b,c
+doShift:
+			add	hl,hl
+			djnz	doShift
+
+noShift:			
+			;	hl now contains the bitmap mask, ready for being put on the screen
+			ld		b,h
+			push	hl
+			ld		hl,@SP+leftOver+4
+			add	hl,sp
+			ld		a,(hl)		;	a is now leftover
+			ld		(hl),b		;	new leftover
+			pop	hl
+			or		l				;	a is the complete mask
+			ld		l,a
+			ld		h,0
+			call	_wtRevBit	;
+			ld		a,(de)
+			inc	de
+			push	bc
+			push	de
+			push	hl				;	push second argument (mask)
+			
+			ld		l,a
+			ld		h,0
+			push	hl				;	push first argument (oldbyte)
+
+			call	wtBrushOneByte
+			call	lpOutData
+;			out0	(VFDDATA),l	;	send the byte to the screen now
+			
+			pop	hl				;	pop first argument
+			pop	hl				;	pop second argument
+			pop	de
+			pop	bc
+			ld		hl,@SP+yCount+2
+			add	hl,sp
+			push	de
+			ld		e,(hl)
+			inc	hl
+			ld		d,(hl)
+			dec	de
+			ld		(hl),d
+			dec	hl
+			ld		(hl),e
+			ld		a,d
+			or		e
+			pop	de
+			pop	hl				;	hl is now pBm again
+			jr		nz,doByte	;	fix another byte
+#endasm
+			pBm += colStride;
+		}
+	}
+}
+
+/*** BeginHeader wtBufPutBitmap */
+
+void wtBufPutBitmap(	struct wtBuf *pBuf, int x, int y,
+							int bmWidth, int bmHeight, char *bm);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+wtBufPutBitmap
+
+SYNTAX: void wtBufPutBitmap(	struct wtBuf *pBuf, int x, int y,
+							int bmWidth, int bmHeight, char *bm)
+
+KEYWORDS: internal LCD specific
+
+DESCRIPTION: This function puts a bitmap on the screen as a buffered
+operation. This function is exported to GLCD.LIB as glBufPutBitmap, end-
+users should call that function instead. Note that this function assumes
+the bitmap is stored in the root memory. If the bitmap is stored in xmem,
+use wtBufXPutBitmap instead.
+
+PARAMETER1: points to the buffer used to buffer the LCD operation.
+
+PARAMETER2: x-coordinate of the bitmap (left-edge of the bitmap)
+
+PARAMETER3: y-coordinate of the bitmap (top-edge of the bitmap)
+
+PARAMETER4: width of the bitmap
+
+PARAMETER5: height of the bitmap
+
+PARAMETER6: row-major linear array of the bitmap.
+
+RETURN VALUE: None.
+
+END DESCRIPTION **********************************************************/
+
+
+root void wtBufPutBitmap(	struct wtBuf *pBuf, int x, int y,
+							int bmWidth, int bmHeight, char *_bm) {
+
+	wtFastPutBitmap(x,y,bmWidth,bmHeight,_bm);
+}
+
+/*** BeginHeader wtBufXPutBitmap */
+
+void wtBufXPutBitmap(	struct wtBuf *pBuf, int x, int y,
+							int bmWidth, int bmHeight, unsigned long bmPtr);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+wtBufXPutBitmap
+
+SYNTAX: void wtBufXPutBitmap(	struct wtBuf *pBuf, int x, int y,
+							int bmWidth, int bmHeight, unsigned long bmPtr)
+
+KEYWORDS: internal LCD specific
+
+DESCRIPTION: This function puts a bitmap on the screen as a buffered
+operation. This function is exported to GLCD.LIB as glBufPutBitmap, end-
+users should call that function instead. Note that this function assumes
+the bitmap is stored in xmem. If the bitmap is stored in root memory,
+use wtBufPutBitmap.
+
+PARAMETER1: points to the buffer used to buffer the LCD operation.
+
+PARAMETER2: x-coordinate of the bitmap (left-edge of the bitmap)
+
+PARAMETER3: y-coordinate of the bitmap (top-edge of the bitmap)
+
+PARAMETER4: width of the bitmap
+
+PARAMETER5: height of the bitmap
+
+PARAMETER6: row-major linear array of the bitmap.
+
+RETURN VALUE: None.
+
+END DESCRIPTION **********************************************************/
+
+
+root void wtBufXPutBitmap(	struct wtBuf *pBuf, int x, int y,
+							int bmWidth, int bmHeight, unsigned long bmPtr) {
+	auto int oldCBR;
+
+	oldCBR = inport(CBR);
+	wtFastPutBitmap(x, y,
+						 bmWidth, bmHeight, x_makadr(bmPtr));	
+	outport(CBR,oldCBR);
+}
+
+/*** BeginHeader wtBufGetBitmap */
+
+void wtBufGetBitmap(	struct wtBuf *pBuf, int x, int y,
+							int bmWidth, int bmHeight, char *bm);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+wtBufGetBitmap
+
+SYNTAX: void wtBufGetBitmap(	struct wtBuf *pBuf, int x, int y,
+							int bmWidth, int bmHeight, char *bm)
+
+KEYWORDS: internal LCD specific
+
+DESCRIPTION: this function reads back a bitmap from the LCD screen.
+This function is exported to GLCD.LIB as glBufGetBitmap. End-users
+should use that function instead.
+
+PARAMETER1: points to a buffer that buffers the LCD operations.
+
+PARAMETER2: x-coordinate of the bitmap (left-edge of the bitmap)
+
+PARAMETER3: y-coordinate of the bitmap (top-edge of the bitmap)
+
+PARAMETER4: width of the bitmap
+
+PARAMETER5: height of the bitmap
+
+PARAMETER6: row-major linear array of the bitmap.
+
+RETURN VALUE: None.
+
+END DESCRIPTION **********************************************************/
+
+
+void wtBufGetBitmap(	struct wtBuf *pBuf, int x, int y,
+							int bmWidth, int bmHeight, char *bm) {
+	auto int vcursor, hcursor;
+	auto int voffset, vlimit;
+	auto int temp;
+
+	voffset = y & 7;
+	vlimit = (voffset+bmHeight+7)>>3;
+	y = y >> 3;
+	if ((vlimit+y) >= 8) vlimit = 7-y;
+	bmHeight = (bmHeight >> 3)+1;
+	for (hcursor = 0; hcursor < bmWidth; ++hcursor) {
+		*bm = _wtRevBit(wtBufPlotMask(pBuf,hcursor+x,y,0x100) << voffset);
+		for (vcursor = 1; vcursor < vlimit; ++vcursor) {
+			temp = _wtRevBit(wtBufPlotMask(pBuf,hcursor+x,vcursor+y,0x100));
+			*(bm+1) |= temp << voffset;
+			if (voffset) *bm |= temp >> (8-voffset);
+			++bm;
+		}
+		if (vlimit>bmHeight)
+			*bm |= _wtRevBit(wtBufPlotMask(pBuf,hcursor+x,vlimit-1+y,0x100) >> (8-voffset));
+		++bm;
+	}
+}
+
+/*** BeginHeader wtBufClose */
+
+void wtBufClose(struct wtBuf *pBuf);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+wtBufClose
+
+SYNTAX: void wtBufClose(struct wtBuf *pBuf)
+
+KEYWORDS: internal LCD specific
+
+DESCRIPTION: This function closes a graphics buffer and updates the LCD
+of any remaining changes in the buffer. This function is exported to the
+GLCD.LIB as glBufClose(). End-users should use that function instead.
+
+PARAMETER1: pointer to the buffer to be closed.
+
+RETURN VALUE:  None.
+
+END DESCRIPTION **********************************************************/
+
+
+void wtBufClose(struct wtBuf *pBuf) {
+}
+
+/*** BeginHeader wtBlankScreen */
+
+int wtBlankScreen();
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+wtBlankScreen
+
+SYNTAX: int wtBlankScreen()
+
+KEYWORDS: internal LCD specific
+
+DESCRIPTION: This function blanks the screen of the LCD. The name is
+exported to GLCD.LIB and the end-user should use glBlankScreen() instead.
+
+RETURN VALUE:  The returned value indicates the status of the LCD after
+the operation.
+
+END DESCRIPTION **********************************************************/
+
+
+int wtBlankScreen() {
+	auto int count;
+
+	wtSetAddress(0);
+	lpOutCmd(0x8);
+//	outport(VFDCMND, 0x08);
+	count = 256 * 8;
+	while (count--) {
+		lpOutData(0);
+//		outport(VFDDATA, 0);
+	}
+	return 0;
+}
+
+/*** BeginHeader wtInit */
+
+int wtInit();
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+wtInit
+
+SYNTAX: int wtInit()
+
+KEYWORDS: internal LCD specific functions
+
+DESCRIPTION: This function initializes the LCD module (software and
+hardware). This function is called by the exported glInit() in GLCD.lib.
+In most cases, the end-user should not have to call this function.
+
+RETURN VALUE:  returns the status of the LCD. If the initialization was
+successful, this function returns 0. Otherwise, the returned value
+indicates the LCD status.
+
+END DESCRIPTION **********************************************************/
+
+
+int wtInit() {
+	auto int result;
+
+	lpOutCmd(0x0);
+//  outport(VFDCMND, 0x00);	//	turn both screens off
+	lpOutCmd(0xa);
+//  outport(VFDCMND, 0x0A);  // set screen 1 to start at location 0
+	lpOutData(0);
+//  outport(VFDDATA, 0x00);
+  	lpOutCmd(0xb);
+//  outport(VFDCMND, 0x0B);
+	lpOutData(0);
+//  outport(VFDDATA, 0x00);
+  	lpOutCmd(0xe);
+//  outport(VFDCMND, 0x0E);  // cursor address to 0
+	lpOutData(0);
+//  outport(VFDDATA, 0x00);
+  	lpOutCmd(0xf);
+//  outport(VFDCMND, 0x0F);
+	lpOutData(0);
+//  outport(VFDDATA, 0x00);
+  	lpOutCmd(0x1);
+//  outport(VFDCMND, 0x01);  // turn screen 1 on
+	lpOutCmd(0x4);
+//  outport(VFDCMND, 0x04);  // cursor autoincrements
+  return 0;
+}
+
+/*** BeginHeader wtScreenBrite */
+
+void wtScreenBrite( unsigned char lum );
+
+/*** EndHeader */
+
+void wtScreenBrite( unsigned char lum ) {
+  // lum = 0x00  ==>  100.0 %
+  // lum = 0x01  ==>   87.5 %
+  // lum = 0x02  ==>   75.0 %
+  // lum = 0x03  ==>   62.5 %
+  lpOutCmd((0x18 | (lum & 0x03)));
+//  outport(VFDCMND, (0x18 | (lum & 0x03)));  // use bottom two bits of lum
+}
+
+/*** BeginHeader engFont6x8R */
+
+extern char engFont6x8R[];
+
+/*** EndHeader */
+
+/*
+Automatic output from Font Converter
+font file is u:\dc5b1.run\samples\pk224x\6x8.fnt.
+dfVersion = 0x300
+dfSize = 2332
+dfCopyright = (c) Copyright 1997 Z-World. All rights reserved.
+dfType = 0x0
+horizontal size is 6 pixels.
+vertical size is 8 pixels.
+first character is for code 0x20.
+last character is for code 0x7f.
+*/
+
+char engFont6x8R[] = {
+/* char 0x20 of width 6 at 0x2da */
+'\x0',
+'\x0',
+'\x0',
+'\x0',
+'\x0',
+'\x0',
+/* char 0x21 of width 6 at 0x2ea */
+'\x0',
+'\x0',
+'\x2f',
+'\x0',
+'\x0',
+'\x0',
+/* char 0x22 of width 6 at 0x2fa */
+'\x0',
+'\x3',
+'\x0',
+'\x3',
+'\x0',
+'\x0',
+/* char 0x23 of width 6 at 0x30a */
+'\x14',
+'\x7f',
+'\x14',
+'\x7f',
+'\x14',
+'\x0',
+/* char 0x24 of width 6 at 0x31a */
+'\x24',
+'\x2a',
+'\x7f',
+'\x2a',
+'\x12',
+'\x0',
+/* char 0x25 of width 6 at 0x32a */
+'\x63',
+'\x13',
+'\x8',
+'\x64',
+'\x63',
+'\x0',
+/* char 0x26 of width 6 at 0x33a */
+'\x3a',
+'\x45',
+'\x4a',
+'\x30',
+'\x48',
+'\x0',
+/* char 0x27 of width 6 at 0x34a */
+'\x0',
+'\x0',
+'\x3',
+'\x0',
+'\x0',
+'\x0',
+/* char 0x28 of width 6 at 0x35a */
+'\x0',
+'\x1c',
+'\x22',
+'\x41',
+'\x0',
+'\x0',
+/* char 0x29 of width 6 at 0x36a */
+'\x0',
+'\x41',
+'\x22',
+'\x1c',
+'\x0',
+'\x0',
+/* char 0x2a of width 6 at 0x37a */
+'\x0',
+'\x2a',
+'\x1c',
+'\x2a',
+'\x0',
+'\x0',
+/* char 0x2b of width 6 at 0x38a */
+'\x0',
+'\x8',
+'\x1c',
+'\x8',
+'\x0',
+'\x0',
+/* char 0x2c of width 6 at 0x39a */
+'\x0',
+'\x0',
+'\xa0',
+'\x60',
+'\x0',
+'\x0',
+/* char 0x2d of width 6 at 0x3aa */
+'\x0',
+'\x8',
+'\x8',
+'\x8',
+'\x0',
+'\x0',
+/* char 0x2e of width 6 at 0x3ba */
+'\x0',
+'\x0',
+'\x40',
+'\x0',
+'\x0',
+'\x0',
+/* char 0x2f of width 6 at 0x3ca */
+'\x60',
+'\x10',
+'\x8',
+'\x4',
+'\x3',
+'\x0',
+/* char 0x30 of width 6 at 0x3da */
+'\x1c',
+'\x22',
+'\x41',
+'\x22',
+'\x1c',
+'\x0',
+/* char 0x31 of width 6 at 0x3ea */
+'\x0',
+'\x2',
+'\x7f',
+'\x0',
+'\x0',
+'\x0',
+/* char 0x32 of width 6 at 0x3fa */
+'\x62',
+'\x51',
+'\x49',
+'\x45',
+'\x42',
+'\x0',
+/* char 0x33 of width 6 at 0x40a */
+'\x22',
+'\x41',
+'\x49',
+'\x49',
+'\x36',
+'\x0',
+/* char 0x34 of width 6 at 0x41a */
+'\x18',
+'\x14',
+'\x12',
+'\x7f',
+'\x10',
+'\x0',
+/* char 0x35 of width 6 at 0x42a */
+'\x2f',
+'\x49',
+'\x49',
+'\x49',
+'\x31',
+'\x0',
+/* char 0x36 of width 6 at 0x43a */
+'\x3c',
+'\x4a',
+'\x49',
+'\x48',
+'\x30',
+'\x0',
+/* char 0x37 of width 6 at 0x44a */
+'\x1',
+'\x71',
+'\x9',
+'\x5',
+'\x3',
+'\x0',
+/* char 0x38 of width 6 at 0x45a */
+'\x36',
+'\x49',
+'\x49',
+'\x49',
+'\x36',
+'\x0',
+/* char 0x39 of width 6 at 0x46a */
+'\x6',
+'\x9',
+'\x49',
+'\x29',
+'\x1e',
+'\x0',
+/* char 0x3a of width 6 at 0x47a */
+'\x0',
+'\x0',
+'\x14',
+'\x0',
+'\x0',
+'\x0',
+/* char 0x3b of width 6 at 0x48a */
+'\x0',
+'\x20',
+'\x14',
+'\x0',
+'\x0',
+'\x0',
+/* char 0x3c of width 6 at 0x49a */
+'\x8',
+'\x14',
+'\x22',
+'\x41',
+'\x0',
+'\x0',
+/* char 0x3d of width 6 at 0x4aa */
+'\x0',
+'\x14',
+'\x14',
+'\x14',
+'\x0',
+'\x0',
+/* char 0x3e of width 6 at 0x4ba */
+'\x0',
+'\x41',
+'\x22',
+'\x14',
+'\x8',
+'\x0',
+/* char 0x3f of width 6 at 0x4ca */
+'\x2',
+'\x1',
+'\x59',
+'\x5',
+'\x2',
+'\x0',
+/* char 0x40 of width 6 at 0x4da */
+'\x3e',
+'\x41',
+'\x5d',
+'\x55',
+'\x1e',
+'\x0',
+/* char 0x41 of width 6 at 0x4ea */
+'\x7e',
+'\x9',
+'\x9',
+'\x9',
+'\x7e',
+'\x0',
+/* char 0x42 of width 6 at 0x4fa */
+'\x7f',
+'\x49',
+'\x49',
+'\x49',
+'\x36',
+'\x0',
+/* char 0x43 of width 6 at 0x50a */
+'\x3e',
+'\x41',
+'\x41',
+'\x41',
+'\x22',
+'\x0',
+/* char 0x44 of width 6 at 0x51a */
+'\x7f',
+'\x41',
+'\x41',
+'\x41',
+'\x3e',
+'\x0',
+/* char 0x45 of width 6 at 0x52a */
+'\x7f',
+'\x49',
+'\x49',
+'\x49',
+'\x41',
+'\x0',
+/* char 0x46 of width 6 at 0x53a */
+'\x7f',
+'\x9',
+'\x9',
+'\x9',
+'\x1',
+'\x0',
+/* char 0x47 of width 6 at 0x54a */
+'\x3e',
+'\x41',
+'\x49',
+'\x49',
+'\x38',
+'\x0',
+/* char 0x48 of width 6 at 0x55a */
+'\x7f',
+'\x8',
+'\x8',
+'\x8',
+'\x7f',
+'\x0',
+/* char 0x49 of width 6 at 0x56a */
+'\x0',
+'\x0',
+'\x7f',
+'\x0',
+'\x0',
+'\x0',
+/* char 0x4a of width 6 at 0x57a */
+'\x30',
+'\x40',
+'\x40',
+'\x40',
+'\x3f',
+'\x0',
+/* char 0x4b of width 6 at 0x58a */
+'\x7f',
+'\x8',
+'\x4',
+'\x1a',
+'\x61',
+'\x0',
+/* char 0x4c of width 6 at 0x59a */
+'\x7f',
+'\x40',
+'\x40',
+'\x40',
+'\x40',
+'\x0',
+/* char 0x4d of width 6 at 0x5aa */
+'\x7f',
+'\x2',
+'\xc',
+'\x2',
+'\x7f',
+'\x0',
+/* char 0x4e of width 6 at 0x5ba */
+'\x7f',
+'\x6',
+'\x8',
+'\x30',
+'\x7f',
+'\x0',
+/* char 0x4f of width 6 at 0x5ca */
+'\x3e',
+'\x41',
+'\x41',
+'\x41',
+'\x3e',
+'\x0',
+/* char 0x50 of width 6 at 0x5da */
+'\x7f',
+'\x9',
+'\x9',
+'\x9',
+'\x6',
+'\x0',
+/* char 0x51 of width 6 at 0x5ea */
+'\x3e',
+'\x41',
+'\x51',
+'\x21',
+'\x5e',
+'\x0',
+/* char 0x52 of width 6 at 0x5fa */
+'\x7f',
+'\x9',
+'\x9',
+'\x19',
+'\x66',
+'\x0',
+/* char 0x53 of width 6 at 0x60a */
+'\x26',
+'\x49',
+'\x49',
+'\x49',
+'\x32',
+'\x0',
+/* char 0x54 of width 6 at 0x61a */
+'\x1',
+'\x1',
+'\x7f',
+'\x1',
+'\x1',
+'\x0',
+/* char 0x55 of width 6 at 0x62a */
+'\x3f',
+'\x40',
+'\x40',
+'\x40',
+'\x3f',
+'\x0',
+/* char 0x56 of width 6 at 0x63a */
+'\x3',
+'\x1c',
+'\x60',
+'\x1c',
+'\x3',
+'\x0',
+/* char 0x57 of width 6 at 0x64a */
+'\x3f',
+'\x40',
+'\x38',
+'\x40',
+'\x3f',
+'\x0',
+/* char 0x58 of width 6 at 0x65a */
+'\x63',
+'\x14',
+'\x8',
+'\x14',
+'\x63',
+'\x0',
+/* char 0x59 of width 6 at 0x66a */
+'\x3',
+'\x4',
+'\x78',
+'\x4',
+'\x3',
+'\x0',
+/* char 0x5a of width 6 at 0x67a */
+'\x61',
+'\x51',
+'\x49',
+'\x45',
+'\x43',
+'\x0',
+/* char 0x5b of width 6 at 0x68a */
+'\x0',
+'\x7f',
+'\x41',
+'\x41',
+'\x0',
+'\x0',
+/* char 0x5c of width 6 at 0x69a */
+'\x3',
+'\x4',
+'\x8',
+'\x10',
+'\x60',
+'\x0',
+/* char 0x5d of width 6 at 0x6aa */
+'\x0',
+'\x41',
+'\x41',
+'\x7f',
+'\x0',
+'\x0',
+/* char 0x5e of width 6 at 0x6ba */
+'\x0',
+'\x2',
+'\x1',
+'\x2',
+'\x0',
+'\x0',
+/* char 0x5f of width 6 at 0x6ca */
+'\x80',
+'\x80',
+'\x80',
+'\x80',
+'\x80',
+'\x0',
+/* char 0x60 of width 6 at 0x6da */
+'\x0',
+'\x1',
+'\x2',
+'\x4',
+'\x0',
+'\x0',
+/* char 0x61 of width 6 at 0x6ea */
+'\x38',
+'\x44',
+'\x44',
+'\x24',
+'\x78',
+'\x0',
+/* char 0x62 of width 6 at 0x6fa */
+'\x7f',
+'\x44',
+'\x44',
+'\x44',
+'\x38',
+'\x0',
+/* char 0x63 of width 6 at 0x70a */
+'\x38',
+'\x44',
+'\x44',
+'\x44',
+'\x28',
+'\x0',
+/* char 0x64 of width 6 at 0x71a */
+'\x38',
+'\x44',
+'\x44',
+'\x44',
+'\x7f',
+'\x0',
+/* char 0x65 of width 6 at 0x72a */
+'\x38',
+'\x54',
+'\x54',
+'\x54',
+'\x18',
+'\x0',
+/* char 0x66 of width 6 at 0x73a */
+'\x0',
+'\x4',
+'\x7e',
+'\x5',
+'\x0',
+'\x0',
+/* char 0x67 of width 6 at 0x74a */
+'\x98',
+'\xa4',
+'\xa4',
+'\xa4',
+'\x7c',
+'\x0',
+/* char 0x68 of width 6 at 0x75a */
+'\x7f',
+'\x4',
+'\x4',
+'\x4',
+'\x78',
+'\x0',
+/* char 0x69 of width 6 at 0x76a */
+'\x0',
+'\x0',
+'\x7d',
+'\x0',
+'\x0',
+'\x0',
+/* char 0x6a of width 6 at 0x77a */
+'\x0',
+'\x40',
+'\x80',
+'\x7d',
+'\x0',
+'\x0',
+/* char 0x6b of width 6 at 0x78a */
+'\x7f',
+'\x8',
+'\x18',
+'\x24',
+'\x44',
+'\x0',
+/* char 0x6c of width 6 at 0x79a */
+'\x0',
+'\x1',
+'\x3e',
+'\x40',
+'\x0',
+'\x0',
+/* char 0x6d of width 6 at 0x7aa */
+'\x7c',
+'\x4',
+'\x78',
+'\x4',
+'\x78',
+'\x0',
+/* char 0x6e of width 6 at 0x7ba */
+'\x7c',
+'\x4',
+'\x4',
+'\x4',
+'\x78',
+'\x0',
+/* char 0x6f of width 6 at 0x7ca */
+'\x38',
+'\x44',
+'\x44',
+'\x44',
+'\x38',
+'\x0',
+/* char 0x70 of width 6 at 0x7da */
+'\xfc',
+'\x24',
+'\x24',
+'\x24',
+'\x18',
+'\x0',
+/* char 0x71 of width 6 at 0x7ea */
+'\x18',
+'\x24',
+'\x24',
+'\x24',
+'\xfc',
+'\x0',
+/* char 0x72 of width 6 at 0x7fa */
+'\x7c',
+'\x8',
+'\x4',
+'\x4',
+'\x4',
+'\x0',
+/* char 0x73 of width 6 at 0x80a */
+'\x48',
+'\x54',
+'\x54',
+'\x54',
+'\x24',
+'\x0',
+/* char 0x74 of width 6 at 0x81a */
+'\x0',
+'\x4',
+'\x3f',
+'\x44',
+'\x0',
+'\x0',
+/* char 0x75 of width 6 at 0x82a */
+'\x3c',
+'\x40',
+'\x40',
+'\x40',
+'\x7c',
+'\x0',
+/* char 0x76 of width 6 at 0x83a */
+'\xc',
+'\x30',
+'\x40',
+'\x30',
+'\xc',
+'\x0',
+/* char 0x77 of width 6 at 0x84a */
+'\x3c',
+'\x40',
+'\x38',
+'\x40',
+'\x3c',
+'\x0',
+/* char 0x78 of width 6 at 0x85a */
+'\x44',
+'\x28',
+'\x10',
+'\x28',
+'\x44',
+'\x0',
+/* char 0x79 of width 6 at 0x86a */
+'\x9c',
+'\xa0',
+'\xa0',
+'\xa0',
+'\x7c',
+'\x0',
+/* char 0x7a of width 6 at 0x87a */
+'\x44',
+'\x64',
+'\x54',
+'\x4c',
+'\x44',
+'\x0',
+/* char 0x7b of width 6 at 0x88a */
+'\x0',
+'\x8',
+'\x36',
+'\x41',
+'\x0',
+'\x0',
+/* char 0x7c of width 6 at 0x89a */
+'\x0',
+'\x0',
+'\x7f',
+'\x0',
+'\x0',
+'\x0',
+/* char 0x7d of width 6 at 0x8aa */
+'\x0',
+'\x41',
+'\x36',
+'\x8',
+'\x0',
+'\x0',
+/* char 0x7e of width 6 at 0x8ba */
+'\x2',
+'\x1',
+'\x2',
+'\x1',
+'\x0',
+'\x0'
+};
+
+/*** BeginHeader engFont6x8 */
+
+extern unsigned long engFont6x8;
+
+/*** EndHeader */
+
+/*
+Automatic output from Font Converter
+font file is u:\dc5b1.run\samples\pk224x\6x8.fnt.
+dfVersion = 0x300
+dfSize = 2332
+dfCopyright = (c) Copyright 1997 Z-World. All rights reserved.
+dfType = 0x0
+horizontal size is 6 pixels.
+vertical size is 8 pixels.
+first character is for code 0x20.
+last character is for code 0x7f.
+*/
+
+xdata engFont6x8 {
+/* char 0x20 of width 6 at 0x2da */
+'\x0',
+'\x0',
+'\x0',
+'\x0',
+'\x0',
+'\x0',
+/* char 0x21 of width 6 at 0x2ea */
+'\x0',
+'\x0',
+'\x2f',
+'\x0',
+'\x0',
+'\x0',
+/* char 0x22 of width 6 at 0x2fa */
+'\x0',
+'\x3',
+'\x0',
+'\x3',
+'\x0',
+'\x0',
+/* char 0x23 of width 6 at 0x30a */
+'\x14',
+'\x7f',
+'\x14',
+'\x7f',
+'\x14',
+'\x0',
+/* char 0x24 of width 6 at 0x31a */
+'\x24',
+'\x2a',
+'\x7f',
+'\x2a',
+'\x12',
+'\x0',
+/* char 0x25 of width 6 at 0x32a */
+'\x63',
+'\x13',
+'\x8',
+'\x64',
+'\x63',
+'\x0',
+/* char 0x26 of width 6 at 0x33a */
+'\x3a',
+'\x45',
+'\x4a',
+'\x30',
+'\x48',
+'\x0',
+/* char 0x27 of width 6 at 0x34a */
+'\x0',
+'\x0',
+'\x3',
+'\x0',
+'\x0',
+'\x0',
+/* char 0x28 of width 6 at 0x35a */
+'\x0',
+'\x1c',
+'\x22',
+'\x41',
+'\x0',
+'\x0',
+/* char 0x29 of width 6 at 0x36a */
+'\x0',
+'\x41',
+'\x22',
+'\x1c',
+'\x0',
+'\x0',
+/* char 0x2a of width 6 at 0x37a */
+'\x0',
+'\x2a',
+'\x1c',
+'\x2a',
+'\x0',
+'\x0',
+/* char 0x2b of width 6 at 0x38a */
+'\x0',
+'\x8',
+'\x1c',
+'\x8',
+'\x0',
+'\x0',
+/* char 0x2c of width 6 at 0x39a */
+'\x0',
+'\x0',
+'\xa0',
+'\x60',
+'\x0',
+'\x0',
+/* char 0x2d of width 6 at 0x3aa */
+'\x0',
+'\x8',
+'\x8',
+'\x8',
+'\x0',
+'\x0',
+/* char 0x2e of width 6 at 0x3ba */
+'\x0',
+'\x0',
+'\x40',
+'\x0',
+'\x0',
+'\x0',
+/* char 0x2f of width 6 at 0x3ca */
+'\x60',
+'\x10',
+'\x8',
+'\x4',
+'\x3',
+'\x0',
+/* char 0x30 of width 6 at 0x3da */
+'\x1c',
+'\x22',
+'\x41',
+'\x22',
+'\x1c',
+'\x0',
+/* char 0x31 of width 6 at 0x3ea */
+'\x0',
+'\x2',
+'\x7f',
+'\x0',
+'\x0',
+'\x0',
+/* char 0x32 of width 6 at 0x3fa */
+'\x62',
+'\x51',
+'\x49',
+'\x45',
+'\x42',
+'\x0',
+/* char 0x33 of width 6 at 0x40a */
+'\x22',
+'\x41',
+'\x49',
+'\x49',
+'\x36',
+'\x0',
+/* char 0x34 of width 6 at 0x41a */
+'\x18',
+'\x14',
+'\x12',
+'\x7f',
+'\x10',
+'\x0',
+/* char 0x35 of width 6 at 0x42a */
+'\x2f',
+'\x49',
+'\x49',
+'\x49',
+'\x31',
+'\x0',
+/* char 0x36 of width 6 at 0x43a */
+'\x3c',
+'\x4a',
+'\x49',
+'\x48',
+'\x30',
+'\x0',
+/* char 0x37 of width 6 at 0x44a */
+'\x1',
+'\x71',
+'\x9',
+'\x5',
+'\x3',
+'\x0',
+/* char 0x38 of width 6 at 0x45a */
+'\x36',
+'\x49',
+'\x49',
+'\x49',
+'\x36',
+'\x0',
+/* char 0x39 of width 6 at 0x46a */
+'\x6',
+'\x9',
+'\x49',
+'\x29',
+'\x1e',
+'\x0',
+/* char 0x3a of width 6 at 0x47a */
+'\x0',
+'\x0',
+'\x14',
+'\x0',
+'\x0',
+'\x0',
+/* char 0x3b of width 6 at 0x48a */
+'\x0',
+'\x20',
+'\x14',
+'\x0',
+'\x0',
+'\x0',
+/* char 0x3c of width 6 at 0x49a */
+'\x8',
+'\x14',
+'\x22',
+'\x41',
+'\x0',
+'\x0',
+/* char 0x3d of width 6 at 0x4aa */
+'\x0',
+'\x14',
+'\x14',
+'\x14',
+'\x0',
+'\x0',
+/* char 0x3e of width 6 at 0x4ba */
+'\x0',
+'\x41',
+'\x22',
+'\x14',
+'\x8',
+'\x0',
+/* char 0x3f of width 6 at 0x4ca */
+'\x2',
+'\x1',
+'\x59',
+'\x5',
+'\x2',
+'\x0',
+/* char 0x40 of width 6 at 0x4da */
+'\x3e',
+'\x41',
+'\x5d',
+'\x55',
+'\x1e',
+'\x0',
+/* char 0x41 of width 6 at 0x4ea */
+'\x7e',
+'\x9',
+'\x9',
+'\x9',
+'\x7e',
+'\x0',
+/* char 0x42 of width 6 at 0x4fa */
+'\x7f',
+'\x49',
+'\x49',
+'\x49',
+'\x36',
+'\x0',
+/* char 0x43 of width 6 at 0x50a */
+'\x3e',
+'\x41',
+'\x41',
+'\x41',
+'\x22',
+'\x0',
+/* char 0x44 of width 6 at 0x51a */
+'\x7f',
+'\x41',
+'\x41',
+'\x41',
+'\x3e',
+'\x0',
+/* char 0x45 of width 6 at 0x52a */
+'\x7f',
+'\x49',
+'\x49',
+'\x49',
+'\x41',
+'\x0',
+/* char 0x46 of width 6 at 0x53a */
+'\x7f',
+'\x9',
+'\x9',
+'\x9',
+'\x1',
+'\x0',
+/* char 0x47 of width 6 at 0x54a */
+'\x3e',
+'\x41',
+'\x49',
+'\x49',
+'\x38',
+'\x0',
+/* char 0x48 of width 6 at 0x55a */
+'\x7f',
+'\x8',
+'\x8',
+'\x8',
+'\x7f',
+'\x0',
+/* char 0x49 of width 6 at 0x56a */
+'\x0',
+'\x0',
+'\x7f',
+'\x0',
+'\x0',
+'\x0',
+/* char 0x4a of width 6 at 0x57a */
+'\x30',
+'\x40',
+'\x40',
+'\x40',
+'\x3f',
+'\x0',
+/* char 0x4b of width 6 at 0x58a */
+'\x7f',
+'\x8',
+'\x4',
+'\x1a',
+'\x61',
+'\x0',
+/* char 0x4c of width 6 at 0x59a */
+'\x7f',
+'\x40',
+'\x40',
+'\x40',
+'\x40',
+'\x0',
+/* char 0x4d of width 6 at 0x5aa */
+'\x7f',
+'\x2',
+'\xc',
+'\x2',
+'\x7f',
+'\x0',
+/* char 0x4e of width 6 at 0x5ba */
+'\x7f',
+'\x6',
+'\x8',
+'\x30',
+'\x7f',
+'\x0',
+/* char 0x4f of width 6 at 0x5ca */
+'\x3e',
+'\x41',
+'\x41',
+'\x41',
+'\x3e',
+'\x0',
+/* char 0x50 of width 6 at 0x5da */
+'\x7f',
+'\x9',
+'\x9',
+'\x9',
+'\x6',
+'\x0',
+/* char 0x51 of width 6 at 0x5ea */
+'\x3e',
+'\x41',
+'\x51',
+'\x21',
+'\x5e',
+'\x0',
+/* char 0x52 of width 6 at 0x5fa */
+'\x7f',
+'\x9',
+'\x9',
+'\x19',
+'\x66',
+'\x0',
+/* char 0x53 of width 6 at 0x60a */
+'\x26',
+'\x49',
+'\x49',
+'\x49',
+'\x32',
+'\x0',
+/* char 0x54 of width 6 at 0x61a */
+'\x1',
+'\x1',
+'\x7f',
+'\x1',
+'\x1',
+'\x0',
+/* char 0x55 of width 6 at 0x62a */
+'\x3f',
+'\x40',
+'\x40',
+'\x40',
+'\x3f',
+'\x0',
+/* char 0x56 of width 6 at 0x63a */
+'\x3',
+'\x1c',
+'\x60',
+'\x1c',
+'\x3',
+'\x0',
+/* char 0x57 of width 6 at 0x64a */
+'\x3f',
+'\x40',
+'\x38',
+'\x40',
+'\x3f',
+'\x0',
+/* char 0x58 of width 6 at 0x65a */
+'\x63',
+'\x14',
+'\x8',
+'\x14',
+'\x63',
+'\x0',
+/* char 0x59 of width 6 at 0x66a */
+'\x3',
+'\x4',
+'\x78',
+'\x4',
+'\x3',
+'\x0',
+/* char 0x5a of width 6 at 0x67a */
+'\x61',
+'\x51',
+'\x49',
+'\x45',
+'\x43',
+'\x0',
+/* char 0x5b of width 6 at 0x68a */
+'\x0',
+'\x7f',
+'\x41',
+'\x41',
+'\x0',
+'\x0',
+/* char 0x5c of width 6 at 0x69a */
+'\x3',
+'\x4',
+'\x8',
+'\x10',
+'\x60',
+'\x0',
+/* char 0x5d of width 6 at 0x6aa */
+'\x0',
+'\x41',
+'\x41',
+'\x7f',
+'\x0',
+'\x0',
+/* char 0x5e of width 6 at 0x6ba */
+'\x0',
+'\x2',
+'\x1',
+'\x2',
+'\x0',
+'\x0',
+/* char 0x5f of width 6 at 0x6ca */
+'\x80',
+'\x80',
+'\x80',
+'\x80',
+'\x80',
+'\x0',
+/* char 0x60 of width 6 at 0x6da */
+'\x0',
+'\x1',
+'\x2',
+'\x4',
+'\x0',
+'\x0',
+/* char 0x61 of width 6 at 0x6ea */
+'\x38',
+'\x44',
+'\x44',
+'\x24',
+'\x78',
+'\x0',
+/* char 0x62 of width 6 at 0x6fa */
+'\x7f',
+'\x44',
+'\x44',
+'\x44',
+'\x38',
+'\x0',
+/* char 0x63 of width 6 at 0x70a */
+'\x38',
+'\x44',
+'\x44',
+'\x44',
+'\x28',
+'\x0',
+/* char 0x64 of width 6 at 0x71a */
+'\x38',
+'\x44',
+'\x44',
+'\x44',
+'\x7f',
+'\x0',
+/* char 0x65 of width 6 at 0x72a */
+'\x38',
+'\x54',
+'\x54',
+'\x54',
+'\x18',
+'\x0',
+/* char 0x66 of width 6 at 0x73a */
+'\x0',
+'\x4',
+'\x7e',
+'\x5',
+'\x0',
+'\x0',
+/* char 0x67 of width 6 at 0x74a */
+'\x98',
+'\xa4',
+'\xa4',
+'\xa4',
+'\x7c',
+'\x0',
+/* char 0x68 of width 6 at 0x75a */
+'\x7f',
+'\x4',
+'\x4',
+'\x4',
+'\x78',
+'\x0',
+/* char 0x69 of width 6 at 0x76a */
+'\x0',
+'\x0',
+'\x7d',
+'\x0',
+'\x0',
+'\x0',
+/* char 0x6a of width 6 at 0x77a */
+'\x0',
+'\x40',
+'\x80',
+'\x7d',
+'\x0',
+'\x0',
+/* char 0x6b of width 6 at 0x78a */
+'\x7f',
+'\x8',
+'\x18',
+'\x24',
+'\x44',
+'\x0',
+/* char 0x6c of width 6 at 0x79a */
+'\x0',
+'\x1',
+'\x3e',
+'\x40',
+'\x0',
+'\x0',
+/* char 0x6d of width 6 at 0x7aa */
+'\x7c',
+'\x4',
+'\x78',
+'\x4',
+'\x78',
+'\x0',
+/* char 0x6e of width 6 at 0x7ba */
+'\x7c',
+'\x4',
+'\x4',
+'\x4',
+'\x78',
+'\x0',
+/* char 0x6f of width 6 at 0x7ca */
+'\x38',
+'\x44',
+'\x44',
+'\x44',
+'\x38',
+'\x0',
+/* char 0x70 of width 6 at 0x7da */
+'\xfc',
+'\x24',
+'\x24',
+'\x24',
+'\x18',
+'\x0',
+/* char 0x71 of width 6 at 0x7ea */
+'\x18',
+'\x24',
+'\x24',
+'\x24',
+'\xfc',
+'\x0',
+/* char 0x72 of width 6 at 0x7fa */
+'\x7c',
+'\x8',
+'\x4',
+'\x4',
+'\x4',
+'\x0',
+/* char 0x73 of width 6 at 0x80a */
+'\x48',
+'\x54',
+'\x54',
+'\x54',
+'\x24',
+'\x0',
+/* char 0x74 of width 6 at 0x81a */
+'\x0',
+'\x4',
+'\x3f',
+'\x44',
+'\x0',
+'\x0',
+/* char 0x75 of width 6 at 0x82a */
+'\x3c',
+'\x40',
+'\x40',
+'\x40',
+'\x7c',
+'\x0',
+/* char 0x76 of width 6 at 0x83a */
+'\xc',
+'\x30',
+'\x40',
+'\x30',
+'\xc',
+'\x0',
+/* char 0x77 of width 6 at 0x84a */
+'\x3c',
+'\x40',
+'\x38',
+'\x40',
+'\x3c',
+'\x0',
+/* char 0x78 of width 6 at 0x85a */
+'\x44',
+'\x28',
+'\x10',
+'\x28',
+'\x44',
+'\x0',
+/* char 0x79 of width 6 at 0x86a */
+'\x9c',
+'\xa0',
+'\xa0',
+'\xa0',
+'\x7c',
+'\x0',
+/* char 0x7a of width 6 at 0x87a */
+'\x44',
+'\x64',
+'\x54',
+'\x4c',
+'\x44',
+'\x0',
+/* char 0x7b of width 6 at 0x88a */
+'\x0',
+'\x8',
+'\x36',
+'\x41',
+'\x0',
+'\x0',
+/* char 0x7c of width 6 at 0x89a */
+'\x0',
+'\x0',
+'\x7f',
+'\x0',
+'\x0',
+'\x0',
+/* char 0x7d of width 6 at 0x8aa */
+'\x0',
+'\x41',
+'\x36',
+'\x8',
+'\x0',
+'\x0',
+/* char 0x7e of width 6 at 0x8ba */
+'\x2',
+'\x1',
+'\x2',
+'\x1',
+'\x0',
+'\x0'
+};
+
+/*** BeginHeader */
+
+#endif
+
+/*** endHeader */
+

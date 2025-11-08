@@ -1,0 +1,1354 @@
+// 2-13-96, Fix bug in _ui4chans. One thread failed to increment to
+// 2-13-96, the next memory location. 
+/* START LIBRARY DESCRIPTION *********************************************
+UIBOARD.LIB
+    Copyright (c) 1994, Z-World.
+
+DESCRIPTION:  Support functions for accessing the universal input cards 
+with the CPLC or the Little PLC through the PLCBus.
+        
+SUPPORT LIB'S: sys.lib
+END DESCRIPTION **********************************************************/
+
+/*** Beginheader ui ***/
+
+#define BUSRD2        0xc4
+#define UIUNIVERSAL   1
+#define UIDIGITAL     0
+#define VIRTUAL_UIEXP 2      // Can increase to 8 Virtual Drivers/boards
+#define UI_BASE_ADDR  0x0040
+
+struct uiv_data
+{
+    char       OUT[6];
+    char       inputmode;
+    char       DIG[16];
+    char       PREV0246;
+    char       PREV8ace;
+    char       PREV1357;
+    char       PREV9bdf;
+    shared int UHIGH0, ULOW0;
+    char       UCUR0,  UIN0;
+    shared int UHIGH1, ULOW1;
+    char       UCUR1,  UIN1;
+    shared int UHIGH2, ULOW2;
+    char       UCUR2,  UIN2;
+    shared int UHIGH3, ULOW3;
+    char       UCUR3,  UIN3;
+    shared int UHIGH4, ULOW4;
+    char       UCUR4,  UIN4;
+    shared int UHIGH5, ULOW5;
+    char       UCUR5,  UIN5;
+    shared int UHIGH6, ULOW6;
+    char       UCUR6,  UIN6;
+    shared int UHIGH7, ULOW7;
+    char       UCUR7,  UIN7;
+    shared int UHIGH8, ULOW8;
+    char       UCUR8,  UIN8;
+    shared int UHIGH9, ULOW9;
+    char       UCUR9,  UIN9;
+    shared int UHIGH10,ULOW10;
+    char       UCUR10, UIN10;
+    shared int UHIGH11,ULOW11;
+    char       UCUR11, UIN11;
+    shared int UHIGH12,ULOW12;
+    char       UCUR12, UIN12;
+    shared int UHIGH13,ULOW13;
+    char       UCUR13, UIN13;
+    shared int UHIGH14,ULOW14;
+    char       UCUR14, UIN14;
+    shared int UHIGH15,ULOW15;
+    char       UCUR15, UIN15;
+};
+
+extern struct uiv_data ui[VIRTUAL_UIEXP];  // Allocate space for virtual drivers
+
+/*** Endheader */
+
+struct uiv_data ui[VIRTUAL_UIEXP];  // Allocate space for virtual drivers
+
+/*** BeginHeader ui_there */
+
+extern unsigned int ui_there;
+
+/*** EndHeader */
+
+unsigned int ui_there;
+
+/*** BeginHeader _uiExpInit */
+
+void _uiExpInit(void);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+_uiExpInit                   <UIBOARD.LIB>
+
+SYNTAX: void _uiExpInit(void);
+
+KEYWORDS: init, v_drive, expansion
+
+DESCRIPTION: Initializes uiboard virtual driver variables.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void _uiExpInit(void)
+{
+    int i, j;
+
+    for (j = 0; j < VIRTUAL_UIEXP; j++)
+    {
+        for (i = 0; i < 6; i++) 
+            ui[j].OUT[i] = 0;
+        
+        for (i = 0; i < 16; i++)
+        {
+            ui[j].DIG[i] = 0;
+
+#if BOARD_TYPE==CPLC_BOARD
+            *(&ui[j].ULOW0 + 3 * i) = up_uncal(2000);
+            *(&ui[j].UHIGH0+ 3 * i) = up_uncal(2050);
+            *(&ui[j].UCUR0 + 6 * i) = 0;
+            *(&ui[j].UIN0  + 6 * i) = 0;
+#endif
+        }
+        ui[j].inputmode = UIDIGITAL;
+    }
+}
+
+/*** BeginHeader _uiSetIMode */
+
+int _uiSetIMode(int index, int inputmode);
+
+/*** EndHeader */
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+_uiSetIMode                  <UIBOARD.LIB>
+
+SYNTAX: int _uiSetIMode(int index, int inputmode);
+
+KEYWORDS: init, input, v_drive, expansion
+
+DESCRIPTION:  Sets universal driver input mode.  Boards are identified by
+their index numbers, 0, 1,...7.  If inputmode = 0, input is digital;
+if 1, input is universal input.
+
+RETURN VALUE: -1, if board index exceeds the allowed number of boards 
+defined VIRTUAL_UIEXP; else 1.
+END DESCRIPTION **********************************************************/
+
+nodebug int _uiSetIMode(int index, int inputmode)
+{
+    if (index > VIRTUAL_UIEXP - 1) 
+        return -1;
+                             // limit to VIRTUAL_UIEXP  boards
+    ui[index].inputmode = inputmode;
+    return 1;
+}
+
+/*** BeginHeader _uiLocateBrd */
+
+void _uiLocateBrd(void);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+_uiLocateBrd                 <UIBOARD.LIB>
+
+SYNTAX: void _uiLocateBrd(void);
+
+KEYWORDS: init, expansion
+
+DESCRIPTION:  Looks for the first 16 universal expansion boards (i.e. 
+addresses 0x040 to 0x04f).  If a board is found, then the board is marked 
+"present" with the bits of the unsigned int, "ui_there."
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void _uiLocateBrd(void)
+{
+    int i;
+
+    ui_there = 0x0000;       // all bits are initialized to zero
+    for (i = 0; i < 16; i++)
+    {
+        if (plc_poll_node((i << 8) | UI_BASE_ADDR) == 1)
+            ui_there = ui_there | (1 << i);
+    }
+#ifndef EASYSTRT
+    _uiExpInit();
+#endif
+}
+
+/*** BeginHeader _uiOut */
+
+int _uiOut(int chan, int state);
+
+/*** Endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+_uiOut                       <UIBOARD.LIB>
+
+SYNTAX: int _uiOut(int chan, int state);
+
+KEYWORDS: output, digital, expansion
+
+DESCRIPTION: Sets/clears uiboard outputs (6 per board).  Boards are 
+addressed as follows: addr = 0x0040, for chans 0 - 5; addr = 0x0041, for 
+chans 16 - 21; etc up to a maximum channel number of 117 (corresponding
+to 8 boards).  "state" is a binary value, 1 or 0, that determines the 
+state of the selected output.
+
+RETURN VALUE: 1, if the uiboard corresponding to the selected channel is 
+present; else -1.
+END DESCRIPTION **********************************************************/
+nodebug int _uiOut(int chan, int state)
+{
+    int myindex;
+    int mychanstate;
+
+    myindex = chan >> 4;
+    if ( (mychanstate = ( (chan - (myindex << 4) ) << 1) + state) > 13) 
+        return -1;
+                             
+    // If caller attempts to address a non-existant channel
+    // (there are 6 channels per board), return -1
+    if (!(ui_there & (1 << myindex))) 
+        return -1;
+    else
+    {
+        write12data((myindex << 8) | UI_BASE_ADDR, mychanstate);
+        return 1;
+    }
+}
+
+/*** BeginHeader _uiDigin */
+
+int _uiDigin(int chan);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+_uiDigin                     <UIBOARD.LIB>
+
+SYNTAX: int _uiDigin(int chan);
+
+KEYWORDS: input, digital, expansion
+
+DESCRIPTION:  Reads state of specified uiboard channel.  Boards are 
+addressed as follows: addr = 0x0040, for chans 0 - 15; addr = 0x0041, for 
+chans 16 - 31; etc.  Hardware requirements: Jumper connection from DAV to 
+VL on header H4. Threshold voltages are set with resistors R5 and R4 
+(i.e. Vthresh = V*(R5/(R4+R5) ).
+
+RETURN VALUE: -1, if uiboard corresponding to the channel is not present;
+else 0 or 1 depending on the state of the input.
+END DESCRIPTION **********************************************************/
+nodebug int _uiDigin(int chan)
+{
+    int myindex;
+    int mychan;
+
+    myindex = chan >> 4;
+    mychan = chan - (myindex << 4);
+
+    if (!(ui_there & (1 << myindex))) 
+        return -1;
+    else
+    {
+        set12adr((myindex << 8) | UI_BASE_ADDR);
+        return (read_ui_dig(mychan));
+    }
+}
+
+/*** BeginHeader read_ui_dig */
+
+int read_ui_dig(int mychan);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+read_ui_dig                  <UIBOARD.LIB>
+
+SYNTAX: int read_ui_dig(mychan);
+
+KEYWORDS: input, expansion
+
+DESCRIPTION: Low level routine used with _uiDigin().  Reads and returns 
+the state of a digital input channel.  PLCBus address is set by _uiDigin().
+
+
+RETURN VALUE: 1 or 0 depending on the state of the input.
+END DESCRIPTION **********************************************************/
+#asm nodebug
+chanss: db 01h,81h,02h,82h,04h,84h,08h,88h
+        db 11h,91h,12h,92h,14h,94h,18h,98h
+read_ui_dig::
+                ld de,chanss
+                add hl,de
+                ld a,(hl)
+                ld e,a
+                bit 7,e
+                jr nz,_abis1
+_abis0: ld l,0eh
+                jp _ab
+_abis1: ld l,0fh
+_ab:    bit 4,e
+                jr nz,_itisRD2
+_itisRD1:
+                ld c,BUSRD1
+                jp _getdata
+_itisRD2:
+                ld c,BUSRD2
+_getdata:
+                ld b,0
+                ld a,i
+                jp pe, _int_is_on   ; jump if interrupt is on
+                out0 (BUSWR),l      ; output A/B control
+                in a, (c)           ; read in data RD1 or RD2
+                jp _mask_data
+_int_is_on:
+                di
+                out0 (BUSWR),l     ; output A/B control
+                in a,(c)           ; read in data RD1 or RD2
+                ei
+_mask_data:
+                and e   ; mask is still in e
+                and 0x0f  ; only bottom nibble is useful
+                jr nz,_stateis1
+_stateis0:
+                ld l,0
+                ld h,0
+                ret
+_stateis1:
+                ld l,1
+                ld h,0
+                ret
+#endasm
+
+/*** BeginHeader _uiRaw16 */
+
+unsigned  _uiRaw16(int board_no, int *error);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+_uiRaw16                     <UIBOARD.LIB>
+
+SYNTAX: _uiRaw16(int board_no, int *error);
+
+KEYWORDS: input, digital, expansion
+
+DESCRIPTION:  Returns the states of the inputs of the uiboard whose
+address is specified as an index, "board_no."  Board addresses are 
+computed by adding the index to a base address.
+
+RETURN VALUE: Data word, as follows: the states of even numbered inputs 0, 
+2, ..., 14 are returned in the lower 8 bits (i.e. b0, b1, ... b7);
+the states of the odd numbered inputs are returned in the upper 8 bits.
+*error is 0, if the board is present and read; else -1.
+END DESCRIPTION **********************************************************/
+nodebug unsigned _uiRaw16(int board_no, int *error)
+{
+    if (!(ui_there & (1 << board_no)))
+    {
+        *error = -1;
+        return 0;
+    }
+    else
+    {
+        *error = 0;          // no error
+        
+        // Low address byte is stored at left:
+        set12adr( (board_no << 8) | UI_BASE_ADDR);
+        return ( read_ui_raw() );
+    }
+}
+
+/*** BeginHeader read_ui_raw */
+
+unsigned int read_ui_raw(void);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+read_ui_raw                  <UIBOARD.LIB>
+
+SYNTAX: unsigned int read_ui_raw(void);
+
+KEYWORDS: input, expansion
+
+DESCRIPTION:  Service routine for _uiRaw16(). Reads the uiboard input data. 
+_uiRaw16() sets the PLCbus address.
+
+RETURN VALUE: Raw 16 bit input data.
+END DESCRIPTION **********************************************************/
+#asm nodebug
+read_ui_raw::
+         jp pe, int_is_on   ; interrupt is on
+         call raw_read      ; read 16 bits
+         jp arrange_nib
+int_is_on:
+         di
+         call raw_read      ; read 16 bits
+         ei
+arrange_nib:                ; put even bits in the lower byte
+         ld a, 0fh          ; put odd bits in the high byte
+         and l
+         ld  l,a
+         ld  a,e
+         rla
+         rla
+         rla
+         rla
+         and 0f0h           ; zero lower nibble
+         or a,l
+         ld l, a            ; even bits in low byte
+         ld a, 0fh
+         and h
+         ld h, a
+         ld a, d
+         rla
+         rla
+         rla
+         rla
+         and 0f0h           ; zero lower nibble
+         or a, h
+         ld h, a            ; odd bits in top byte
+         ret
+
+raw_read:                   ; make it non-global 1-25-94, aoc
+         ld a, 0eh
+         out0 (BUSWR),a     ; A/B is 0
+         in0 l, (BUSRD1)    ; read chans 0,2,4,6
+         in0 e, (BUSRD2)    ; read chans 8,10,12,14
+         ld a, 0fh
+         out0 (BUSWR),a
+         in0 h, (BUSRD1)    ; read chans 1,3,5,7
+         in0 d, (BUSRD2)    ; read chans 9,11,13,15
+         ret
+
+#endasm
+
+
+
+
+/********* The analog section is only useful with the CPLC *********/
+
+/*** Beginheader _uiAdcal,_uiDocal, _uiAnalog ***/
+
+int _uiAdcal(int chan);
+int _uiDocal(int raw_value); // returns calibrated from uncalibrated
+int _uiAnalog(int chan);
+
+/*** Endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+_uiAnalog                    <UIBOARD.LIB>
+
+SYNTAX: int _uiAnalog(int chan);
+
+KEYWORDS: analog, input, expansion
+
+
+DESCRIPTION:  Reads analog input to a universal channel, addressed as 
+follows: chans 0 - 15, for board address 0x040; chans 16 - 31, for address 
+0x041; chans 32 - 47, for address 0x042; etc.  Hardware requirements:
+Jumper is connected from DAV to DA on header H4.
+
+RETURN VALUE: 0 - 10000 (mv) for the selected input channel; -1, if 
+uiboard is not found.
+END DESCRIPTION **********************************************************/
+nodebug int _uiAnalog(int chan)
+{
+    int myindex;
+    int mychan;
+
+    myindex = chan >> 4;
+    mychan = chan - (myindex << 4);
+
+    if ( !(ui_there & (1 << myindex) ) ) 
+        return -1;
+    else
+    {
+        set12adr((myindex << 8) | UI_BASE_ADDR);
+        return (_uiAdcal(mychan));
+    }
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+_uiAdcal                     <UIBOARD.LIB>
+
+SYNTAX: int _uiAdcal(mychan);
+
+KEYWORDS: input, analog, expansion, calibrate
+
+DESCRIPTION:  Service routine for _uiAnalog().  Uses cplc_ui_adrd to read 
+the raw ouput of the CPLC's "UEXP" DAC output.  Converts data to 
+calibrarted millivolts. _uiAnalog() sets the PLCBus address.
+
+RETURN VALUE:  0-10000 (mv) for the input to the uiboard chan.
+END DESCRIPTION **********************************************************/
+#asm nodebug anymem
+_uiDocal::      ; entry to calibrate only up_docal( int uncalvalue)
+   push  hl
+   jr adcal01
+_uiAdcal::
+   push  hl     ; channel
+   call  cplc_ui_adrd
+adcal01:
+   pop   de
+                ; hl has a/d value
+   ld c,l       ; save least 8 bits in c
+   ld a,h       ; most 2 bits in af'
+   ex af,af'
+   ld b,10      ; number of multiply steps
+   ld hl,EXPCAL ; point to calibration table
+   ld e,(hl)
+   inc   hl
+   ld d,(hl)
+   inc hl       ; offset loaded
+adcal1:
+   ex af,af'
+   rra
+   rr c
+   jr c,adcal3
+   ex af,af'
+   inc   hl
+   inc   hl     ; skip this one
+   jr adcal5
+adcal3:
+   ex af,af'
+   ld a,e       ; add bit to sum
+   add   a,(hl)
+   inc   hl
+   ld e,a
+   ld a,d
+   adc   a,(hl)
+   inc   hl
+   ld d,a
+adcal5:
+   djnz  adcal1 ;loop 10 times
+   ex de,hl     ; put result in hl
+   xor   a
+   sra h
+   rr l         ; align correctly
+   ret
+#endasm
+
+/* START FUNCTION DESCRIPTION ********************************************
+cplc_ui_adrd                 <UIBOARD.LIB>
+
+SYNTAX: cplc_ui_adrd(int chan);
+
+KEYWORDS: expansion, calibrate
+
+DESCRIPTION:  Low level function that uses CPLC's DAC "UEXP" output to
+drive the comparator for a uiboard input channel.  Hardware requirements: 
+Use C-PLC UEXP output as UI DA input.  C-PLC UEXP must connect to UI H2.DA 
+pin.  Need jumper on UI H4 1-2.
+
+RETURN VALUE: Raw UEXP value corresponding to the input of a uiboard 
+channel.
+END DESCRIPTION **********************************************************/
+
+/********************************************************************
+ int cplc_ui_adrd(int chan)
+
+use C-PLC SBC240 to drive IAB236 UI on PLCBus.
+
+register e' usage:
+bit 0-3  D0,D1,D2,D3
+        chan 0,2,4,6     /BUSRD1     A/B=0    D0-D3=e'bit0-3
+        chan 1,3,5,7     /BUSRD1     A/B=1    D0-D3=e'bit0-3
+        chan 8,10,12,14  /BUSRD2     A/B=0    D0-D3=e'bit0-3
+        chan 9,11,13,15  /BUSRD2     A/B=1    D0-D3=e'bit0-3
+bit 4=0     /BUSRD1     read 0xc2
+bit 4=1     /BUSRD2     read 0xc4
+bit 7=0     A/B=0    write 0x0e to 0xce
+bit 7=1     A/B=1    write 0x0f to 0xce
+********************************************************************/
+
+/*** Beginheader cplc_ui_adrd */
+
+int cplc_ui_adrd(int chan);
+ 
+/*** Endheader */
+
+#asm  nodebug
+; register assignments
+; bc  - points to UEXP the 8 bits of dac
+; e'  - mask for particular channel response bit chan 0-15
+; d   - the accumulated result
+; b'c'- 0xc2 for BUSRD1, 0xc4 for BUSRD2
+; d'  - 0x0f mask for low nible D0-D3
+; l'  - has the control word for A/B
+chanss:  db 01h,81h,02h,82h,04h,84h,08h,88h
+                 db 11h,91h,12h,92h,14h,94h,18h,98h
+cplc_ui_adrd::
+   ld de,chanss
+   add   hl,de    ; hl points to mask for channel, 1-8
+   ld    a,(hl)   ; save in e'
+   exx
+   ld e,a         ;
+   bit 7,e        ;find out A/B
+   jr nz, ab1     ;
+   ld l,0eh       ;
+   jp ab          ;
+ab1:
+   ld l,0fh
+ab:
+   ld b,0         ;
+   bit 4,e        ;find out RD1/2
+   ld c,BUSRD2    ;adr of /RD2
+   jr nz, rd2     ;
+   ld c,BUSRD1    ;adr of /RD1
+rd2:
+   ld d,0fh       ;mask for low nible D0-D3
+   exx            ; b'c' has the read address
+                  ; d'e' have masks
+                  ; l' has the control for A/B
+; branch 2 ways depending if interrupts on or off
+;
+   ld a,i         ; check interrupts
+   jp pe,uiadrdon ; if interrupts on jump
+
+; here interrupts off case
+
+   exx
+   out0 (BUSWR),l ; set up A/B control since interrupt is off
+   exx
+   ld h,1         ; register for least bits
+   ld bc,UEXP     ; set up bc
+; Begin successive approx
+   ld d,128
+   out   (c),d
+   out0  (UEXPA),h   ; init the least bits
+   out0  (UEXPB),h
+   call  delay8
+   call  delay4
+
+   exx
+   in a,(c)          ; bit 0-3 valid
+   and  a,d
+   and  e
+   exx
+   jr nz,llc64
+   ld d,0            ; don't include the 512 bit
+llc64:
+   ld a,64
+   or d
+   out   (c),a       ; 128 bit and 64 bit
+   out0  (UEXPA),h   ; init the least bits
+   out0  (UEXPB),h
+   ld l,a            ; stash in l
+   call  delay8
+   exx
+   in a,(c)          ; bit 0-3 valid
+   and  a,d
+   and  e
+   exx
+
+   jr z,llc32
+   ld d,l            ; keep the bit
+llc32:
+   ld a,32
+   or d
+
+   out   (c),a       ; 128 bit and 64 bit
+   out0  (UEXPA),h   ; init the least bits
+   out0  (UEXPB),h
+   ld l,a            ; stash in l
+   call  delay4
+   exx
+   in a,(c)          ; bit 0-3 valid
+   and  a,d
+   and  e
+   exx
+
+   jr z,llc16
+   ld d,l      ; keep the bit
+llc16:
+   ld a,16
+   or d
+
+   out   (c),a       ; 128 bit and 64 bit
+   out0  (UEXPA),h   ; init the least bits
+   out0  (UEXPB),h
+   ld l,a            ; stash in l
+   call  delay4
+   exx
+   in a,(c)          ; bit 0-3 valid
+   and  a,d
+   and  e
+   exx
+
+   jr z,llc08
+   ld d,l            ; keep the bit
+llc08:
+   ld a,8
+   or d
+
+   out   (c),a       ; 128 bit and 64 bit
+   out0  (UEXPA),h   ; init the least bits
+   out0  (UEXPB),h
+   ld l,a            ; stash in l
+
+   exx
+   in a,(c)          ; bit 0-3 valid
+   and  a,d
+   and  e
+   exx
+   jr z,llc04
+   ld d,l            ; keep the bit
+llc04:
+   ld a,04
+   or d
+
+   out   (c),a       ; 128 bit and 64 bit
+   out0  (UEXPA),h   ; init the least bits
+   out0  (UEXPB),h
+   ld l,a            ; stash in l
+   exx
+   in a,(c)          ; bit 0-3 valid
+   and  a,d
+   and  e
+   exx
+
+   jr z,llc02
+   ld d,l      ; keep the bit
+llc02:
+   ld a,02
+   or d
+
+   out   (c),a    ; 128 bit and 64 bit
+   out0  (UEXPA),h   ; init the least bits
+   out0  (UEXPB),h
+   ld l,a   ; stash in l
+   exx
+   in a,(c)          ; bit 0-3 valid
+   and  a,d
+   and  e
+   exx
+
+   jr z,llc01
+   ld d,l      ; keep the bit
+llc01:
+   ld a,1
+   or d
+
+   out   (c),a    ; 128 bit and 64 bit
+   out0  (UEXPA),h   ; init the least bits
+   out0  (UEXPB),h
+   ld l,a   ; stash in l
+   exx
+   in a,(c)          ; bit 0-3 valid
+   and  a,d
+   and  e
+   exx
+
+   jr z,llc00
+   ld d,l      ; keep the bit
+llc00:
+   xor   a
+   ld    l,d
+   ld    h,a
+   rl   l
+   rl   h
+   rl   l
+   rl   h     ; align correctly
+
+   out   (c),d ; output the actual value so far
+   out0  (UEXPA),a
+   inc   a
+   out0  (UEXPB),a   ; set to 1
+        exx
+   in a,(c)          ; bit 0-3 valid
+   and  a,d
+   and  e
+   exx
+
+   jr z,llc3
+; keep the bit
+   set   1,l
+llc3:
+   ld    a,2
+   xor   l
+
+   out   (c),d    ; set upper 8 bits
+   out0  (UEXPB),a   ; set least bit
+   rra
+   out0  (UEXPA),a   ; set next to least
+   exx
+   in a,(c)          ; bit 0-3 valid
+   and  a,d
+   and  e
+   exx
+   jr z,llc4
+; keep the bit
+   set   0,l
+llc4:
+   ret
+
+
+; here for interrupts on case
+uiadrdon:
+   ld h,1            ; register for least bits
+   ld bc,UEXP        ; set up bc
+; begin successive approx
+   ld d,128
+
+   di       ; interrupts off
+   out   (c),d
+   out0  (UEXPA),h   ; init the least bits
+   out0  (UEXPB),h
+   call delay15
+   exx
+   out0 (BUSWR),l    ; out the A/B control
+   in a,(c)          ; bit 0-3 valid
+   ei
+   and  a,d
+   and  e
+   exx
+  jr nz,lllc64
+   ld d,0         ; don't include the 512 bit
+lllc64:
+   ld a,64
+   or d
+
+   di       ; interrupts off
+   out   (c),a    ; 128 bit and 64 bit
+   out0  (UEXPA),h   ; init the least bits
+   out0  (UEXPB),h
+   call delay15
+   ld l,a   ; stash in l
+        exx
+   out0 (BUSWR),l    ; out the A/B control
+   in a,(c)          ; bit 0-3 valid
+   ei
+   and  a,d
+   and  e
+   exx
+   jr z,lllc32
+   ld d,l      ; keep the bit
+lllc32:
+   ld a,32
+   or d
+
+   di       ; interrupts off
+   out   (c),a    ; 128 bit and 64 bit
+   out0  (UEXPA),h   ; init the least bits
+   out0  (UEXPB),h
+   ld l,a   ; stash in l
+   call delay15
+   exx
+   out0 (BUSWR),l    ; out the A/B control
+   in a,(c)          ; bit 0-3 valid
+   ei
+   and  a,d
+   and  e
+   exx
+   jr z,lllc16
+   ld d,l      ; keep the bit
+lllc16:
+   ld a,16
+   or d
+
+   di       ; interrupts off
+   out   (c),a    ; 128 bit and 64 bit
+   out0  (UEXPA),h   ; init the least bits
+   out0  (UEXPB),h
+   ld l,a   ; stash in l
+   call delay15
+   exx
+   out0 (BUSWR),l    ; out the A/B control
+   in a,(c)          ; bit 0-3 valid
+   ei
+   and  a,d
+   and  e
+   exx
+   jr z,lllc08
+   ld d,l      ; keep the bit
+lllc08:
+   ld a,8
+   or d
+
+   di       ; interrupts off
+   out   (c),a    ; 128 bit and 64 bit
+   out0  (UEXPA),h   ; init the least bits
+   out0  (UEXPB),h
+   ld l,a   ; stash in l
+   call delay15
+   exx
+   out0 (BUSWR),l    ; out the A/B control
+   in a,(c)          ; bit 0-3 valid
+   ei
+   and  a,d
+   and  e
+   exx
+   jr z,lllc04
+   ld d,l      ; keep the bit
+lllc04:
+   ld a,04
+   or d
+
+   di       ; interrupts off
+   out   (c),a    ; 128 bit and 64 bit
+   out0  (UEXPA),h   ; init the least bits
+   out0  (UEXPB),h
+   ld l,a   ; stash in l
+   call delay15
+        exx
+   out0 (BUSWR),l    ; out the A/B control
+   in a,(c)          ; bit 0-3 valid
+   ei
+   and  a,d
+   and  e
+   exx
+   jr z,lllc02
+   ld d,l      ; keep the bit
+lllc02:
+   ld a,02
+   or d
+
+   di       ; interrupts off
+   out   (c),a    ; 128 bit and 64 bit
+   out0  (UEXPA),h   ; init the least bits
+   out0  (UEXPB),h
+   ld l,a   ; stash in l
+   call delay15
+   exx
+   out0 (BUSWR),l    ; out the A/B control
+   in a,(c)          ; bit 0-3 valid
+   ei
+   and  a,d
+   and  e
+   exx
+   jr z,lllc01
+   ld d,l      ; keep the bit
+lllc01:
+   ld a,1
+   or d
+
+   di       ; interrupts off
+   out   (c),a    ; 128 bit and 64 bit
+   out0  (UEXPA),h   ; init the least bits
+   out0  (UEXPB),h
+   ld l,a   ; stash in l
+   call delay15
+   exx
+   out0 (BUSWR),l    ; out the A/B control
+   in a,(c)          ; bit 0-3 valid
+   ei
+   and  a,d
+   and  e
+   exx
+   jr z,lllc00
+   ld d,l      ; keep the bit
+lllc00:
+   xor   a
+   ld    l,d
+   ld    h,a
+   rl   l
+   rl   h
+   rl   l
+   rl   h     ; align correctly
+
+   di
+   out   (c),d ; output the actual value so far
+   out0  (UEXPA),a
+   inc   a
+   out0  (UEXPB),a   ; set to 1
+   call delay15
+   exx
+   out0 (BUSWR),l     ; out the A/B control
+   in a,(c)          ; bit 0-3 valid
+   ei
+   and  a,d
+   and  e
+   exx
+   jr z,lllc3
+; keep the bit
+   set   1,l
+lllc3:
+   ld    a,2
+   xor   l
+
+   di
+   out   (c),d    ; set upper 8 bits
+   out0  (UEXPB),a   ; set least bit
+   rra
+   out0  (UEXPA),a   ; set next to least
+   call delay15
+   exx
+   out0 (BUSWR),l    ; out the A/B control
+   in a,(c)          ; bit 0-3 valid
+   ei
+   and  a,d
+   and  e
+   exx
+   jr z,lllc4
+; keep the bit
+   set   0,l
+lllc4:
+   ret
+
+#endasm
+
+#asm fast
+delay15:
+   push    bc
+   ld      b,15    ; 15 * 9 - 22 us for 15 counts
+delay201:
+   djnz    delay201
+   pop     bc
+   ret
+delay8:
+   push  af
+   pop   af
+delay4:
+   ret      ;
+
+#endasm
+
+/*** Beginheader ui_drivers ***/
+
+void ui_drivers(void);
+
+/*** Endheader ***/
+
+/* START FUNCTION DESCRIPTION ********************************************
+ui_drivers                   <UIBOARD.LIB>
+
+SYNTAX: void ui_drivers(void);
+
+KEYWORDS: expansion
+
+DESCRIPTION:  Virtual driver support for the uiboards.  Boards are 
+sequentially served.  Number of boards served is defined by VIRTUAL_UIEXP.
+
+RETURN VALUE: None
+END DESCRIPTION **********************************************************/
+nodebug void ui_drivers(void)
+{
+    int i;
+    
+    for (i = 0; i < VIRTUAL_UIEXP; i++)
+    {
+        if (!(ui_there & (1 << i)))
+            ;
+        else
+        {
+            ui_v_driver((i << 8) | UI_BASE_ADDR, &ui[i]);
+        }
+    }
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+ui_v_driver                  <UIBOARD.LIB>
+
+SYNTAX: ui_v_driver(int addr);
+
+KEYWORDS: expansion
+
+DESCRIPTION: Virtual driver per uiboard.  Called repeatedly by ui_drivers.
+Services 6 output channels and either 16 digital input channels or 16
+universal input channels.
+
+RETURN VALUE: None
+END DESCRIPTION **********************************************************/
+#asm nodebug
+ui_v_driver::
+save_exp_bus:
+        ld hl, (SHBUS0)    ; save least of shadow register
+        push hl
+        ld hl, (SHBUS1)    ; save most of shadow register
+        push hl
+
+        ld hl,6       ; did two pushes and shifted stack by 4
+        add hl,sp     ; get the address of the expansion bus
+        ld e,(hl)
+        inc hl
+        ld d,(hl)
+        ex de,hl      ; hl has the base address
+        call set12adr ; set the address of the expansion board
+
+        ld hl,8       ; now get the address of the structure
+        add hl,sp
+        ld e,(hl)
+        inc hl
+        ld d,(hl)
+        ex de,hl      ; hl has the address of the structure
+
+        ld e, 0x00
+        ld b,6        ; has six output per board
+
+out_again:
+        ld a,e
+        add a,(hl)
+        out0 (BUSWR),a
+        inc hl
+        inc e
+        inc e
+        djnz out_again
+
+        ld a,(hl)   ; hl has the input mode
+                    ; 0 for digital input or 1 for universal input
+        inc hl      ; hl points to DIGIN[0]
+        and a,1     ; is it a univseral input driver
+        jp nz,universal_input
+
+_ui_digital:        ; digital input for the universal inputs
+        push hl     ; hl has the address of DIGIN[0]
+                    ; store a copy for DIGIN[1]
+        ld a,0x0e   ; A/B is 0
+        out0 (BUSWR),a
+
+        push    hl
+        ld      bc,16
+        add     hl,bc
+        ld      a,(hl)
+        ld      d,a             ; d has previous
+        in0     a,(BUSRD1)      ; read in data for chans 0,2,4,6
+        ld      (hl),a          ; store current to previous
+        ld      e,a             ; e has current value
+        xor     d               ; xor current and previous to a
+        pop     hl
+        call    _ui4digchan     ; do 4 channels at a time
+
+        push    hl
+        ld      bc,9
+        add     hl,bc
+        ld      a,(hl)
+        ld      d,a
+        in0     a,(BUSRD2)      ; read in data for chans 8,10,12,14
+        ld      (hl),a
+        ld      e,a
+        xor     d
+        pop     hl
+        call    _ui4digchan
+
+        pop hl        ; hl points to DIGIN[0]
+        inc hl        ; hl points to DIGIN[1]
+
+        ld a,0x0f     ; A/B is now 1
+        out0 (BUSWR),a
+
+        push    hl
+        ld      bc,17
+        add     hl,bc
+        ld      a,(hl)
+        ld      d,a
+        in0     a,(BUSRD1)   ; read in data for chans 1,3,5,7
+        ld      (hl),a
+        ld      e,a
+        xor     d
+        pop     hl
+        call    _ui4digchan
+
+        push    hl
+        ld      bc,10
+        add     hl,bc
+        ld      a,(hl)
+        ld      d,a
+        in0     a,(BUSRD2)   ; read in data for chans 9,11,13,15
+        ld      (hl),a
+        ld      e,a
+        xor     d
+        pop     hl
+        call    _ui4digchan
+
+        jp restore_exp_bus   ; restore state of the expansion bus
+        ret
+
+; 3-7-94 a has the xor of the previous and the current value.
+; 3-7-94 e has the current value.
+_ui4digchan:   ; read in the digital state of 4 channels at a time
+        ld      b,4
+_uidigloop:
+        bit     0,a                 ; 3-7-94 , check data bit
+        jr      nz, _cont_loop      ; 3-7-94 , not stable, continue
+        bit     0,e                 ; 3-7-94 , check bit high or low
+        jr      nz,_chan_on
+        ld      (hl),0
+        jp _cont_loop
+_chan_on:
+        ld      (hl),1
+_cont_loop:
+        rra
+        rr      e
+        inc     hl
+        inc     hl
+        djnz 	_uidigloop
+        ret     ; end of _ui4digchan
+
+universal_input:   ; input channels as universal inputs with UHIGH and ULOW
+                            ; hysteresis thresholding
+#if BOARD_TYPE==CPLC_BOARD
+        ld  	de,20       ; 3-7-94, add 4 because of 4 new bytes, ld de,16
+        add 	hl,de       ; hl has the address of UHIGH0
+        push 	hl         	; store a copy
+        push 	hl         	; store another copy
+
+        ld 		l,0x0e		; setup to read chans 0,2,4,6
+        ld 		b,0
+        ld 		c,BUSRD1
+        ld 		d,1
+        exx           		; l' has A/B control
+                      		; b'c' has BUSRD1
+                      		; d' has the mask
+        pop 	hl        	; restore UHIGH0 address to hl
+        call 	_ui4chans  	; do four channels at a time
+                        	; on return hl has the address of UHIGH8
+        push 	hl         	; store the address of UHIGH8
+        ld 		l,0x0e		; setup to read chans 8,10,12,14
+        ld 		b,0
+        ld 		c,BUSRD2  	; b'c' has BUSRD2
+        ld 		d,1
+        exx
+        pop 	hl         	; restore UHIGH8
+        call 	_ui4chans
+
+        ld 		l,0x0f		; setup to read chans 1,3,5,7
+        ld 		b,0
+        ld 		c,BUSRD1
+        ld 		d,1
+        exx
+        pop 	hl
+        ld 		de,06
+        add 	hl,de      	; hl now has UHIGH1
+        call 	_ui4chans
+                          	; on return hl has the address of UHIGH9
+        push 	hl				
+        ld 		l,0x0f		; setup to read chans 9,11,13,15
+        ld 		b,0
+        ld 		c,BUSRD2
+        ld 		d,1
+        exx
+        pop 	hl
+        call 	_ui4chans
+        jp 		restore_exp_bus
+        ret              	; end of virtual driver for universal
+
+_ui4chans:
+        ld 		b,4     		; four times
+_uiloop4:
+        di          			; get upper threshold
+        ld 		e,(hl)   	; e has the low byte
+        inc 	hl
+        ld 		d,(hl)   	; d has the high byte
+        ei
+        inc 	hl      		; hl now points to ULOW
+									; high is in de
+        xor 	a       		; set data for UEXP
+        rr 		d    			; rotate least significant bit into a1
+        rr 		e
+        rla
+        rr 		d
+        rr 		e
+        rla         			; rotate next to least significant bit into a0
+        cpl         			; complement the bits in a
+        di
+        out0 	(UEXP),e   	; output upper 8 bits
+        out0 	(UEXPA),a   ; 
+                           ; bit 0 is next to least
+        rra
+        out0 	(UEXPB),a   ; 
+        call 	ui_delay
+        exx               	; use b'c', l', d'
+        out0 	(BUSWR),l	; set to read plcbus
+        in 		a, (c)     	; read in the data
+        ei
+        and 	d           ; mask the input
+        exx               	; restore bc,hl and de
+        jp 		z,_testULOW ; if zero, then value is less than UHIGH
+        inc 	hl
+        inc 	hl          ; skip pass low threshold
+        ld 		a,(hl)      ; get previous value
+        ld 		(hl),1      ; put a one into UCUR
+        inc 	hl          ; hl now has the address of UIN
+        or 		a	         ; check if 1 or 0
+        jp 		z,_ui_nextchan	; if current and previuos are 1
+        ld 		(hl),1		; if one, set UIN to 1
+        jp 		_ui_nextchan
+_testULOW:
+        di
+        ld 		e,(hl)    	; get lower threshold
+        inc 	hl
+        ld 		d,(hl)
+        ei
+        inc 	hl          ; hl point to UCUR
+        xor 	a
+        rr 		d				; set data for UEXP
+        rr 		e
+        rla
+        rr 		d
+        rr 		e
+        rla
+        cpl
+        di
+        out0 	(UEXP),e
+        out0 	(UEXPA),a
+        rra
+        out0 	(UEXPB),a
+        call 	ui_delay
+        exx                 ; use b'c', l' and d'
+        out0 	(BUSWR), l
+        in 		a, (c)       ; read in data
+        ei
+        and 	d            ; mask the input
+        exx                 ; restore bc, hl and de
+        jp		nz, _ui_inc_UIN	; 2-12-96, jump to increment to UIN pointer
+        									; jp nz, _ui_nextchan
+        ld 		a,(hl)			; get previous value
+        ld 		(hl),0			; store current value of zero
+        inc 	hl             ; hl points to UIN
+        rra							; check if previous is 1 or 0
+        jr 		c,_ui_nextchan	; if 1, no update of UIN
+        ld 		(hl),0			; if 0, put 0 to UIN
+        jr		_ui_nextchan	; 2-12-96, jump to skip increment
+_ui_inc_UIN:
+		  inc		hl					; 2-12-96, increment to point to UIN 
+_ui_nextchan:
+        exx
+        rlc 	d         		; update the mask
+        exx
+        ld 		de,07
+        add 	hl,de     		; point to UHIGH one set over
+        djnz 	_uiloop4
+        ret
+#else
+        jp restore_exp_bus
+#endif
+
+restore_exp_bus:
+         pop 	bc             ; pop most of shadow register
+         pop 	de             ; pop least of shadow register
+         ld 	hl,SHBUS0+1    ; point to BUSADR0 shadow
+         ld 	a,BUSEXP
+         ld 	(hl),a         ; set shadow
+         out0 	(BUSADR0),a
+         dec 	hl
+         ld 	(hl),e         ; shadow for bus expansion
+         out0 	(BUSWR),e     	; set expansion register
+         inc 	hl             ; point to BUSADR0 shadow
+         ld 	(hl),d
+         out0 	(BUSADR0),d
+         inc 	hl
+         ld 	(hl),c
+         out0 	(BUSADR1),c
+         inc 	hl
+         ld 	(hl),b
+         out0 	(BUSADR2),b
+         ret
+
+ui_delay:                ; uidelay has to be longer for stable read
+         push    bc
+         ld      b,25    ; 25 * 9 -> 36 us for 25 counts
+uidelay201:
+         djnz    uidelay201
+         pop     bc
+         ret
+#endasm
+

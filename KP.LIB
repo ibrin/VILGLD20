@@ -1,0 +1,257 @@
+/* START LIBRARY DESCRIPTION *********************************************
+KP.LIB
+	Copyright (c) 1997, Z-World.
+
+DESCRIPTION: Keypad specific stuff here
+
+END DESCRIPTION **********************************************************/
+
+/*** BeginHeader */
+
+#ifndef _KP_LIB
+#define _KP_LIB
+
+#if BOARD_TYPE==PK22xx || BOARD_TYPE==BL15xx
+#use kp_kdi.lib
+#elif BOARD_TYPE==LP31xx
+#use kp_lp31.lib
+#endif
+
+#define KP_OUTMAX 4
+
+/*** EndHeader */
+
+/*** BeginHeader kpState, kpStateFlag */
+
+extern char kpState[2][KP_OUTMAX];
+extern char kpStateFlag;
+extern int (*kpStateChangeFn)();
+
+/*** EndHeader */
+
+char kpState[2][KP_OUTMAX];
+char kpStateFlag;
+int (*kpStateChangeFn)();
+
+/*** BeginHeader kpInit */
+
+void kpInit(int (*changeFn)());
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+kpInit
+
+SYNTAX: void kpInit(int (*changeFn)())
+
+KEYWORDS: keypad
+
+DESCRIPTION:
+This function initializes the module. This function should be called
+before other functions of this module is called.
+
+PARAMETER1: this is a pointer to a function which will be called when the
+driver detects a change (when kpScanState is called). Two arguments are
+passed to the call-back function. The first argument is a pointer to an
+array that indicates the current state of the keypad. The second pointer
+is a pointer to an array that indicates what keypad positions are changed
+and detected by kpScanState. The byte offset in the array represents the
+line pulled high (row number), and the bits in a byte represents the
+positions (column number) read back.
+
+RETURN VALUE: None
+
+END DESCRIPTION **********************************************************/
+
+
+void kpInit(int (*changeFn)()) {
+	memset(kpState,0xff,sizeof(kpState));
+	kpStateFlag = 0;
+	kpStateChangeFn = changeFn;
+}
+
+/*** BeginHeader kpScanState */
+
+int kpScanState();
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+kpScanState
+
+SYNTAX: int kpScanState()
+
+KEYWORDS: keypad
+
+DESCRIPTION:
+This function scans the keypad and detect any changes to the keypad
+status. It returns non-zero if there is anychange. If kpInit is called
+with a non-NULL function pointer, that function will be called with the
+state of the keypad. This function should be called periodically to scan
+for keypad activities.
+
+RETURN VALUE:  0 if there is no change to the keypad, non-zero if there
+is any change to the keypad.
+
+END DESCRIPTION **********************************************************/
+
+
+int kpScanState() {
+	auto int i;
+	auto int changed;
+	auto char *pCurStatusByte;
+	auto char *pLastStatusByte;
+	auto char *pXorByte;
+	auto char *pPullNibble;
+	auto char xorTable[KP_OUTMAX];
+	auto kpStateType kpSavedState;
+	static char pullNibbles[KP_OUTMAX+1] = {
+		'\B1110', '\B1101', '\B1011',
+		'\B0111', '\B0000' };
+
+	kpSaveState(&kpSavedState);
+	changed = 0;
+	pLastStatusByte = kpState[kpStateFlag];
+	pCurStatusByte = kpState[!kpStateFlag];
+	pPullNibble = pullNibbles;
+	pXorByte = xorTable;
+	for (; *pPullNibble; ) {
+		kpSetPull(*pPullNibble++);	//	pull the 1st line
+		changed |=
+			(*pXorByte++ =
+				(*pLastStatusByte++ ^
+					(*pCurStatusByte++ = kpReadStatus())
+				)
+			);
+	}
+	kpStateFlag = !kpStateFlag;
+	if (changed && kpStateChangeFn) kpStateChangeFn(kpState[kpStateFlag],xorTable);
+	kpRestoreState(&kpSavedState);
+	return changed;
+}
+
+/*** BeginHeader kpDefStChgFn, kpOneKeyBuf */
+
+int kpDefStChgFn(char *curState, char *changed);
+extern int kpOneKeyBuf;
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+kpDefStChgFn
+
+SYNTAX: int kpDefStChgFn(char *curState, char *changed);
+
+KEYWORDS: keypad
+
+DESCRIPTION: This function is the default state change function for
+the default get key function kpDefGetKey. This function is called back
+by kpScanState when there is a change in the keypad state. If the current
+key is not read by kpDefGetKey, the new key pressed will not be registered.
+
+PARAMETER1: this parameter points to an array that reflects the current
+state of the keypad (bitmapped, 1 indicates key is not currently pressed).
+
+PARAMETER2: this parameter points to an array that reflects the CHANGE
+of keypad state from the previous scan. (bitmapped, 1 indicates there was
+a change).
+
+RETURN VALUE: -1 if no key is pressed. Otherwise it returns the normalized
+key number. The normalized key number is 8*row+col+edge*256. edge is 1
+if the key is released, and 0 if the key is pressed.
+
+END DESCRIPTION **********************************************************/
+
+int kpOneKeyBuf;
+
+int kpDefStChgFn(char *curState, char *changed) {
+	auto char row, col, mask;
+
+	if (kpOneKeyBuf == -1) {
+		kpOneKeyBuf = -1;
+		for (row = 0; row < KP_OUTMAX; ++row) {
+			if (*changed) {
+				mask = 1;
+				for (col = 0; col < 8; ++col) {
+					if (mask & *changed) {
+						kpOneKeyBuf = (row<<3) | col;
+						if (mask & *curState) kpOneKeyBuf |= 0x100;
+						break;
+					} else {
+						mask <<= 1;
+					}
+				}
+				break;
+			} else {
+				++changed;
+				++curState;
+			}
+		}
+	}
+	return kpOneKeyBuf;
+}
+
+/*** BeginHeader kpDefGetKey */
+
+int kpDefGetKey();
+extern int kpOneKeyBuf;
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+kpDefGetKey
+
+SYNTAX: int kpDefGetKey();
+
+KEYWORDS: keypad
+
+DESCRIPTION: This function is the default get key function. It returns
+the key previously pressed (i.e., from the one-keypress buffer). The key
+pressed is actually interpreted by kpDefStChgFn, which is called back by
+kpScanState. kpDefInit should be used to initialize the module.
+
+RETURN VALUE: -1 if no key is pressed. Otherwise it returns the normalized
+key number. The normalized key number is 8*row+col+edge*256. edge is 1
+if the key is released, and 0 if the key is pressed.
+
+END DESCRIPTION **********************************************************/
+
+int kpDefGetKey() {
+	int tmp;
+
+	tmp = kpOneKeyBuf;
+	kpOneKeyBuf = -1;
+	return tmp;
+}
+
+/*** BeginHeader kpDefInit */
+
+void kpDefInit();
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+kpDefInit
+
+SYNTAX: void kpDefInit();
+
+KEYWORDS: keypad
+
+DESCRIPTION: This function initializes the module to use the default
+state change function to interpret key presses when kpScanState is called.
+Use kpDefGetKey to get the code of the last key pressed.
+
+RETURN VALUE: N/A.
+
+END DESCRIPTION **********************************************************/
+
+void kpDefInit() {
+	kpOneKeyBuf = -1;
+	kpInit(kpDefStChgFn);
+}
+
+/*** BeginHeader */
+
+#endif
+
+/*** endHeader */

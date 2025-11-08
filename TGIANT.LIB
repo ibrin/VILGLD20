@@ -1,0 +1,126 @@
+/*** BeginHeader */
+#if BOARD_TYPE!=TINY_GIANT
+#error "Tiny Giant only."
+#endif
+/*** EndHeader */
+/*** Beginheader ad_rd8 */
+
+/* driver for 8-bit A/D converter on tiny giant. About 110 microseconds. */
+int ad_rd8(int chan);
+
+/*** Endheader */
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+ad_rd8                       <DRIVERS.LIB>
+
+SYNTAX: int ad_rd8(int chan);
+
+KEY WORDS: TINY_GIANT, ADC, ANALOG, INPUT
+
+DESCRIPTION: Reads an 8-bit value from the Tiny Giant A/D converter. chan
+is the channel number (0 - 3).  The return value is shifted left by 4 bits,
+so it appears as a 12-bit number.
+
+RETURN VALUE: 0 to 4095 if successful; -32768 if an error occurs.
+END DESCRIPTION **********************************************************/
+
+#asm nodebug
+
+; AD_RD : Read Analog/Digital Converter ADC0834
+;
+; INPUT :
+;          HL = Channel Number ( See Comments Above )
+; OUTPUT:
+;          HL = Converter Input ( See Above )
+;          HL = 8000h for Error
+
+
+adtbl: db  98h,0b8h,0d8h,0f8h
+
+;ADC0834 data out MSB first, CSIO of Z180 trans/receive data LSB first
+;A adtbl byte is designed as
+;     MUX-SETTLING  SELECT  ODD/SIGN  SGL/DIF  START    0        0        0
+;           x        x        x        x        x       x        x        x
+;
+;  For example, SELECT=0, Odd=0, SGL=1
+;           1         0       0        1        1       0        0        0
+; Z180 CSIO sent out a byte of 10011000(0x98)
+;
+ad_rd8::
+				xor     a               ; Accumulate ADC0834 Address
+				ld bc,AD_ADE;              ;reset A/D
+				out (c),a;
+				ld      de,adtbl
+				add     hl,de            ;get control word from table
+				ld      a,(hl)
+#ifndef NODISINT
+				ex  af,af'
+				ld  a,i     ;save interrupt state
+				ex  af,af'
+				di              ;disable interrupts
+#endif
+				ld  d,1         ;enable adc
+				out (c),d;
+				ld  b,011h        ; change to 10h to double serial rate (pushing)
+				ld  c,020h        ;read code
+				out0    (TRDR),a        ;out code
+				out0    (CNTR),b        ;write
+ad1:    in0 a,(CNTR)
+				and a,010h
+				jr      nz,ad1      ;loop till write complete
+				out0    (CNTR),c    ; read code
+ad2:    in0 a,(CNTR)
+				and a,c
+				jr      nz,ad2      ;loop till read
+				in0 d,(TRDR)    ;byte returned
+
+; restore interrupts if disabled
+#ifndef  NODISINT
+				ex  af,af'
+				jp  po,ad4      ;if interrupts were off
+				ei
+#endif
+ad4:
+
+; bit reverse result
+				ld      a,d     ;first byte
+				ld     hl,0     ; 0 clear hl
+				rra
+				rl      h
+				rra
+				rl      h
+				rra
+				rl      h
+				rra
+				rl      h          ; 4 most to h
+				ld     a,d         ; now pick off 4 least
+				rla                ; bit 0
+				rr     l
+				rla
+				rr      l
+				rla
+				rr      l
+				rla
+				rr      l          ; now 4 least in  most of l
+				xor     a          ; Disable A/D
+				ld bc,AD_ADE;      ;reset A/D
+				out (c),a;
+				ret
+#endasm
+
+/*** BeginHeader _sysZIfPwrFail */
+
+/*** EndHeader */
+
+#define SIOBC 0x4b
+
+#asm
+_sysZIfPwrFail::
+			in0   a,(SIOBC)   ; make sure pointer is to register zero
+			ld a,10h
+			out0  (SIOBC),a   ; reset ext status for DCD test
+			in0   a,(SIOBC)   ; status
+			bit   3,a      ;test DCD
+			ret
+#endasm

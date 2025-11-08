@@ -1,0 +1,2691 @@
+// 1-26-96, Allow transmitter to overflow receiver beyond CTS not ready.
+// 11-13-95, add mask for receive data; 0x7f for 7 bits, 0xff for 8 bits. 
+// 7-13-95, compute 80% and 20% of buffer with float multiply.
+/* START LIBRARY DESCRIPTION *********************************************
+SCC232.LIB
+        Copyright (c) 1994, Z-World.
+
+DESCRIPTION: Serial drivers for the SCC serial ports A and B.  Interrupts
+are generated via the Z180's INT1.  Also contains definitions for the PIO
+ports on the Protocol Switch.
+
+SUPPORT LIB'S: modem.lib, rtk.lib
+END DESCRIPTION **********************************************************/
+
+/*** BeginHeader */
+#if BOARD_TYPE!=SMARTBLOCK
+#error "SmartBlock only."
+#endif
+/*** EndHeader */
+
+/*** BeginHeader ***/
+
+/* global defines for I/O ports and vectors */
+
+/* SCC */
+#define SCCCB  0xA0          // SCC port B control register
+#define SCCCA  0xA1          // SCC port A control register
+#define SCCDB  0xA2          // SCC port B data register
+#define SCCDA  0xA3          // SCC port A data register
+
+#define EN12   0xB0          // Enable transmitter SCC Port A
+#define EN34   0xC0          // Enable transmitter SCC Port B
+
+/* LED address */
+#define LD1 0xD0             // LD1
+
+/* PIO */
+#define PIOA_1_VEC 0x12      // PIO vectors
+#define PIOB_1_VEC 0x14
+#define PIOA_2_VEC 0x32
+#define PIOB_2_VEC 0x34
+
+#define PIODA_1 0x80         // PIO addresses
+#define PIODB_1 0x81
+#define PIOCA_1 0x82
+#define PIOCB_1 0x83
+#define PIODA_2 0x90
+#define PIODB_2 0x91
+#define PIOCA_2 0x92
+#define PIOCB_2 0x93
+
+/*** EndHeader */
+
+/*** Beginheader Dinit_sca, Dinit_scb, Dkill_SCC, Dkill_sca, Dkill_scb,
+                Dreset_scatbuf, Dreset_scarbuf, Dreset_scbrbuf, 
+                Dreset_scbtbuf, Drestart_scamodem, Drestart_scbmodem */
+
+int  Dinit_sca(char *rbuf, char *tbuf, int rsize, int tsize, char mode,
+     char baud, char ismodem, char isecho);
+int  Dinit_scb(char *rbuf, char *tbuf, int rsize, int tsize, char mode,
+     char baud, char ismodem, char isecho);
+void Dreset_scarbuf(void);
+void Dreset_scatbuf(void);
+void Dreset_scbrbuf(void);
+void Dreset_scbtbuf(void);
+void Drestart_scamodem(void);
+void Drestart_scbmodem(void);
+void Dkill_SCC(void);
+void Dkill_sca(void);
+void Dkill_scb(void);
+
+/*** Endheader */
+
+char *sca_write_buf;         // static pointer to SCCCA transmit buffer
+char *sca_read_buf;          // static pointer to SCCCA receive buffer
+shared int sca_rx_head;      // head pointer to receive buffer
+shared int sca_rx_tail;      // tail pointer to receive buffer
+shared int sca_tx_head;      // head pointer to transmit buffer
+shared int sca_tx_tail;      // tail pointer to transmit buffer
+int sca_rx_size;             // static storage of receive buffer size
+int sca_tx_size;             // static storage of transmit buffer size
+
+shared int sca_80rbuf;       // 80% of receive buffer size
+shared int sca_20rbuf;       // 20% of receive buffer size
+shared int sca_rbufcnt;      // count of characters in receive buffer
+shared int sca_tbufcnt;      // count of characters in transmit buffer
+char sca_CRTS_ENB;           // CTS_RTS control line enable
+char sca_CTS_ON;             // track CTS_ON
+char sca_echo;               // echo mode or not
+char scaBinary;              // 1 if serial receive is in binary mode.
+                             // 0 (default) if serial receive is in text mode.
+char scaCmdOrData;           // modem in command mode or in data mode
+char scaUseModem;            // use modem or not
+
+char scca_wreg0;             // state of scca registers
+char scca_wreg1;
+char scca_wreg2;
+char scca_wreg3;
+char scca_wreg4;
+char scca_wreg5;
+char scca_wreg6;
+char scca_wreg7;
+char scca_wreg8;
+char scca_wreg9;
+char scca_wreg10;
+char scca_wreg11;
+char scca_wreg12;
+char scca_wreg13;
+char scca_wreg14;
+char scca_wreg15;
+char sca_data_mask;           // 11-13-95, data mask
+                              // 11-13-95, 0x7f for 7 bits, 0xff for 8 bits.
+
+char *scb_write_buf;         // static pointer to SCCCB transmit buffer
+char *scb_read_buf;          // static pointer to SCCCB receive buffer
+shared int scb_rx_head;      // head pointer to receive buffer
+shared int scb_rx_tail;      // tail pointer to receive buffer
+shared int scb_tx_head;      // head pointer to transmit buffer
+shared int scb_tx_tail;      // tail pointer to transmit buffer
+int scb_rx_size;             // static storage of receive buffer size
+int scb_tx_size;             // static storage of transmit buffer size
+
+shared int scb_80rbuf;       // 80% of receive buffer size
+shared int scb_20rbuf;       // 20% of receive buffer size
+shared int scb_rbufcnt;      // count of characters in receive buffer
+shared int scb_tbufcnt;      // count of characters in transmit buffer
+char scb_CRTS_ENB;           // CTS_RTS control line enable
+char scb_CTS_ON;             // track CTS_ON
+char scb_echo;               // echo mode or not
+char scbBinary;              // 1 if serial receive is in binary mode.
+                             // 0 if serial receive is in text mode.
+char scbCmdOrData;           // modem in command mode or in data mode
+char scbUseModem;            // use modem or not
+
+char sccb_wreg0;             // state of sccb registers
+char sccb_wreg1;
+char sccb_wreg2;
+char sccb_wreg3;
+char sccb_wreg4;
+char sccb_wreg5;
+char sccb_wreg6;
+char sccb_wreg7;
+char sccb_wreg8;
+char sccb_wreg9;
+char sccb_wreg10;
+char sccb_wreg11;
+char sccb_wreg12;
+char sccb_wreg13;
+char sccb_wreg14;
+char sccb_wreg15;
+
+char scb_data_mask;        // 11-13-95, data mask
+                           // 11-13-95, 0x7f for 7 bits, 0xff for 8 bits
+
+/* START FUNCTION DESCRIPTION ********************************************
+Dinit_sca                    <SCC232.LIB>
+
+Initialize the SCC channel A for serial communication.
+
+SYNTAX: int Dinit_sca(char *rbuf, char *tbuf, int rsize, int tsize, char mode,
+                char baud, char ismodem, char isecho)
+
+DESCRIPTION: rbuf is pointer to a user defined character array.
+tbuf is pointer to a user defined character array.
+rsize is the size of rbuf.
+tsize is the size of tbuf.
+mode is defined as:
+                                bit 0       0       1 stop bit
+                                                        1       2 stop bits
+                                bit 1       0       no parity
+                                                        1       with parity
+                                bit 2       0       7 data bits
+                                                        1       8 data bits
+                                bit 3       0       even parity
+                                                        1       odd parity
+                                bit 4       0       CTS, RTS control disabled
+                                                        1       CTS, RTS enabled
+baud is the baud rate in multiples of 1200 (e.g. 8 for 9600 baud).
+ismodem is 0 if no modem is used. 1 if modem is used.
+isecho  is 0 if no echoing of character. 1 for automatic echoing of character.
+
+RETURN VALUE: Return 1.
+END DESCRIPTION **********************************************************/
+nodebug int Dinit_sca(char *rbuf, char *tbuf, int rsize, int tsize,
+            char mode, char baud, char ismodem, char isecho)
+{
+    extern int CLOCKSPEED;   // 7680 for 18.432 MHz crystal
+    int pclk, timec, clkrate;
+    char var;
+
+    scaBinary    = 0;
+    scaUseModem  = ismodem;
+    sca_echo     = isecho;
+    sca_read_buf = rbuf;
+    sca_write_buf= tbuf;
+
+    Dreset_scatbuf();
+    Dreset_scarbuf();
+    sca_rx_size = rsize;
+    sca_tx_size = tsize;
+    pclk = CLOCKSPEED;       // system clock or RTxc in unit of 1200
+    clkrate = 16;            // default clock rate to 16 times data rate
+
+    if (bit(&mode, 4))
+    {
+        sca_CRTS_ENB = 1;    // CRTS is ON
+        sca_80rbuf = rsize * 0.80;  // 7-13-95 (rsize * 80) / 100;
+        sca_20rbuf = rsize * 0.20;  // 7-13-95 (rsize * 20) / 100;
+    }
+    else
+        sca_CRTS_ENB = 0;    // CRTS is off
+
+    sca_CTS_ON = 1;          // testing
+
+/* time constant = pclk / 2(baud) * (clkrate) - 2 */
+    timec = (pclk / (2 * baud * clkrate)) - 2;// set baud rate time constant
+
+    Dkill_sca();             // reset this channel
+
+    scca_wreg4 = '\B01000100'; // 1 stop bit, x16 data rate
+
+    if (BIT(&mode, 0))
+        SET(&scca_wreg4, 3); // stop bits
+
+    if (BIT(&mode, 1))
+        SET(&scca_wreg4, 0); // parity enable
+
+    if (BIT(&mode, 3))
+        SET(&scca_wreg4, 1); // parity even/odd
+
+    scca_wreg1 = 0x40;       // no dma operation
+    scca_wreg2 = 0x00;       // INT. vector ?
+    scca_wreg3 = '\B01000001'; // Rx 7 bits, RX ENABLE
+
+    sca_data_mask = 0x7f;     // 11-13-95, mask for 7 data bits
+
+    if (BIT(&mode, 2))
+    {        
+      SET(&scca_wreg3, 7); // Rx 8 bits
+      sca_data_mask = 0xff;      // 11-13-95, mask for 8 data bits
+    }
+    scca_wreg5 = '\B10101010'; // 7 TX bits, RTS high, TX ENABLE
+    if (BIT(&mode, 2))
+        SET(&scca_wreg5, 6); // Tx 8 bits
+
+    scca_wreg9 = '\B00001011'; // NV, VIS, MIE ENABLE
+
+    scca_wreg10 = 0x00;      // NRZ
+    scca_wreg11 = 0x56;      // no xtal, Tx,Rx,RTxC = BRG
+
+    scca_wreg12 = timec;     // timer low byte=028 for 9600
+    scca_wreg13 = timec >> 8;// timer high byte
+    scca_wreg14 = 0x03;      // No DPLL, BRG in=PCLK, BRG on, /DTR
+
+    scca_wreg15 = 0x00;      // no Ext int.
+
+/* write registers   */
+    outport(SCCCA, 0x09);    // write reg. WR9
+    outport(SCCCA, scca_wreg9);
+    outport(SCCCA, 0x01);    // write reg. WR1
+    outport(SCCCA, scca_wreg1);
+    outport(SCCCA, 0x04);    // write reg. WR4
+    outport(SCCCA, scca_wreg4);
+    outport(SCCCA, 0x03);    // write reg. WR3
+    outport(SCCCA, scca_wreg3);
+    outport(SCCCA, 0x05);    // write reg. WR5
+    outport(SCCCA, scca_wreg5);
+    outport(SCCCA, 0x0a);    // write reg. WR10
+    outport(SCCCA, scca_wreg10);
+    outport(SCCCA, 0x0b);    // write reg. WR11
+    outport(SCCCA, scca_wreg11);
+    outport(SCCCA, 0x0c);    // write reg. WR12
+    outport(SCCCA, scca_wreg12);
+    outport(SCCCA, 0x0d);    // write reg. WR13
+    outport(SCCCA, scca_wreg13);
+    outport(SCCCA, 0x0e);    // write reg. WR14
+    outport(SCCCA, scca_wreg14);
+    outport(SCCCA, 0x0f);    // write reg. WR15
+    outport(SCCCA, scca_wreg15);
+
+    set(&scca_wreg1, 4);     // Rx int enable on all the time
+
+    intoff(&var);            // read interrupt condition
+    outport(SCCCA, 0x30);    // reset errors
+    outport(SCCCA, 0x01);    // select register 1
+    outport(SCCCA, scca_wreg1); // out register 1
+    doint();                 // give interrupt a chance
+    inton(&var);
+
+    outport(ITC, 0x02 | inport(ITC)); // enable interrupt INT1
+    if (scaUseModem)
+        Drestart_scamodem(); // if modem is used, restart modem
+    else
+        scaCmdOrData = 0;    // serial in data mode
+    return 1;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+Dreset_scarbuf               <SCC232.LIB>
+
+Reset the receive buffer for the SCC channel A.
+
+SYNTAX: void Dreset_scarbuf(void);
+
+DESCRIPTION: Set the head and tail indexes to zero. Set the sca_rbufcnt to zero.
+
+RETURN VALUE: No return values.
+
+END DESCRIPTION **********************************************************/
+nodebug void Dreset_scarbuf(void)
+{
+    sca_rbufcnt = sca_rx_head = sca_rx_tail = 0;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+Dreset_scatbuf               <SCC232.LIB>
+
+Reset the transmit buffer of the SCC channel A.
+
+SYNTAX: void Dreset_scatbuf(void);
+
+DESCRIPTION: Set the head and tail indexes to zero. Set sca_tbufcnt to zero.
+
+RETURN VALUE: No return values.
+END DESCRIPTION **********************************************************/
+nodebug void Dreset_scatbuf(void)
+{
+    sca_tbufcnt = sca_tx_head = sca_tx_tail = 0;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+Dinit_scb                    <SCC232.LIB>
+
+Initialize the SCC channel B for serial communication.
+
+SYNTAX: int Dinit_scb(char *rbuf, char *tbuf, int rsize, int tsize, char mode,
+                        char baud, char ismodem, char isecho);
+
+DESCRIPTION: See remarks for Dinit_sca(...).
+
+RETURN VALUE: Return 1.
+
+END DESCRIPTION **********************************************************/
+nodebug int Dinit_scb(char *rbuf, char *tbuf, int rsize, int tsize,
+                char mode, char baud, char ismodem, char isecho)
+{
+    extern int CLOCKSPEED;   // 7680 for 18.432 MHz crystal
+    int pclk, timec, clkrate;
+    char var;
+
+    scbBinary    = 0;
+    scbUseModem  = ismodem;
+    scb_echo     = isecho;
+    scb_read_buf = rbuf;
+    scb_write_buf= tbuf;
+
+    Dreset_scbtbuf();
+    Dreset_scbrbuf();
+    scb_rx_size = rsize;
+    scb_tx_size = tsize;
+    pclk = CLOCKSPEED;       // system clock or RTxc in unit of 1200
+    clkrate = 16;            // clock rate is 16x data rate
+
+    if (bit(&mode, 4))
+    {
+        scb_CRTS_ENB = 1;    // CRTS is ON
+        scb_80rbuf = rsize * 0.80;  // 7-13-95 (rsize * 80) / 100;
+        scb_20rbuf = rsize * 0.20;  // 7-13-95 (rsize * 20) / 100;
+    }
+    else 
+        scb_CRTS_ENB = 0;    // CRTS is OFF.
+
+    scb_CTS_ON = 1;
+
+/*    time constant = pclk / 2(baud) * (clkrate) - 2         */
+    timec = (pclk / (2 * baud * clkrate)) - 2;// set baud rate time constant
+
+    Dkill_scb();             // reset channel B
+
+    sccb_wreg4 = '\B01000100'; // 1 stop bit, x16 clock rate
+
+    if (BIT(&mode, 0))
+        SET(&sccb_wreg4, 3); // stop bits
+
+    if (BIT(&mode, 1))
+        SET(&sccb_wreg4, 0); // parity enable
+
+    if (BIT(&mode, 3))
+        SET(&sccb_wreg4, 1); // parity even/odd
+
+    sccb_wreg1 = 0x40;       // no dma operation
+    sccb_wreg2 = 0x00;       // INT. vector ?
+    sccb_wreg3 = '\B01000001'; // Rx 7 bits, RX ENABLE
+
+    scb_data_mask = 0x7f;        // 11-13-95, mask for 7 data bits
+    if (BIT(&mode, 2))
+    {          
+      SET(&sccb_wreg3, 7); // Rx 8 bits
+      scb_data_mask = 0xff;      // 11-13-95, mask for 8 data bits
+    }
+    sccb_wreg5 = '\B10101010'; // 7 TX bits, RTS high, TX ENABLE
+    if (BIT(&mode, 2))
+        SET(&sccb_wreg5, 6); // Tx 8 bits
+
+    sccb_wreg9 = '\B00001011'; // NV, VIS, MIE ENABLE
+
+    sccb_wreg10 = 0x00;      // NRZ
+    sccb_wreg11 = 0x56;      // no xtal, Tx,Rx,RTxC = BRG
+
+    sccb_wreg12 = timec;     // timer low byte=028 for 9600
+    sccb_wreg13 = timec >> 8;// timer high byte
+    sccb_wreg14 = 0x03;      // No DPLL, BRG in=PCLK, BRG on, /DTR
+    sccb_wreg15 = 0x00;      // no Ext int.
+
+/* write registers   */
+    outport(SCCCB, 0x09);    // write reg. WR9
+    outport(SCCCB, sccb_wreg9);
+    outport(SCCCB, 0x01);    // write reg. WR1
+    outport(SCCCB, sccb_wreg1);
+    outport(SCCCB, 0x04);    // write reg. WR4
+    outport(SCCCB, sccb_wreg4);
+    outport(SCCCB, 0x03);    // write reg. WR3
+    outport(SCCCB, sccb_wreg3);
+    outport(SCCCB, 0x05);    // write reg. WR5
+    outport(SCCCB, sccb_wreg5);
+    outport(SCCCB, 0x0a);    // write reg. WR10
+    outport(SCCCB, sccb_wreg10);
+    outport(SCCCB, 0x0b);    // write reg. WR11
+    outport(SCCCB, sccb_wreg11);
+    outport(SCCCB, 0x0c);    // write reg. WR12
+    outport(SCCCB, sccb_wreg12);
+    outport(SCCCB, 0x0d);    // write reg. WR13
+    outport(SCCCB, sccb_wreg13);
+    outport(SCCCB, 0x0e);    // write reg. WR14
+    outport(SCCCB, sccb_wreg14);
+    outport(SCCCB, 0x0f);    // write reg. WR15
+    outport(SCCCB, sccb_wreg15);
+
+    set(&sccb_wreg1, 4);     // Rx int enable on all
+
+    intoff(&var);            // read interrupt condition
+    outport(SCCCB, 0x30);    // reset errors
+    outport(SCCCB, 0x01);    // select register 1
+    outport(SCCCB, sccb_wreg1); // out register 1
+    doint();                 // give interrupt a chance
+    inton(&var);
+
+    outport(ITC, 0x02 | inport(ITC)); // enable interrupt INT1
+
+    if (scbUseModem)
+        Drestart_scbmodem();
+    else
+        scbCmdOrData = 0;    // serial in data mode
+    return 1;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+Dreset_scbrbuf               <SCC232.LIB>
+
+Reset the receive buffer for the SCC channel B.
+
+SYNTAX: void Dreset_scbrbuf(void);
+
+DESCRIPTION: Set the head and tail indexes to zero. Set the scb_rbufcnt to zero.
+
+RETURN VALUE: No return values.
+END DESCRIPTION **********************************************************/
+nodebug void Dreset_scbrbuf(void)
+{
+    scb_rbufcnt = scb_rx_head = scb_rx_tail = 0;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+Dreset_scbtbuf               <SCC232.LIB>
+
+Reset the transmit buffer of the SCC channel B.
+
+SYNTAX: void Dreset_scbtbuf(void);
+
+DESCRIPTION: Set the head and tail indexes to zero. Set scb_tbufcnt to zero.
+
+RETURN VALUE: No return values.
+END DESCRIPTION **********************************************************/
+nodebug void Dreset_scbtbuf(void)
+{
+    scb_tbufcnt = scb_tx_head = scb_tx_tail = 0;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+Drestart_scamodem            <SCC232.LIB>
+
+Send command to set/reset the modem connected to SCC channel A.
+
+SYNTAX: void Drestart_scamodem(void);
+
+DESCRIPTION: Hayes smart modem is desirable. The hardware connection has to be:
+                        modem side          SCC chan A
+                        RX  ----------------- TX
+                        TX  ----------------- RX
+                        GND ----------------- GND
+                        RTS --|           |-- RTS
+                        CTS --|           |-- CTS
+                        DTR --|
+i.e. On modem side, RTS,CTS and DTR are tied together.
+         On the SCC side, RTS is connected to CTS.
+
+RETURN VALUE: No return values.
+END DESCRIPTION **********************************************************/
+nodebug void Drestart_scamodem(void)
+{
+    int  ercode;
+    int  ok_count;
+    char buf[20];
+
+              /* if modem is available, the master would make sure that the
+                 modem in command mode on power up                       */
+    scaCmdOrData = 1;        // modem in command mode
+    ok_count     = 0;
+
+    Dwrite_sca("+++", 3);
+    Ddelay_1sec();
+    while ((++ok_count < 4) &&
+    ((ercode = Dread_sca(buf, ENTER)) == 0 || (Dget_modem_command(buf)!=0)))
+        Ddelay_1sec();
+
+    Dwrite_sca("AT H0", 5);  // or time out
+    Dwrite_sca1ch(ENTER);
+    ok_count = 0;
+
+    while ((++ok_count < 4) &&
+    ((ercode = Dread_sca(buf, ENTER)) == 0 || (Dget_modem_command(buf)!=0)))
+        Ddelay_1sec();       // wait for OK
+
+    Dwrite_sca("AT E0 V1 M0 S0=2", 16);// or time out
+                             /*****************************
+                                E0 for commands not echoed
+                                V1 for word responses
+                                M0 for internal speaker off
+                                S0=2 for automatic answering
+                              *****************************              */
+    Dwrite_sca1ch(ENTER);
+    ok_count = 0;
+    while ((++ok_count < 4) &&
+    ((ercode = Dread_sca(buf, ENTER)) == 0 || (Dget_modem_command(buf)!=0)))
+        Ddelay_1sec();       // wait for OK
+
+    Dwrite_sca("AT &D0 &R1", 10);// or time out
+                             /*****************************
+                               &D0 for ignore the Data Terminal Ready (DTR)
+                               &R1 for ignore the Ready To Send (RTS)
+                             *****************************               */
+    Dwrite_sca1ch(ENTER);
+    ok_count = 0;
+    while ((++ok_count < 4) &&
+    ((ercode = Dread_sca(buf, ENTER)) == 0 || (Dget_modem_command(buf)!=0)))
+        Ddelay_1sec();       // wait for OK
+
+    Ddelay_1sec();
+    Dreset_scarbuf();
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+Drestart_scbmodem            <SCC232.LIB>
+
+Send command to set/reset the modem connected to SCC channel B.
+
+SYNTAX: void Drestart_scbmodem(void);
+
+DESCRIPTION: Hayes smart modem is desirable. The hardware connection has to be:
+                        modem side          SCC chan B
+                        RX  ----------------- TX
+                        TX  ----------------- RX
+                        GND ----------------- GND
+                        RTS --|           |-- RTS
+                        CTS --|           |-- CTS
+                        DTR --|
+i.e. On modem side, RTS,CTS and DTR are tied together.
+         On the SCC side, RTS is connected to CTS.
+
+RETURN VALUE: No return values.
+END DESCRIPTION **********************************************************/
+nodebug void Drestart_scbmodem(void)
+{
+    int ercode;
+    int ok_count;
+    char buf[20];
+
+        /* if modem is available, the master would make sure that the modem
+           in command mode on power up                                   */
+    scbCmdOrData = 1;        // modem in command mode
+    ok_count = 0;
+    Dwrite_scb("+++", 3);
+    Ddelay_1sec();
+    while ((++ok_count < 4) &&
+    ((ercode = Dread_scb(buf, ENTER)) == 0 || (Dget_modem_command(buf)!=0)))
+        Ddelay_1sec();
+
+    Dwrite_scb("AT H0", 5);  // or time out
+    Dwrite_scb1ch(ENTER);
+    ok_count = 0;
+    while ((++ok_count < 4) &&
+    ((ercode = Dread_scb(buf, ENTER)) == 0 || (Dget_modem_command(buf)!=0)))
+        Ddelay_1sec();       // wait for OK
+
+    Dwrite_scb("AT E0 V1 M0 S0=2", 16);// or time out
+                             /*****************************
+                                E0 for commands not echoed
+                                V1 for word responses
+                                M0 for internal speaker off
+                                S0=2 for automatic answering
+                              *****************************              */
+    Dwrite_scb1ch(ENTER);
+    ok_count = 0;
+    while ((++ok_count < 4) &&
+    ((ercode = Dread_scb(buf, ENTER)) == 0 || (Dget_modem_command(buf)!=0)))
+        Ddelay_1sec();       // wait for OK
+
+    Dwrite_scb("AT &D0 &R1", 10);// or time out
+                             /*****************************
+                               &D0 for ignore the Data Terminal Ready (DTR)
+                               &R1 for ignore the Ready To Send (RTS)
+                             *****************************               */
+    Dwrite_scb1ch(ENTER);
+    ok_count = 0;
+    while ((++ok_count < 4) &&
+    ((ercode = Dread_scb(buf, ENTER)) == 0 || (Dget_modem_command(buf)!=0)))
+        Ddelay_1sec();       // wait for OK
+
+    Ddelay_1sec();
+    Dreset_scbrbuf();
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+Dkill_sca                    <SCC232.LIB>
+
+Reset SCC channel A.
+
+SYNTAX: void Dkill_sca(void);
+
+DESCRIPTION: 
+RETURN VALUE: No return values.
+END DESCRIPTION **********************************************************/
+nodebug void Dkill_sca(void)
+{
+    outport(SCCCA, 0x09);
+    outport(SCCCA, 0x8b);    // reset channel A
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+Dkill_scb                    <SCC232.LIB>
+
+Reset SCC channel B.
+
+SYNTAX: void Dkill_scb(void);
+
+DESCRIPTION: 
+RETURN VALUE: No return values.
+END DESCRIPTION **********************************************************/
+nodebug void Dkill_scb(void)
+{
+    outport(SCCCA, 0x09);
+    outport(SCCCA, 0x4b);    // reset channel B
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+Dkill_SCC                    <SCC232.LIB>
+
+Reset SCC channel A and B.  Turn off INT1 interrupt.
+
+SYNTAX: void Dkill_SCC(void);
+
+DESCRIPTION: 
+RETURN VALUE: No return values.
+END DESCRIPTION **********************************************************/
+nodebug void Dkill_SCC(void)
+{
+    outport(SCCCA, 0x09);
+    outport(SCCCA, 0xc0);    // reset chans A and B
+    outport(ITC, 0xfd & inport(ITC)); // turn off INT1 interrupt
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+sccint                       <SCC232.LIB>
+
+Interrupt service routine for the SCC serial channels via the INT1 of
+the Z180.
+
+SYNTAX: interrupt reti sccint(void);
+
+DESCRIPTION: Interrupt routine is automatically triggered when Dinit_sca() or Dinit_scb()
+is called.
+
+RETURN VALUE: No return values.
+END DESCRIPTION **********************************************************/
+
+#INT_VEC INT1_VEC sccint
+nodebug interrupt reti root sccint(void)
+{
+    int vec;
+
+    outport(SCCCB, 0x02);    // read CHB rr2 modified int. vector
+    vec = inport(SCCCB);
+
+      // reset IUS, always last operation in an interrupt service routing
+                // allow use internal daisy chain and lower priority int.
+
+    vec = vec & 0x0e;        // mask out lowest bit
+                      // vec=0x06 V3, V2, V1=011, if no interrupt pending
+
+    switch (vec)
+    {
+        case 0x0c:
+            Dsca_rser_int(); // receive int Channel A
+            break;
+        case 0x08:
+            Dsca_tser_int(); // transmit int Channel A
+            break;
+        case 0x0a:          // channel A external status change
+            outport(SCCCA, 0x30); // reset error
+            outport(SCCCA, 0x10); // reset ext/status interrupts
+            outport(SCCCA, 0x38); // reset highest IUS
+            break;
+        case 0x00:
+            Dscb_tser_int(); // transmit int Channel B
+            break;
+        case 0x04:
+            Dscb_rser_int(); // receive int Channel B
+            break;
+        case 0x02:          // channel B external status change
+            outport(SCCCB, 0x30); // reset error
+            outport(SCCCB, 0x10); // reset ext/status interrupts
+            outport(SCCCB, 0x38); // reset highet IUS
+            break;
+        case 0x06:          // special receive channel B
+            outport(SCCCB, 0x30); // reset error
+            outport(SCCCB, 0x70); // reset RxCRC and error
+            outport(SCCCB, 0x38); // reset highest IUS
+            break;
+        case 0x0e:          // special receive channel A
+            outport(SCCCA, 0x30); // reset error
+            outport(SCCCA, 0x70); // reset RxCRC and error
+            outport(SCCCA, 0x38); // reset highest IUS
+            break;
+    }
+}
+
+/*** Beginheader Dsca_rser_int, Dsca_tser_int */
+
+void Dsca_rser_int(void);
+void Dsca_tser_int(void);
+
+/*** Endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+Dsca_rser_int                <SCC232.LIB>
+
+Service routine for SCC channel A receive interrupt.
+
+SYNTAX: int Dsca_rser_int(void);
+
+DESCRIPTION: Called by sccint() to handle receive interrupt for the SCC channel A.
+
+RETURN VALUE: No return values.
+END DESCRIPTION **********************************************************/
+#asm root nodebug
+Dsca_rser_int::
+    push af
+    push hl
+    push bc
+    push de
+
+    ld a,0x30        ; reset error
+    out0 (SCCCA),a
+    in0 c,(SCCDA)     ; get in character
+    ld      a, (sca_data_mask)      ; 11-13-95, get the data mask
+    and     c                       ; 11-13-95, mask the data
+    ld      c, a                    ; 11-13-95, copy masked data to c
+    ld a,(scaBinary)   ; binary mode ?
+    cp 1
+    jr z, _scaStuffData    ; just stuff data in if binary mode.
+                           ; if text mode, process BACKSPACE character and echoing.
+
+    ld a,c
+    cp BACKSPACE   ; is character a backspace
+    jr nz, _scanotBackSpace
+    ld a,(scaCmdOrData)
+    cp 1
+    jr z, _scanoEcho
+    ld a,(sca_echo)
+    cp 1
+    jr nz,_scanoEcho
+    out0 (SCCDA),c    ; echo back the character
+
+_scanoEcho:
+    ld de,(sca_rx_tail)   ; see if (rx_head) == (rx_tail)
+    ld hl,(sca_rx_head)
+    ld a,d
+    cp h               ;
+    jr nz, _scanotHTR     ;
+    ld a,e
+    cp l
+    jr nz, _scanotHTR
+    jp _scaRcvTheEnd
+_scanotHTR:
+    ld a,h           ; if (rx_head)==0, (rx_head)=(rx_size) - 1;
+    or l
+    jr nz,_scaHeadnotZero
+    ld hl,(sca_rx_size)
+    dec hl
+    ld (sca_rx_head),hl
+    jp _decRbufcount
+
+_scaHeadnotZero:
+    ld hl,(sca_rx_head)  ; else (rx_head) = (rx_head) -1
+    dec hl
+    ld (sca_rx_head),hl
+_decRbufcount:
+    ld a,(sca_CRTS_ENB)
+    cp 1
+    jp nz,_scaRcvTheEnd
+    ld hl, (sca_rbufcnt)
+    dec hl
+    ld (sca_rbufcnt),hl
+    jp _scaRcvTheEnd
+
+_scanotBackSpace:          ; not a BACKSPACE, so push data into receive queue
+    ld a,(scaCmdOrData)
+    cp 1
+    jr z, _scaStuffData
+    ld a,(sca_echo)
+    cp 1
+    jr nz,_scaStuffData
+    out0 (SCCDA),c     ; echo character back
+_scaStuffData:
+; 1-26-96 Allow transmitter to overflow receiver beyond CTS not ready.
+; 1-26-96    ld a,(sca_CTS_ON)
+; 1-26-96    cp 1
+; 1-26-96    jp nz, _scaRcvTheEnd
+    ld de,(sca_read_buf)
+    ld hl,(sca_rx_head)
+    add hl,de
+    ld (hl),c        ; store data
+    ld de,(sca_rx_size)  ; do the modulo test
+    ld hl,(sca_rx_head)
+    inc hl
+    ld a,d
+    cp h             ; compare high byte
+    jp nz,_scanotRollOver
+    ld a,e
+    cp l              ; compare low byte
+    jp nz,_scanotRollOver
+    ld hl,00
+    ld (sca_rx_head),hl
+    jp checkforCTS
+ _scanotRollOver:
+    ld (sca_rx_head),hl
+ checkforCTS:
+    ld a,(sca_CRTS_ENB)
+    cp 1
+    jp nz,_scaRcvTheEnd
+    ld hl, (sca_rbufcnt)
+    inc hl
+    ld (sca_rbufcnt),hl
+    ld de, (sca_80rbuf)
+    ld a,e
+    cp l
+    jp nz, _scaRcvTheEnd
+    ld a,d
+    cp h
+    jp nz, _scaRcvTheEnd
+    ld a,0x05
+    out0 (SCCCA),a
+    ld a,(scca_wreg5)
+    and 11111101b   ; turn off rts bit
+    ld (scca_wreg5),a
+    out0 (SCCCA),a
+    ld a,0
+    ld (sca_CTS_ON),a
+ _scaRcvTheEnd:
+    ld a,0x38
+    out0 (SCCCA),a  ; reset the ius
+    pop de
+    pop bc
+    pop hl
+    pop af
+    ret
+#endasm
+
+/* START FUNCTION DESCRIPTION ********************************************
+Dsca_tser_int                <SCC232.LIB>
+
+Service routine for the SCC channel A transmit interrupt.
+
+SYNTAX: int Dsca_tser_int(void);
+
+DESCRIPTION: Called by sccint() to handle the SCC channel A transmit interrupt.
+
+RETURN VALUE: No return values.
+END DESCRIPTION **********************************************************/
+#asm root nodebug
+Dsca_tser_int::
+    push af
+    push hl
+    push bc
+    push de
+
+    ld a, 0x30
+    out0 (SCCCA),a      ; reset errors
+
+    ld de,(sca_tx_head)   ; see if (tx_head) == (tx_tail)
+    ld hl,(sca_tx_tail)
+    ld a,d
+    cp h        ; compare d to h
+    jr nz, _notscaTxEnd
+    ld a,e
+    cp l
+    jr nz, _notscaTxEnd
+    ld a,0x11
+    out0 (SCCCA),a
+    ld a,(scca_wreg1)
+    and 0xfd
+    ld (scca_wreg1),a
+    out0 (SCCCA),a
+                      ; turn off interrupt when no more character to send
+    jp _scaTxTheEnd
+ _notscaTxEnd:
+    ld hl, (sca_tbufcnt)
+    dec hl
+    ld (sca_tbufcnt),hl
+    ld de, (sca_write_buf)   ; send next character out
+    ld hl, (sca_tx_tail)
+    add hl,de
+    ld c,(hl)
+    out0 (SCCDA),c
+    ld de,(sca_tx_size)
+    ld hl,(sca_tx_tail) ; do the modulo test
+    inc hl
+    ld a,d
+    cp h ; compare high byte
+    jp nz,_notscaTRollOver
+    ld a,e
+    cp l
+    jp nz,_notscaTRollOver
+    ld hl,00
+    ld (sca_tx_tail),hl
+    jp _scaTxTheEnd
+ _notscaTRollOver:
+    ld (sca_tx_tail),hl
+_scaTxTheEnd:
+    ld a, 0x38
+    out0 (SCCCA), a   ; reset ius
+    pop de
+    pop bc
+    pop hl
+    pop af
+    ret
+#endasm
+
+
+/*** Beginheader Dscb_rser_int, Dscb_tser_int */
+
+void Dscb_rser_int(void);
+void Dscb_tser_int(void);
+
+/*** Endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+Dscb_rser_int                <SCC232.LIB>
+
+Service routine for the SCC channel B receive interrupt.
+
+SYNTAX: Dscb_rser_int(void);
+
+DESCRIPTION: Called by sccint() to handle the SCC channel B receive interrupt.
+
+RETURN VALUE: No return values.
+END DESCRIPTION **********************************************************/
+#asm root nodebug
+Dscb_rser_int::
+    push af
+    push hl
+    push bc
+    push de
+
+    ld a,0x30        ; reset error
+    out0 (SCCCB),a
+    in0 c,(SCCDB)     ; get in character
+    ld      a, (scb_data_mask)         ; 11-13-95, get the data mask
+    and     c                          ; 11-13-95, mask the data
+    ld      c, a                       ; 11-13-95, copy masked data to c
+    ld a,(scbBinary)   ; binary mode ?
+    cp 1
+    jr z, _scbStuffData    ; just stuff data in if binary mode.
+                           ; if text mode, process BACKSPACE character and echoing.
+
+    ld a,c
+    cp BACKSPACE   ; is character a backspace
+    jr nz, _scbnotBackSpace
+    ld a,(scbCmdOrData)
+    cp 1
+    jr z, _scbnoEcho
+    ld a,(scb_echo)
+    cp 1
+    jr nz,_scbnoEcho
+    out0 (SCCDB),c    ; echo back the character
+
+_scbnoEcho:
+    ld de,(scb_rx_tail)   ; see if (rx_head) == (rx_tail)
+    ld hl,(scb_rx_head)
+    ld a,d
+    cp h               ;
+    jr nz, _scbnotHTR     ;
+    ld a,e
+    cp l
+    jr nz, _scbnotHTR
+    jp _scbRcvTheEnd
+_scbnotHTR:
+    ld a,h           ; if (rx_head)==0, (rx_head)=(rx_size) - 1;
+    or l
+    jr nz,_scbHeadnotZero
+    ld hl,(scb_rx_size)
+    dec hl
+    ld (scb_rx_head),hl
+    jp _decRbufcount
+
+_scbHeadnotZero:
+    ld hl,(scb_rx_head)  ; else (rx_head) = (rx_head) -1
+    dec hl
+    ld (scb_rx_head),hl
+_decRbufcount:
+    ld a,(scb_CRTS_ENB)
+    cp 1
+    jp nz,_scbRcvTheEnd
+    ld hl, (scb_rbufcnt)
+    dec hl
+    ld (scb_rbufcnt),hl
+    jp _scbRcvTheEnd
+
+_scbnotBackSpace:          ; not a BACKSPACE, so push data into receive queue
+    ld a,(scbCmdOrData)
+    cp 1
+    jr z, _scbStuffData
+    ld a,(scb_echo)
+    cp 1
+    jr nz,_scbStuffData
+    out0 (SCCDB),c     ; echo character back
+_scbStuffData:
+; 1-26-96, Allow transmitter to overflow receiver beyond CTS not ready.
+; 1-26-96    ld a,(scb_CTS_ON)
+; 1-26-96    cp 1
+; 1-26-96    jp nz, _scbRcvTheEnd
+    ld de,(scb_read_buf)
+    ld hl,(scb_rx_head)
+    add hl,de
+    ld (hl),c        ; store data
+    ld de,(scb_rx_size)  ; do the modulo test
+    ld hl,(scb_rx_head)
+    inc hl
+    ld a,d
+    cp h             ; compare high byte
+    jp nz,_scbnotRollOver
+    ld a,e
+    cp l              ; compare low byte
+    jp nz,_scbnotRollOver
+    ld hl,00
+    ld (scb_rx_head),hl
+    jp checkforCTS
+ _scbnotRollOver:
+    ld (scb_rx_head),hl
+ checkforCTS:
+    ld a,(scb_CRTS_ENB)
+    cp 1
+    jp nz,_scbRcvTheEnd
+    ld hl, (scb_rbufcnt)
+    inc hl
+    ld (scb_rbufcnt),hl
+    ld de, (scb_80rbuf)
+    ld a,e
+    cp l
+    jp nz, _scbRcvTheEnd
+    ld a,d
+    cp h
+    jp nz, _scbRcvTheEnd
+    ld a,0x05
+    out0 (SCCCB),a
+    ld a,(sccb_wreg5)
+    and 11111101b   ; turn off rts bit
+    ld (sccb_wreg5),a
+    out0 (SCCCB),a
+    ld a,0
+    ld (scb_CTS_ON),a
+ _scbRcvTheEnd:
+    ld a,0x38
+    out0 (SCCCB),a  ; reset the ius
+    pop de
+    pop bc
+    pop hl
+    pop af
+    ret
+#endasm
+
+/* START FUNCTION DESCRIPTION ********************************************
+Dscb_tser_int                <SCC232.LIB>
+
+Service routine for the SCC channel B transmit interrupt.
+
+SYNTAX: int Dscb_tser_int(void);
+
+DESCRIPTION: Called by sccint() to handle the SCC channel B transmit interrupt.
+
+RETURN VALUE: No return values.
+END DESCRIPTION **********************************************************/
+#asm root nodebug
+Dscb_tser_int::
+    push af
+    push hl
+    push bc
+    push de
+
+    ld a, 0x30
+    out0 (SCCCB),a      ; reset errors
+
+    ld de,(scb_tx_head) ; see if (tx_head) == (tx_tail)
+    ld hl,(scb_tx_tail)
+    ld a,d
+    cp h                ; compare d to h
+    jr nz, _notscbTxEnd
+    ld a,e
+    cp l
+    jr nz, _notscbTxEnd
+    ld a,0x11
+    out0 (SCCCB),a
+    ld a,(sccb_wreg1)
+    and 0xfd
+    ld (sccb_wreg1),a
+    out0 (SCCCB),a
+                        ; turn off interrupt when no more character to send
+    jp _scbTxTheEnd
+ _notscbTxEnd:
+    ld hl, (scb_tbufcnt)
+    dec hl
+    ld (scb_tbufcnt),hl
+    ld de, (scb_write_buf)   ; send next character out
+    ld hl, (scb_tx_tail)
+    add hl,de
+    ld c,(hl)
+    out0 (SCCDB),c
+    ld de,(scb_tx_size)
+    ld hl,(scb_tx_tail) ; do the modulo test
+    inc hl
+    ld a,d
+    cp h             ; compare high byte
+    jp nz,_notscbTRollOver
+    ld a,e
+    cp l
+    jp nz,_notscbTRollOver
+    ld hl,00
+    ld (scb_tx_tail),hl
+    jp _scbTxTheEnd
+ _notscbTRollOver:
+    ld (scb_tx_tail),hl
+ _scbTxTheEnd:
+    ld a, 0x38
+    out0 (SCCCB), a   ; reset ius
+    pop de
+    pop bc
+    pop hl
+    pop af
+    ret
+#endasm
+
+
+/*** Beginheader Dwrite_sca, Dread_sca, Dwrite_sca1ch, Dread_sca1ch,
+                   Dscasend_prompt, Dscamodem_chk,
+                   scamodemstat, scamodemset, scabinaryset, scabinaryreset */
+
+int  Dwrite_sca(char *buf, int count);
+int  Dread_sca(char *buf, char terminate);
+int  Dwrite_sca1ch(char data);
+int  Dread_sca1ch(char *data);
+void Dscasend_prompt(void);
+int  Dscamodem_chk(char *buf);
+int  scamodemstat(void);
+int  scamodemset(void);
+void scabinaryset(void);
+void scabinaryreset(void);
+
+/*** Endheader */
+// 12-15-94
+extern char *sca_write_buf;  // static pointer to SCCCA transmit buffer
+extern char *sca_read_buf;   // static pointer to SCCCA receive buffer
+extern shared int sca_rx_head;      // head pointer to receive buffer
+extern shared int sca_rx_tail;      // tail pointer to receive buffer
+extern shared int sca_tx_head;      // head pointer to transmit buffer
+extern shared int sca_tx_tail;      // tail pointer to transmit buffer
+extern int sca_rx_size;      // static storage of receive buffer size
+extern int sca_tx_size;      // static storage of transmit buffer size
+
+extern shared int sca_80rbuf;       // 80% of receive buffer size
+extern shared int sca_20rbuf;       // 20% of receive buffer size
+extern shared int sca_rbufcnt;      // count of characters in receive buffer
+extern shared int sca_tbufcnt;      // count of characters in transmit buffer
+extern char sca_CRTS_ENB;    // CTS_RTS control line enable
+extern char sca_CTS_ON;      // track CTS_ON
+extern char sca_echo;        // echo mode or not
+extern char scaBinary;       // 1 if serial receive is in binary mode.
+                             // 0 (default) if serial receive is in text mode.
+extern char scaCmdOrData;    // modem in command mode or in data mode
+extern char scaUseModem;     // use modem or not
+
+extern char scca_wreg0;      // state of scca registers
+extern char scca_wreg1;
+extern char scca_wreg2;
+extern char scca_wreg3;
+extern char scca_wreg4;
+extern char scca_wreg5;
+extern char scca_wreg6;
+extern char scca_wreg7;
+extern char scca_wreg8;
+extern char scca_wreg9;
+extern char scca_wreg10;
+extern char scca_wreg11;
+extern char scca_wreg12;
+extern char scca_wreg13;
+extern char scca_wreg14;
+extern char scca_wreg15;
+
+/* START FUNCTION DESCRIPTION ********************************************
+scabinaryset                 <SCC232.LIB>
+
+Set the serial communication mode to binary. This means that all receive
+data are stuffed directly to the receive buffer.
+
+SYNTAX: void scabinaryset(void);
+
+DESCRIPTION: 
+RETURN VALUE: No return values.
+END DESCRIPTION **********************************************************/
+nodebug void scabinaryset(void)
+{
+    scaBinary = 1;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+scabinaryreset               <SCC232.LIB>
+
+Reset the serial communication to regular ASCII mode. This means that the
+backspace character is tracked to adjust the receive buffer head index.
+
+SYNTAX: void scabinaryreset(void);
+
+DESCRIPTION: 
+RETURN VALUE: No return values.
+END DESCRIPTION **********************************************************/
+nodebug void scabinaryreset(void)
+{
+    scaBinary = 0;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+scamodemstat                 <SCC232.LIB>
+
+Returns the status of the modem.
+
+SYNTAX: int scamodemstat(void);
+
+DESCRIPTION: 
+RETURN VALUE: Returns 1 if the modem is in command mode.
+Returns 0 if the modem is in data mode (i.e. open to communication).
+END DESCRIPTION **********************************************************/
+nodebug int scamodemstat(void)
+{
+    return (scaCmdOrData);
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+scamodemset                  <SCC232.LIB>
+
+Returns information about modem selection.
+
+SYNTAX: int scamodemset(void);
+
+DESCRIPTION: 
+RETURN VALUE: Returns 1 if the modem option is selected.
+Returns 0 if the modem option is not selected.
+END DESCRIPTION **********************************************************/
+nodebug int scamodemset(void)
+{
+    return (scaUseModem);
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+Dsca_sendprompt              <SCC232.LIB>
+
+Send 'CR' 'LINEFEED' '>' to the SCC channel A.
+
+SYNTAX: void Dscasend_prompt(void);
+
+DESCRIPTION: Send a 'CR','LINEFEED' and '>' to the SCC channel A. Does not check for
+available space in the transmit buffer.
+
+RETURN VALUE: No return values.
+END DESCRIPTION **********************************************************/
+nodebug void Dscasend_prompt(void)
+{
+    static char prompt[4] =
+            {
+                ENTER, LINEFEED, '>', '\0'
+            };
+    Dwrite_sca(prompt, 3);
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+Dwrite_sca                   <SCC232.LIB>
+
+Write a character data array of lenght count to the transmit buffer.
+
+SYNTAX: int Dwrite_sca(char *buf, int count);
+
+DESCRIPTION: buf is the pointer to a character array.
+count is the numbers of characters to send.
+The transmit interrupt is automatically turned on if off.
+
+RETURN VALUE: Returns a 1 if array is succesfully copied. Returns 0 if there is no space
+in the transmit buffer for count number of characters.
+END DESCRIPTION **********************************************************/
+nodebug int Dwrite_sca(char *buf, int count)
+{
+    char var;
+    int  dum_tail, dum_head;
+    int  i;
+
+    if (!count)
+        return 1;            // nothing to write, return with 1
+
+    if ((sca_tbufcnt + count) >= sca_tx_size)
+        return 0;            // no space
+
+    dum_head = sca_tx_head;
+    i = 0;
+    do
+    {
+        *(sca_write_buf + dum_head++) = *(buf + i++);
+        if (dum_head == sca_tx_size)
+            dum_head = 0;
+    } while (i < count);
+    DI();           // disable interrupt, 5-3-94
+    if (sca_tx_tail == sca_tx_head)
+    {
+        // 5-3-94 intoff(&var);        // turn off interrupt
+        sca_tx_head = dum_head;
+        outport(SCCCA, 1);
+        outport(SCCCA, scca_wreg1 = scca_wreg1 | 2); // transmit interrupt on
+        // 5-3-94 doint();
+        outport(SCCCA, 0);
+                             // have to check the transmit buffer since device is not double buffered
+        if (inport(SCCCA) & '\B00000100')
+        {
+            EI();           // enable interrupt, 5-3-94 
+            sca_tbufcnt = count - 1;
+            dum_tail = sca_tx_tail++;
+            if (sca_tx_tail == sca_tx_size) 
+                sca_tx_tail = 0;
+            // 5-3-94 inton(&var);
+            outport(SCCDA, *(sca_write_buf + dum_tail)); // send first char out
+        }
+        else                 // if TX buffer is not empty
+        {
+            sca_tbufcnt = count;
+            EI();           // enable interrupt, 5-3-94 inton(&var);
+        }
+    }
+    else                     // if still transmitting
+    {
+        // 5-3-94 intoff(&var);
+        sca_tx_head = dum_head;
+        sca_tbufcnt = sca_tbufcnt + count;
+        EI();               // 5-3-94 inton(&var);
+    }
+    return 1;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+Dread_sca                    <SCC232.LIB>
+
+Read the serial receive buffer for stream with specified terminated
+character.
+
+SYNTAX: int Dread_sca(char *buf, char terminate);
+
+DESCRIPTION: buf is a pointer to a user defined character array.
+terminate is the terminating character of the stream. The terminate
+character in the stream is replaced with a '\0'.  If the modem option
+is selected with Dinit_sca(...), the receive stream is
+automatically parsed for modem messages. Modem messages are automatically
+processed and the serial service routines are automatically tagged. Note
+that modem messages are terminated with 'CR'.
+
+RETURN VALUE: 1, if a stream is found a copied to buf. Returns 0 if no stream found
+or if modem option is selected and stream matched a modem message.
+END DESCRIPTION **********************************************************/
+nodebug int Dread_sca(char *buf, char terminate)
+{
+    int i;
+    int dum_head, dum_tail;
+
+    dum_head = sca_rx_head;
+    dum_tail = sca_rx_tail;
+    i = 0;
+
+    if (dum_head == dum_tail)
+        return 0;            // nothing in buffer
+    else
+    {
+        do
+        {
+            *(buf + i) = *(sca_read_buf + dum_tail++);
+            if (dum_tail == sca_rx_size)
+                dum_tail = 0;
+            if (*(buf + i++) == terminate)
+            {
+                *(buf + i - 1) = '\0';
+                sca_rx_tail = dum_tail;
+                if (sca_CRTS_ENB)
+                {
+                    sca_rbufcnt = sca_rbufcnt - i;
+                    if (! sca_CTS_ON)
+                    {
+                        if (sca_rbufcnt <= sca_20rbuf)
+                        {
+                            scca_wreg5 = scca_wreg5 | 2;
+                            outport(SCCCA, 5);
+                            outport(SCCCA, scca_wreg5);
+                            sca_CTS_ON = 1;
+                        }
+                    }
+                }
+                if (scaUseModem)
+                {            // if modem is used, parsed for modem message
+                    if (Dscamodem_chk(buf) == -1)
+                        return 1;
+                    return 0;
+                }
+                return 1;
+            }
+        } while (dum_tail != dum_head);
+        return 0;
+    }
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+Dwrite_sca1ch                <SCC232.LIB>
+
+Write a character data to the transmit buffer.
+
+SYNTAX: Dwrite_sca1ch(char data);
+
+DESCRIPTION: data is written to the transmit buffer.
+The transmit interrupt is turned on if off.
+
+RETURN VALUE: 1, if data is succesfully written to the transmit buffer. Returns 0 if
+there is no space in the transmit buffer to write the data.
+END DESCRIPTION **********************************************************/
+nodebug int Dwrite_sca1ch(char data)
+{
+    static char var;
+    int dum_tail, dum_head;
+
+    if ((sca_tbufcnt + 1) >= sca_tx_size)
+        return 0;
+
+    dum_head = sca_tx_head;
+    *(sca_write_buf + dum_head++) = data;
+    if (dum_head == sca_tx_size)
+        dum_head = 0;
+    DI();                   // disable interrupt, 5-3-94
+    if (sca_tx_tail == sca_tx_head)
+    {
+        // 5-3-94 intoff(&var);        // disable interrupts if on
+        sca_tx_head = dum_head;
+        outport(SCCCA, 0x1); // enable transmitter interrupts
+        outport(SCCCA, scca_wreg1 = scca_wreg1 | 2);
+        // 5-3-94 doint();
+                             //  has to check if tx buffer is empty
+        outport(SCCCA, 0);   // read register 0
+        if (inport(SCCCA) & '\B00000100')
+        {
+            EI();           // enable interrupt, 5-3-94 
+            sca_tbufcnt = 0;
+            dum_tail = sca_tx_tail++;
+            if (sca_tx_tail == sca_tx_size)
+                sca_tx_tail = 0;
+            // 5-3-94 inton(&var);
+            outport(SCCDA, *(sca_write_buf + dum_tail));
+                             // send first character
+        }
+        else
+        {
+            sca_tbufcnt = 1;
+            EI();           // enable interrupt, 5-3-94 inton(&var);
+        }
+    }
+    else
+    {
+        // 5-3-94 intoff(&var);
+        sca_tx_head = dum_head;
+        sca_tbufcnt++;
+        EI();               // enable interrupt, 5-3-94 inton(&var);
+    }
+    return 1;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+Dread_sca1ch                 <SCC232.LIB>
+
+Read the serial receive buffer for a character.
+
+SYNTAX: int Dread_sca1ch(char *data);
+
+DESCRIPTION: data is pointer to a character.
+
+RETURN VALUE: 1, if a byte is copied to *data. Returns 0 if there is nothing in
+the receive buffer.
+END DESCRIPTION **********************************************************/
+nodebug int Dread_sca1ch(char *data)
+{
+    int dum_head, dum_tail;
+
+    dum_head = sca_rx_head;
+    dum_tail = sca_rx_tail;
+
+    if (dum_head == dum_tail)
+        return 0;
+    else
+    {
+        *data = *(sca_read_buf + sca_rx_tail++);
+        if (sca_rx_tail == sca_rx_size) 
+            sca_rx_tail = 0;
+        if (sca_CRTS_ENB)
+        {
+            sca_rbufcnt--;
+            if (!sca_CTS_ON)
+            {
+                if (sca_rbufcnt <= sca_20rbuf)
+                {
+                    scca_wreg5 = scca_wreg5 | 2;
+                    outport(SCCCA, 0x05);
+                    outport(SCCCA, scca_wreg5);
+                    sca_CTS_ON = 1;
+                }
+            }
+        }
+        return 1;
+    }
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+Dscamodem_chk                <SCC232.LIB>
+
+Check 'CR' terminated stream for modem messages. The serial service
+routines are tagged to reflect the modem condition ( if selected).
+
+SYNTAX: int Dscamodem_chk(char *buf);
+
+DESCRIPTION: buf points to a 'CR' terminated stream that was copied from the receive buffer.
+
+RETURN VALUE: Returns -1 if no match to any modem messages. Return 0 if stream was processed
+as a modem message.
+END DESCRIPTION **********************************************************/
+nodebug int Dscamodem_chk(char *buf)
+{
+    int which_one;
+    int i;
+
+    which_one = Dget_modem_command(buf);
+    switch (which_one)
+    {
+        case 1: 
+            if (!scaCmdOrData)
+                return 1;
+            break;
+        case 2:              // Dwrite_sca("ATA",3);
+                             // Dwrite_sca1ch(ENTER);
+            break;           // manually receive call if ring is detected.
+        case 9:
+            Ddelay_5sec();
+            Ddelay_5sec();
+            Dreset_scatbuf();
+            Dreset_scarbuf();
+            scaCmdOrData = 0;
+            Dscasend_prompt();
+            Dwrite_sca("Welcome to the Remote System", 28);
+            Dscasend_prompt();
+            break;
+                              // connect at 2400 bps
+                              // switch to data mode
+        case 0:
+            break;            // ok from command to modem
+        case 3:
+            scaCmdOrData = 1; // no carrier detect
+            Ddelay_5sec();    // wait and reset buffers
+            Dreset_scatbuf();
+            Dreset_scarbuf();
+            break;
+        case 4:
+            break;            // command error
+        case 5:
+            Ddelay_5sec();
+            Ddelay_5sec();
+            Dreset_scatbuf();
+            Dreset_scarbuf();
+            scaCmdOrData = 0;
+            Dscasend_prompt();
+            Dwrite_sca("Welcome to the Remote System", 28);
+            Dscasend_prompt();
+            break;            // switch to data mode
+
+        case 6:               // no dial tone
+        case 7:               // busy
+        case 8:               // no answer
+        case 10:              // just line feed
+        default:
+            break;
+    }
+    return 0;
+}
+
+/*** BeginHeader Dxmodem_scadown, Dxmodem_scaup */
+
+int Dxmodem_scadown(char *mydata, int n_blocks);
+int Dxmodem_scaup(unsigned long baseAddress, int *no_of_pages, int dest,
+    int (*data_parsing)() );
+
+/*** EndHeader */
+extern char scaBinary;              // 12-15-94
+
+/* START FUNCTION DESCRIPTION ********************************************
+Dxmodem_scadown              <SCC232.LIB>
+
+Send blocks of data to a PC or dumb terminal with xmodem file transfer
+protocol.
+
+SYNTAX: int Dxmodem_scadown(char *mydata, int n_blocks)
+
+DESCRIPTION: mydata is pointer to a character array. n_blocks is the number of 128 byte
+block that is the sized of mydata to be sent down.
+
+RETURN VALUE: Returns 0 if there is a timeout during transfer.
+Returns 1 if the transfer was successful.
+Returns 2 if the transfer was cancelled.
+END DESCRIPTION **********************************************************/
+nodebug int Dxmodem_scadown(char *mydata, int n_blocks)
+{
+    int  i;
+    int  timeout;
+    unsigned char nth_block, not_nth;
+    unsigned int testcrc;
+    int  checksum;
+    int  ercode;
+    char cdata;
+    int  iblock;
+
+    nth_block = 1;
+    not_nth   = ~nth_block;
+    scaBinary = 1;
+    timeout   = 0;
+
+    Dwrite_sca("Ready to Download File", 22);
+    Dscasend_prompt();
+    Dwrite_sca("Do an xmodem receive", 20);
+    Dscasend_prompt();
+    while (((ercode = Dread_sca1ch(&cdata)) == 0) ||
+    ((cdata != XCRC) && (cdata != ESC) && (cdata != CAN)))
+    {
+        Ddelay_1sec();
+        if (++timeout >= 30)
+        {
+            scaBinary = 0;
+            Ddelay_5sec();
+            return 0;
+        }
+    }
+    if (cdata == CAN || cdata == ESC)// monitor for a quick ABORT
+    {
+        scaBinary = 0;
+        Ddelay_5sec();
+        return 2;
+    }
+    else
+        timeout = 0;
+    do
+    {
+        iblock = (nth_block - 1) * 128;
+        Dwrite_sca1ch(SOH);
+        Dwrite_sca1ch(nth_block);
+        Dwrite_sca1ch(not_nth);
+        Dwrite_sca(mydata + iblock, 128);
+        testcrc = getcrc(mydata + iblock, 128, 0);
+        cdata   = (testcrc >> 8) & 0xff;
+        Dwrite_sca1ch(cdata);
+        cdata   = testcrc & 0xff;
+        Dwrite_sca1ch(cdata);
+        timeout = 0;
+        while (((ercode = Dread_sca1ch(&cdata)) == 0) ||
+        ((cdata != XCRC) && (cdata != NAK) && (cdata!=ACK) && (cdata!=CAN)))
+        {
+            Ddelay_1tick();
+            if (++timeout > 200)
+            {
+                scaBinary = 0;
+                Ddelay_5sec();
+                return 0;
+            }
+        }
+        if (cdata == CAN)
+        {
+            scaBinary = 0;
+            Ddelay_5sec();
+            return 2;
+        }
+        else if (cdata == ACK)
+        {
+            if (++nth_block <= n_blocks)
+                not_nth = ~nth_block;
+            else
+            {
+                Dwrite_sca1ch(EOT);
+                timeout = 0;
+                while (((ercode = Dread_sca1ch(&cdata)) == 0) || cdata!=ACK)
+                {
+                    Ddelay_1tick();
+                    if (++timeout > 200)
+                    {
+                        scaBinary = 0;
+                        Ddelay_5sec();
+                        return 0;
+                    }
+                };
+                // wait for final acknowledge for end of transfer
+                // time out if necessary
+                scaBinary = 0;
+                Ddelay_5sec();
+                return 1;    // return a 1 for succesfull transfer
+            }
+        }
+    } while (1);
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+Dxmodem_scaup                <SCC232.LIB>
+
+Upload data to the board from a PC using the xmodem file transfer protocol.
+
+SYNTAX: int Dxmodem_scaup(unsigned long baseAddress, int *no_of_pages, int dest,
+    int (*data_parsing)() );
+
+DESCRIPTION: baseAddress is the physical ram address to write the uploaded data to.
+*no_of_pages is the number of pages of the uploaded file.
+dest is an additional parameter to locate the uploaded file.
+*data_parsing is the address of the function to parse the uploaded file into
+memory.
+The parsing function prototype should be:
+int parse_function(char *mydata,int blockcount,unsigned long baseAddress,
+                  int dest);
+          where mydata is the pointer to a 128 byte data.
+                        blockcount is the nth block.
+                        baseAddress is the base address of the uploaded file.
+                        dest is added parameter to locate the data.
+          The parser function should return a 1 for successful copy or 0 if
+          there is any problem.
+
+RETURN VALUE: Returns 0 if there is a timeout during transfer.
+Returns 1 if the transfer was successful.
+Returns 2 if the transfer was cancelled.
+
+END DESCRIPTION **********************************************************/
+
+nodebug int Dxmodem_scaup(unsigned long baseAddress, int *no_of_pages, 
+            int dest, int (*data_parsing)() )
+{
+    int  i;
+    unsigned char nth_block, not_nth;
+    unsigned int testcrc;
+    unsigned int myblockcount;
+    int  checksum;
+    int  ercode;
+    int  timeout;
+    char cdata;
+    char locrc, hicrc, mylocrc, myhicrc;
+    char mydata[130];
+
+    myblockcount = 1;
+    scaBinary    = 1;
+    timeout      = 0;
+
+    Dwrite_sca("Ready to receive", 16);
+    Dscasend_prompt();
+    Dwrite_sca("Xmodem File Up", 14);
+    Dscasend_prompt();
+    do
+    {
+        Dwrite_sca1ch(XCRC);
+        Ddelay_1sec();
+        if (++timeout >= 30)
+        {
+            scaBinary = 0;
+            Ddelay_5sec();
+            return 0;
+        }
+    } while (((ercode = Dread_sca1ch(&cdata)) == 0) || ((cdata != SOH) &&
+    (cdata != ESC) && (cdata != CAN)));
+
+    if (cdata == CAN || cdata == ESC) // somehow cancelled
+    {
+        scaBinary = 0;
+        Ddelay_5sec();
+        return 2;
+    }
+    do
+    {
+        timeout = 0;
+        while (++timeout < 100 && (ercode = Dread_sca1ch(&cdata) == 0))
+            Ddelay_1tick();
+        
+        if (timeout >= 100)
+        {
+            scaBinary = 0;
+            Ddelay_5sec();
+            return 0;
+        }
+        else
+            nth_block = cdata;
+        timeout = 0;
+        while (++timeout < 100 && (ercode = Dread_sca1ch(&cdata) == 0))
+            Ddelay_1tick();
+        
+        if (timeout >= 100)
+        {
+            scaBinary = 0;
+            Ddelay_5sec();
+            return 0;
+        }
+        else
+            not_nth = cdata;
+        checksum = 0;
+        timeout = 0;
+        for (i = 0; i < 128; i++)
+        {
+            while (++timeout < 100 && (ercode = Dread_sca1ch(&cdata)) == 0)
+                Ddelay_1tick();
+            
+            if (timeout >= 100)
+            {
+                scaBinary = 0;
+                Ddelay_5sec();
+                return 0;
+            }
+            else
+            {
+                timeout = 0;
+                mydata[i] = cdata;
+            }
+        }
+        testcrc = getcrc(mydata, 128, 0);
+        myhicrc = (testcrc >> 8) & 0xff;
+        mylocrc = testcrc & 0xff;
+        timeout = 0;
+        while (++timeout <= 100 && (ercode = Dread_sca1ch(&cdata) == 0))
+            Ddelay_1tick();
+        
+        if (timeout >= 100)
+        {
+            scaBinary = 0;
+            Ddelay_5sec();
+            return 0;
+        }
+        else
+            hicrc = cdata;
+        timeout = 0;
+        while (++timeout <= 100 && (ercode = Dread_sca1ch(&cdata) == 0))
+            Ddelay_1tick();
+        
+        if (timeout >= 100)
+        {
+            scaBinary = 0;
+            Ddelay_5sec();
+            return 0;
+        }
+        else
+        {
+            if (cdata == mylocrc && hicrc == myhicrc)
+            {
+                if ((*data_parsing)(mydata, myblockcount, baseAddress, dest) 
+                == 1)
+                {
+                    Dwrite_sca1ch(ACK);
+                    ++myblockcount;
+                }
+                else
+                    Dwrite_sca1ch(XCRC); // else Dwrite_sca1ch(NAK);
+            }
+            else
+                Dwrite_sca1ch(XCRC);     // else Dwrite_sca1ch(NAK);
+        }
+        timeout = 0;
+        while (((ercode = Dread_sca1ch(&cdata)) == 0) ||
+        ((cdata != EOT) && (cdata != SOH) && (cdata != CAN)))
+        {
+            Ddelay_1tick();
+            if (++timeout > 100)         // time out after 2-3 secs
+            {
+                scaBinary = 0;
+                Ddelay_5sec();
+                return 0;
+            }
+        }
+        if (cdata == EOT)
+        {
+            Dwrite_sca1ch(ACK);
+            scaBinary = 0;
+            *no_of_pages = myblockcount / 32;
+            Ddelay_5sec();
+            return 1;        // return a 1 for successfull transfer
+        }
+        if (cdata == CAN)
+        {
+            scaBinary = 0;
+            Ddelay_5sec();
+            return 2;
+        }
+    } while (1);
+}
+
+/*** Beginheader Dwrite_scb, Dread_scb, Dwrite_scb1ch, Dread_scb1ch,
+                   Dscbsend_prompt, Dscbmodem_chk,
+                   scbmodemstat, scbmodemset, scbbinaryset, scbbinaryreset */
+
+int  Dwrite_scb(char *buf, int count);
+int  Dread_scb(char *buf, char terminate);
+int  Dwrite_scb1ch(char data);
+int  Dread_scb1ch(char *data);
+void Dscbsend_prompt(void);
+int  Dscbmodem_chk(char *buf);
+int  scbmodemstat(void);
+int  scbmodemset(void);
+void scbbinaryset(void);
+void scbbinaryreset(void);
+
+/*** Endheader */
+// 12-15-94
+extern char *scb_write_buf;  // static pointer to SCCCB transmit buffer
+extern char *scb_read_buf;   // static pointer to SCCCB receive buffer
+extern shared int scb_rx_head;      // head pointer to receive buffer
+extern shared int scb_rx_tail;      // tail pointer to receive buffer
+extern shared int scb_tx_head;      // head pointer to transmit buffer
+extern shared int scb_tx_tail;      // tail pointer to transmit buffer
+extern int scb_rx_size;      // static storage of receive buffer size
+extern int scb_tx_size;      // static storage of transmit buffer size
+
+extern shared int scb_80rbuf;       // 80% of receive buffer size
+extern shared int scb_20rbuf;       // 20% of receive buffer size
+extern shared int scb_rbufcnt;      // count of characters in receive buffer
+extern shared int scb_tbufcnt;      // count of characters in transmit buffer
+extern char scb_CRTS_ENB;    // CTS_RTS control line enable
+extern char scb_CTS_ON;      // track CTS_ON
+extern char scb_echo;        // echo mode or not
+extern char scbBinary;       // 1 if serial receive is in binary mode.
+                             // 0 (default) if serial receive is in text mode.
+extern char scbCmdOrData;    // modem in command mode or in data mode
+extern char scbUseModem;     // use modem or not
+
+extern char sccb_wreg0;      // state of scca registers
+extern char sccb_wreg1;
+extern char sccb_wreg2;
+extern char sccb_wreg3;
+extern char sccb_wreg4;
+extern char sccb_wreg5;
+extern char sccb_wreg6;
+extern char sccb_wreg7;
+extern char sccb_wreg8;
+extern char sccb_wreg9;
+extern char sccb_wreg10;
+extern char sccb_wreg11;
+extern char sccb_wreg12;
+extern char sccb_wreg13;
+extern char sccb_wreg14;
+extern char sccb_wreg15;
+
+/* START FUNCTION DESCRIPTION ********************************************
+scbbinaryset                 <SCC232.LIB>
+
+Set the serial communication mode to binary. This means that all receive
+data are stuffed directly to the receive buffer.
+
+SYNTAX: void scbbinaryset(void);
+
+DESCRIPTION: 
+RETURN VALUE: No return values.
+END DESCRIPTION **********************************************************/
+nodebug void scbbinaryset(void)
+{
+    scbBinary = 1;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+scbbinaryreset               <SCC232.LIB>
+
+Reset the serial communication to regular ASCII mode. This means that the
+backspace character is tracked to adjust the receive buffer head index.
+
+SYNTAX: void scbbinaryreset(void);
+
+DESCRIPTION: 
+RETURN VALUE: No return values.
+END DESCRIPTION **********************************************************/
+nodebug void scbbinaryreset(void)
+{
+    scbBinary = 0;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+scbmodemstat                 <SCC232.LIB>
+
+Returns the status of the modem.
+
+SYNTAX: int scbmodemstat(void);
+
+DESCRIPTION: 
+RETURN VALUE: Returns 1 if the modem is in command mode.
+Returns 0 if the modem is in data mode (i.e. open to communication).
+END DESCRIPTION **********************************************************/
+nodebug int scbmodemstat(void)
+{
+    return (scbCmdOrData);
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+scbmodemset                  <SCC232.LIB>
+
+Returns information about modem selection.
+
+SYNTAX: int scbmodemset(void);
+
+DESCRIPTION: 
+RETURN VALUE: Returns 1 if the modem option is selected.
+Returns 0 if the modem option is not selected.
+END DESCRIPTION **********************************************************/
+nodebug int scbmodemset(void)
+{
+    return (scbUseModem);
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+Dscb_sendprompt              <SCC232.LIB>
+
+Send 'CR' 'LINEFEED' '>' to the SCC channel B.
+
+SYNTAX: void Dscbsend_prompt(void);
+
+DESCRIPTION: Send a 'CR','LINEFEED' and '>' to the SCC channel B. Does not check for
+available space in the transmit buffer.
+
+RETURN VALUE: No return values.
+END DESCRIPTION **********************************************************/
+nodebug void Dscbsend_prompt(void)
+{
+    static char prompt[4] =
+            {
+                ENTER, LINEFEED, '>', '\0'
+            };
+    Dwrite_scb(prompt, 3);
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+Dwrite_scb                   <SCC232.LIB>
+
+Write a character data array of lenght count to the transmit buffer.
+
+SYNTAX: int Dwrite_scb(char *buf, int count);
+
+DESCRIPTION: buf is the pointer to a character array.
+count is the numbers of characters to send.
+The transmit interrupt is automatically turned on if off.
+
+RETURN VALUE: Returns a 1 if array is succesfully copied. Returns 0 if there is no space
+in the transmit buffer for count number of characters.
+END DESCRIPTION **********************************************************/
+nodebug int Dwrite_scb(char *buf, int count)
+{
+    char var;
+    int  dum_tail, dum_head;
+    int  i;
+
+    if (!count)
+        return 1;            // nothing to write, return with 1
+    if ((scb_tbufcnt + count) >= scb_tx_size)
+        return 0;            // no space
+
+    dum_head = scb_tx_head;
+    i = 0;
+    do
+    {
+        *(scb_write_buf + dum_head++) = *(buf + i++);
+        if (dum_head == scb_tx_size)
+            dum_head = 0;
+    } while (i < count);
+    DI();                   // disable interrupt, 5-3-94
+    if (scb_tx_tail == scb_tx_head)
+    {
+        // 5-3-94 intoff(&var);        // turn off interrupt
+        scb_tx_head = dum_head;
+        outport(SCCCB, 1);
+        outport(SCCCB, sccb_wreg1 = sccb_wreg1 | 2); // transmit interrupt on
+        // 5-3-94 doint();
+        outport(SCCCB, 0);
+        
+        // Check xmit buffer, since device is not double buffered.
+        if (inport(SCCCB) & '\B00000100')
+        {
+            EI();               // enable interrupt, 5-3-94       
+            scb_tbufcnt = count - 1;
+            dum_tail = scb_tx_tail++;
+            if (scb_tx_tail == scb_tx_size)
+                scb_tx_tail = 0;
+            // 5-3-94 inton(&var);
+            outport(SCCDB, *(scb_write_buf + dum_tail)); // send first char out
+        }
+        else                 // if TX buffer is not empty
+        {
+            scb_tbufcnt = count;
+            EI();           // enable interrupt, 5-3-94 inton(&var);
+        }
+    }
+    else                     // if still transmitting
+    {
+        // 5-3-94 intoff(&var);
+        scb_tx_head = dum_head;
+        scb_tbufcnt = scb_tbufcnt + count;
+        EI();               // enable interrupt, 5-3-94 inton(&var);
+    }
+    return 1;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+Dread_scb                    <SCC232.LIB>
+
+Read serial receive buffer for stream with specified terminated character.
+
+SYNTAX: int Dread_scb(char *buf, char terminate);
+
+DESCRIPTION: buf is a pointer to a user defined character array.
+terminate is the terminating character of the stream. The terminate character
+in the stream is replaced with a '\0'.
+If the modem option is selected with Dinit_scb(...), the receive stream is
+automatically parsed for modem messages. Modem messages are automatically
+processed and the serial service routines are automatically tagged. Note that
+modem messages are terminated with 'CR'.
+
+RETURN VALUE: Returns a 1 if a stream is found a copied to buf. Returns 0 if no stream found
+or if modem option is selected and stream matched a modem message.
+END DESCRIPTION **********************************************************/
+nodebug int Dread_scb(char *buf, char terminate)
+{
+    int i;
+    int dum_head, dum_tail;
+
+    dum_head = scb_rx_head;
+    dum_tail = scb_rx_tail;
+    i = 0;
+
+    if (dum_head == dum_tail)
+        return 0;            // nothing in buffer
+    else
+    {
+        do
+        {
+            *(buf + i) = *(scb_read_buf + dum_tail++);
+            if (dum_tail == scb_rx_size)
+                dum_tail = 0;
+            if (*(buf + i++) == terminate)
+            {
+                *(buf + i - 1) = '\0';
+                scb_rx_tail = dum_tail;
+                if (scb_CRTS_ENB)
+                {
+                    scb_rbufcnt = scb_rbufcnt - i;
+                    if (!scb_CTS_ON)
+                    {
+                        if (scb_rbufcnt <= scb_20rbuf)
+                        {
+                            sccb_wreg5 = sccb_wreg5 | 2;
+                            outport(SCCCB, 5);
+                            outport(SCCCB, sccb_wreg5);
+                            scb_CTS_ON = 1;
+                        }
+                    }
+                }
+                if (scbUseModem)
+                {   // if modem is used, parsed for modem message
+                    if (Dscbmodem_chk(buf) == -1)
+                        return 1;
+                    return 0;
+                }
+                return 1;
+            }
+        } while (dum_tail != dum_head);
+        return 0;
+    }
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+Dwrite_scb1ch                <SCC232.LIB>
+
+Write a character data to the transmit buffer.
+
+SYNTAX: Dwrite_scb1ch(char data);
+
+DESCRIPTION: data is written to the transmit buffer.
+The transmit interrupt is turned on if off.
+
+RETURN VALUE: Returns 1 if data is succesfully written to the transmit buffer. Returns 0 if
+there is no space in the transmit buffer to write the data.
+END DESCRIPTION **********************************************************/
+nodebug int Dwrite_scb1ch(char data)
+{
+    static char var;
+    int dum_tail, dum_head;
+
+    if ((scb_tbufcnt + 1) >= scb_tx_size)
+        return 0;
+    dum_head = scb_tx_head;
+    *(scb_write_buf + dum_head++) = data;
+    if (dum_head == scb_tx_size)
+        dum_head = 0;
+    DI();                   // disable interrupt, 5-3-94
+    if (scb_tx_tail == scb_tx_head)
+    {
+        // 5-3-94 intoff(&var);        // disable interrupts if on
+        scb_tx_head = dum_head;
+        outport(SCCCB, 0x1); // enable transmitter interrupts
+        outport(SCCCB, sccb_wreg1 = sccb_wreg1 | 2);
+        // 5-3-94 doint();
+                             //  has to check if tx buffer is empty
+        outport(SCCCB, 0);   // read register 0
+        if (inport(SCCCB) & '\B00000100')
+        {
+            EI();           // enable interrupt, 5-3-94
+            scb_tbufcnt = 0;
+            dum_tail = scb_tx_tail++;
+            if (scb_tx_tail == scb_tx_size)
+                scb_tx_tail = 0;
+            // 5-3-94 inton(&var);
+            outport(SCCDB, *(scb_write_buf + dum_tail));
+                             // send first character
+        }
+        else
+        {
+            scb_tbufcnt = 1;
+            EI();           // 5-3-94 inton(&var);
+        }
+    }
+    else
+    {
+        // 5-3-94 intoff(&var);
+        scb_tx_head = dum_head;
+        scb_tbufcnt++;
+        EI();               // enable interrupt, 5-3-94 inton(&var);
+    }
+    return 1;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+Dread_scb1ch                 <SCC232.LIB>
+
+Read the serial receive buffer for a character.
+
+SYNTAX: int Dread_scb1ch(char *data);
+
+DESCRIPTION: data is pointer to a character.
+
+RETURN VALUE: Returns a 1 if a byte is copied to *data. Returns 0 if there is nothing in
+the receive buffer.
+END DESCRIPTION **********************************************************/
+nodebug int Dread_scb1ch(char *data)
+{
+    int dum_head, dum_tail;
+
+    dum_head = scb_rx_head;
+    dum_tail = scb_rx_tail;
+
+    if (dum_head == dum_tail)
+        return 0;
+    else
+    {
+        *data = *(scb_read_buf + scb_rx_tail++);
+        if (scb_rx_tail == scb_rx_size)
+            scb_rx_tail = 0;
+        if (scb_CRTS_ENB)
+        {
+            scb_rbufcnt--;
+            if (!scb_CTS_ON)
+            {
+                if (scb_rbufcnt <= scb_20rbuf)
+                {
+                    sccb_wreg5 = sccb_wreg5 | 2;
+                    outport(SCCCB, 0x05);
+                    outport(SCCCB, sccb_wreg5);
+                    scb_CTS_ON = 1;
+                }
+            }
+        }
+        return 1;
+    }
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+Dscbmodem_chk                <SCC232.LIB>
+
+Check 'CR' terminated stream for modem messages. The serial service routines
+are tagged to reflect the modem condition ( if selected).
+
+SYNTAX: int Dscbmodem_chk(char *buf);
+
+DESCRIPTION: buf points to a 'CR' terminated stream that was copied from the receive buffer.
+
+RETURN VALUE: Returns -1 if no match to any modem messages. Return 0 if stream was processed
+as a modem message.
+END DESCRIPTION **********************************************************/
+nodebug int Dscbmodem_chk(char *buf)
+{
+    int which_one;
+    int i;
+
+    which_one = Dget_modem_command(buf);
+    switch (which_one)
+    {
+        case 1: 
+            if (! scbCmdOrData)
+                return 1;
+            break;
+        case 2:              // Dwrite_scb("ATA",3);
+                             // Dwrite_scb1ch(ENTER);
+            break;           // manually receive call if ring is detected.
+        case 9:
+            Ddelay_5sec();
+            Ddelay_5sec();
+            Dreset_scbtbuf();
+            Dreset_scbrbuf();
+            scbCmdOrData = 0;
+            Dscbsend_prompt();
+            Dwrite_scb("Welcome to the Remote System", 28);
+            Dscbsend_prompt();
+            break;
+                             // connect at 2400 bps
+                             // switch to data mode
+        case 0:
+            break;           // ok from command to modem
+        case 3:
+            scbCmdOrData = 1; // no carrier detect
+            Ddelay_5sec();    // wait and reset buffers
+            Dreset_scbtbuf();
+            Dreset_scbrbuf();
+            break;
+        case 4:
+            break;            // command error
+        case 5:
+            Ddelay_5sec();
+            Ddelay_5sec();
+            Dreset_scbtbuf();
+            Dreset_scbrbuf();
+            scbCmdOrData = 0;
+            Dscbsend_prompt();
+            Dwrite_scb("Welcome to the Remote System", 28);
+            Dscbsend_prompt();
+            break;           // switch to data mode
+
+        case 6:              // no dial tone
+        case 7:              // busy
+        case 8:              // no answer
+        case 10:             // just line feed
+        default:
+            break;
+    }
+    return 0;
+}
+
+/*** BeginHeader Dxmodem_scbdown, Dxmodem_scbup */
+
+int Dxmodem_scbdown(char *mydata, int n_blocks);
+int Dxmodem_scbup(unsigned long baseAddress, int *no_of_pages, int dest,
+    int (*data_parsing)() );
+
+/*** EndHeader */
+extern char scbBinary;              // 12-15-94
+
+/* START FUNCTION DESCRIPTION ********************************************
+Dxmodem_scbdown              <SCC232.LIB>
+
+Send blocks of data to a PC or dumb terminal with xmodem file transfer
+protocol.
+
+SYNTAX: int Dxmodem_scbdown(char *mydata, int n_blocks)
+
+DESCRIPTION: mydata is pointer to a character array. n_blocks is the number of 128 byte
+block that is the sized of mydata to be sent down.
+
+RETURN VALUE: Returns 0 if there is a timeout during transfer.
+Returns 1 if the transfer was successful.
+Returns 2 if the transfer was cancelled.
+END DESCRIPTION **********************************************************/
+nodebug int Dxmodem_scbdown(char *mydata, int n_blocks)
+{
+    int  i;
+    int  timeout;
+    unsigned char nth_block, not_nth;
+    unsigned int testcrc;
+    int  checksum;
+    int  ercode;
+    char cdata;
+    int  iblock;
+
+    nth_block = 1;
+    not_nth   = ~nth_block;
+    scbBinary = 1;
+    timeout   = 0;
+
+    Dwrite_scb("Ready to Download File", 22);
+    Dscbsend_prompt();
+    Dwrite_scb("Do an xmodem receive", 20);
+    Dscbsend_prompt();
+    
+    while (((ercode = Dread_scb1ch(&cdata)) == 0) ||
+    ((cdata != XCRC) && (cdata != ESC) && (cdata != CAN)))
+    {
+        Ddelay_1sec();
+        if (++timeout >= 30)
+        {
+            scbBinary = 0;
+            Ddelay_5sec();
+            return 0;
+        }
+    }
+    if (cdata == CAN || cdata == ESC)// monitor for a quick ABORT
+    {
+        scbBinary = 0;
+        Ddelay_5sec();
+        return 2;
+    }
+    else
+        timeout = 0;
+    do
+    {
+        iblock = (nth_block - 1) * 128;
+        Dwrite_scb1ch(SOH);
+        Dwrite_scb1ch(nth_block);
+        Dwrite_scb1ch(not_nth);
+        Dwrite_scb(mydata + iblock, 128);
+        testcrc = getcrc(mydata + iblock, 128, 0);
+        cdata = (testcrc >> 8) & 0xff;
+        Dwrite_scb1ch(cdata);
+        cdata = testcrc & 0xff;
+        Dwrite_scb1ch(cdata);
+        timeout = 0;
+        while (((ercode = Dread_scb1ch(&cdata)) == 0) ||
+        ((cdata != XCRC) && (cdata != NAK) && (cdata!=ACK) && (cdata!=CAN)))
+        {
+            Ddelay_1tick();
+            if (++timeout > 200)
+            {
+                scbBinary = 0;
+                Ddelay_5sec();
+                return 0;
+            }
+        }
+        if (cdata == CAN)
+        {
+            scbBinary = 0;
+            Ddelay_5sec();
+            return 2;
+        }
+        else if (cdata == ACK)
+        {
+            if (++nth_block <= n_blocks)
+                not_nth = ~nth_block;
+            else
+            {
+                Dwrite_scb1ch(EOT);
+                timeout = 0;
+                while (((ercode = Dread_scb1ch(&cdata)) == 0) || cdata!=ACK)
+                {
+                    Ddelay_1tick();
+                    if (++timeout > 200)
+                    {
+                        scbBinary = 0;
+                        Ddelay_5sec();
+                        return 0;
+                    }
+                };
+                // wait for final acknowledge for end of transfer
+                // time out if necessary
+                scbBinary = 0;
+                Ddelay_5sec();
+                return 1;    // return 1 for succesfull transfer
+            }
+        }
+    } while (1);
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+Dxmodem_scbup                <SCC232.LIB>
+
+Upload data to the board from a PC using the xmodem file transfer protocol.
+
+SYNTAX: int Dxmodem_scbup(unsigned long baseAddress, int *no_of_pages, int dest,
+                                  int (* data_parsing)());
+
+DESCRIPTION: baseAddress is the physical ram address to write the uploaded data to.
+*no_of_pages is the number of pages of the uploaded file.
+dest is an additional parameter to locate the uploaded file.
+*data_parsing is the address of the function to parse the uploaded file into
+memory.
+The parsing function prototype should be:
+int parse_function(char *mydata,int blockcount,unsigned long baseAddress,
+                  int dest);
+          where mydata is the pointer to a 128 byte data.
+                        blockcount is the nth block.
+                        baseAddress is the base address of the uploaded file.
+                        dest is added parameter to locate the data.
+          The parser function should return a 1 for successful copy or 0 if
+          there is any problem.
+
+RETURN VALUE: Returns 0 if there is a timeout during transfer.
+Returns 1 if the transfer was successful.
+Returns 2 if the transfer was cancelled.
+
+END DESCRIPTION **********************************************************/
+nodebug int Dxmodem_scbup(unsigned long baseAddress, int *no_of_pages, 
+            int dest, int (*data_parsing)() )
+{
+    int  i;
+    unsigned char nth_block, not_nth;
+    unsigned int testcrc;
+    unsigned int myblockcount;
+    int  checksum;
+    int  ercode;
+    int  timeout;
+    char cdata;
+    char locrc, hicrc, mylocrc, myhicrc;
+    char mydata[130];
+
+    myblockcount = 1;
+    scbBinary = 1;
+    timeout = 0;
+    Dwrite_scb("Ready to receive", 16);
+    Dscbsend_prompt();
+    Dwrite_scb("Xmodem File Up", 14);
+    Dscbsend_prompt();
+    do
+    {
+        Dwrite_scb1ch(XCRC);
+        Ddelay_1sec();
+        if (++timeout >= 30)
+        {
+            scbBinary = 0;
+            Ddelay_5sec();
+            return 0;
+        }
+    } while (((ercode = Dread_scb1ch(&cdata)) == 0) ||
+    ((cdata != SOH) && (cdata != ESC) && (cdata != CAN)));
+
+    if (cdata == CAN || cdata == ESC) // somehow cancelled
+    {
+        scbBinary = 0;
+        Ddelay_5sec();
+        return 2;
+    }
+    do
+    {
+        timeout = 0;
+        while (++timeout < 100 && (ercode = Dread_scb1ch(&cdata) == 0))
+            Ddelay_1tick();
+
+        if (timeout >= 100)
+        {
+            scbBinary = 0;
+            Ddelay_5sec();
+            return 0;
+        }
+        else
+            nth_block = cdata;
+        timeout = 0;
+        while (++timeout < 100 && (ercode = Dread_scb1ch(&cdata) == 0))
+            Ddelay_1tick();
+
+        if (timeout >= 100)
+        {
+            scbBinary = 0;
+            Ddelay_5sec();
+            return 0;
+        }
+        else
+            not_nth = cdata;
+        checksum = 0;
+        timeout = 0;
+        for (i = 0; i < 128; i++)
+        {
+            while (++timeout < 100 && (ercode = Dread_scb1ch(&cdata)) == 0)
+                Ddelay_1tick();
+
+            if (timeout >= 100)
+            {
+                scbBinary = 0;
+                Ddelay_5sec();
+                return 0;
+            }
+            else
+            {
+                timeout = 0;
+                mydata[i] = cdata;
+            }
+        }
+        testcrc = getcrc(mydata, 128, 0);
+        myhicrc = (testcrc >> 8) & 0xff;
+        mylocrc = testcrc & 0xff;
+        timeout = 0;
+        while (++timeout <= 100 && (ercode = Dread_scb1ch(&cdata) == 0))
+            Ddelay_1tick();
+
+        if (timeout >= 100)
+        {
+            scbBinary = 0;
+            Ddelay_5sec();
+            return 0;
+        }
+        else
+            hicrc = cdata;
+        timeout = 0;
+        while (++timeout <= 100 && (ercode = Dread_scb1ch(&cdata) == 0))
+            Ddelay_1tick();
+
+        if (timeout >= 100)
+        {
+            scbBinary = 0;
+            Ddelay_5sec();
+            return 0;
+        }
+        else
+        {
+            if (cdata == mylocrc && hicrc == myhicrc)
+            {
+                if ((*data_parsing)(mydata, myblockcount, baseAddress, dest) 
+                == 1)
+                {
+                    Dwrite_scb1ch(ACK);
+                    ++myblockcount;
+                }
+                else
+                    Dwrite_scb1ch(XCRC); // else Dwrite_scb1ch(NAK);
+            }
+            else
+                Dwrite_scb1ch(XCRC); // else Dwrite_scb1ch(NAK);
+        }
+        timeout = 0;
+        while (((ercode = Dread_scb1ch(&cdata)) == 0) ||
+        ((cdata != EOT) && (cdata != SOH) && (cdata != CAN)))
+        {
+            Ddelay_1tick();
+            if (++timeout > 100)// time out after 2-3 secs
+            {
+                scbBinary = 0;
+                Ddelay_5sec();
+                return 0;
+            }
+        }
+        if (cdata == EOT)
+        {
+            Dwrite_scb1ch(ACK);
+            scbBinary = 0;
+            *no_of_pages = myblockcount / 32;
+            Ddelay_5sec();
+            return 1;        // return a 1 for successfull transfer
+        }
+        if (cdata == CAN)
+        {
+            scbBinary = 0;
+            Ddelay_5sec();
+            return 2;
+        }
+    } while (1);
+}
+

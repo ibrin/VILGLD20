@@ -1,0 +1,647 @@
+/*
+	pk23xx EZIO module
+*/
+
+/*** BeginHeader */
+
+#ifndef __EZIOPK23_LIB		//	if this header is not compiled
+#define __EZIOPK23_LIB		//	we are compiling it now, remember it
+
+#define EIO_BRD_NUM_ADC 1
+
+#define PWMBANK _HV_BANK
+#define NOOP 0x07
+#define BRDON(x) (x&7)|0x80
+#define BRDOFF(x) (x&7)
+
+#define _HV_BANK 0x4160
+
+#define EIO_AI_ONBRD_X 0x1
+#define EIO_AI_ONBRDR_B 0x1
+#define EIO_AI_ONBRDR_X 0x1
+
+#use eziocmmn.lib
+#use eziodpwm.lib
+
+#define _TS_LED1 0x4141
+#define _TS_LED2 0x4142
+
+/*** EndHeader */
+
+/*** BeginHeader */
+
+#ifndef EIO_EE_ACAL_B		
+#define EIO_EE_ACAL_B 0x2	//	start EIO EE usage at 0x2 unless
+									//	otherwise defined
+#endif
+
+#ifndef EIO_EE_ACAL_X
+#define EIO_EE_ACAL_X sizeof(eioBrdAICalib)
+									//	we need this much space in EE to store
+									//	calibration constants
+#endif
+
+#ifndef EIO_EE_BRD_X			//	size of board specific safe state
+									//	storage in EEPROM
+#if EIO_SAFEST					//	that is, IF we are using safe states
+#define EIO_EE_BRD_X 8		//	8 bytes
+#else
+#define EIO_EE_BRD_X 0		//	if we are not using safe state, 0 bytes
+#endif
+#endif
+
+#ifndef EIO_EE_BRD_B			//	now that we know how much EEPROM bytes
+									//	are needed for calibration constants, let's
+									//	put board specific safe states needs after it.
+#define EIO_EE_BRD_B (EIO_EE_ACAL_B+EIO_EE_ACAL_X)
+#endif
+
+#ifndef EIO_EE_SAFE_B
+#define EIO_EE_SAFE_B (EIO_EE_BRD_B+EIO_EE_BRD_X)
+									//	start of PLC-bus safe state storage
+#endif
+
+#use ezio.lib					//	now get the usual ezio.lib stuff
+
+/*** EndHeader */
+
+/*** BeginHeader eioBrdDI */
+
+int eioBrdDI(unsigned eioAddr);
+
+#define _IN_HIBANK 0x4161
+#define _IN_LOBANK 0x4160
+
+/*** EndHeader */
+
+#asm
+eioBrdDI::
+	ld		a,h
+	or		a
+	jr		nz,bad
+	ld		a,l				;	4
+#if EIODBNC
+	cp		100000b
+	jr		nc,bad
+#endif
+	cp		10000b
+#if EIODBNC
+	jr		nc,ebdbnc		;	6/8+103=111
+#else
+	jr		nc,bad
+#endif
+	ld		a,l
+	and	15					;	6
+	ld		l,a				;	4
+	bit	3,l				;	6
+	jr		z,lo				;	6/8+18
+	res	3,l				;	7
+	ld		bc,_IN_HIBANK	;	9
+	in		b,(c)				;	9
+	jr		ebdcommon		;	8
+lo:
+	ld		bc,_IN_LOBANK	;	9
+	in		b,(c)				;	9
+ebdcommon:
+	ld		h,0				;	6
+	ld		de,__bitmap		;	9
+	add	hl,de				;	7
+	ld		a,(hl)			;	6
+	ld		hl,0				;	9
+	and	b					;	4
+	ret	z					;	9
+	inc	hl					;	4+13
+	ret						;	9/
+	;	140 max
+
+#if EIODBNC
+ebdbnc:
+	cp		00100000b
+	jr		nc,bad
+	ld		a,l
+	and	00001111b			;	6
+	ld		hl,eioBrdDbnced	;	9
+	bit	4,a					;	6
+	jr		z,ebdbnc100			;	8 _10
+	inc	hl						;	4/
+ebdbnc100:
+	ld		b,(hl)				;	6
+	and	7						;	6
+	ld		h,0					;	6
+	ld		l,a					;	6
+	ld		de,__bitmap			;	9
+	add	hl,de					;	7
+	ld		a,b					;	4
+	and	(hl)					;	6
+	ld		hl,0					;	9
+	ret	z						;	9
+	inc	hl						;	4+13
+	ret							;	9/
+	;	103
+#endif
+
+bad:
+	ld		a,EIO_NODEV
+	ld		hl,eioErrorCode
+	or		(hl)
+	ld		(hl),a
+	ld		hl,0xffff
+	ret
+#endasm
+
+/*** BeginHEader eioBrdAdcInit */
+
+void eioBrdAdcInit();
+
+/*** EndHeader */
+
+void eioBrdAdcInit() {
+}
+
+/*** BeginHeader eioBrdDO */
+
+int eioBrdDO(unsigned eioAddr, char state);
+
+#ifndef EIO_EE_BRD_X
+#if EIO_SAFEST
+#define EIO_EE_BRD_X 1
+#else
+#define EIO_EE_BRD_X 0
+#endif
+#endif
+
+#ifndef EIO_EE_BRD_B
+#define EIO_EE_BRD_B (EIO_EE_SAFE_B+EIO_EE_PLC_X)
+#endif
+
+#ifndef EIO_SAFEST
+#define EIO_SAFEST 0
+#endif
+
+/*** EndHeader */
+
+#if EIO_SAFEST
+
+nodebug void eioBrdDOSafe(unsigned eioAddr, char state) {
+	auto char tmp;
+	auto char bitmask;
+	auto int eeaddr;
+
+	tmp = ee_rd(eeaddr=EIO_EE_BRD_B+(eioAddr>>3));
+	if ((state!=0) != ((tmp & (bitmask=__bitmap[eioAddr&0x7]))!=0)) {
+		ee_wr(eeaddr,state?(tmp|bitmask):(tmp&(~bitmask)));
+	}
+}
+
+#endif
+
+ASM_NOIX int eioBrdDO(unsigned eioAddr, char state) {
+#asm
+;	should be done in 22 microseconds, including setting up the stack
+;	and doing the call. Takes about 222 states to execute at the most.
+_eioBrdDO::
+	pop	bc				;	9
+	pop	hl				;	9
+	pop	de				;	9
+	push	de				;	11
+	push	hl				;	11
+	push	bc				;	11
+	ld		a,h			;	high byte should be 0!
+	or		a
+	jr		nz,bad		;	or else it is a bad channel
+	ld		a,l			;	low byte should be less than 8
+	cp		12
+	jr		nc,bad		;	or else it is also a bad channel
+	cp		7
+	jr		nc,extraChans
+	ld		a,e
+	or		d				;	is de non-zero?
+	jr		z,_turnOff
+	ld		a,0x80		;	7th bit to turn on
+	jr		ebdcommon
+_turnOff:
+	xor	a
+ebdcommon:
+	or		l				;	7th bit switches, bit 0-2 specifies
+	ld		l,a
+	ld		bc,_HV_BANK	;	9
+outPort:
+	out	(c),a			;	10
+
+#if EIO_SAFEST
+	ld		a,(eio_def_safe)
+	or		a
+	jr		z,noDefSafe
+	ld		hl,@SP+state
+	add	hl,sp
+	ld		c,(hl)
+	inc	hl
+	ld		b,(hl)
+	push	bc
+	ld		hl,@SP+eioAddr+2	;	compensate for word already pushed
+	add	hl,sp
+	ld		c,(hl)
+	inc	hl
+	ld		b,(hl)
+	push	bc
+	call	eioBrdDOSafe
+	pop	bc
+	pop	bc
+
+noDefSafe:
+#endif
+
+	ld		hl,0			;	9
+	jr		end
+	
+extraChans:
+	cp		7
+	jr		nz,extraCMOS
+	ld		bc,0x4147
+detOnOff:
+	ld		a,d
+	or		e
+	ld		a,0
+	jr		z,outPort
+	inc	a
+	jr		outPort
+extraCMOS:
+	ld		bc,0x4140+3-8
+	add	hl,bc
+	ld		c,l
+	ld		b,h
+	jr		detOnOff
+bad:
+	ld		a,EIO_NODEV
+	ld		hl,eioErrorCode
+	or		(hl)
+	ld		(hl),a
+	ld		hl,0xffff	;
+end:
+#endasm
+}
+
+/*** BeginHeader _eioSetupAI, _eioBrdAIReg, _eioSetupAI1st */
+
+int _eioSetupAI();
+
+void _eioSetupAI1st();
+
+extern char _eioBrdAIBuf;
+
+extern unsigned _eioBrdAIReg;
+
+extern unsigned _eio555TO;
+#define MAR1 0x28
+#define BCR1 0x2e
+#define IAR1 0x2b
+
+/*** EndHeader */
+
+char _eioBrdAIBuf;			//	buffer for the low byte
+unsigned _eioBrdAIReg;		//	read for the actual analog input value
+unsigned _eio555TO;			//	used to specify the count-down starting point
+
+//	analog (resistance) measurement is accomplished by
+//	the 555 timer on the board, /TRG should be strobed
+//	low, and wait for /TMRDONE to go low. The resistance
+//	is implied by the time between /TRG going low and /TMRDONE
+//	going low. From the CPU's perspective, /TRG is /CS4, and
+//	/TMRDONE is /DREG1.
+
+//	PRT0 (timer) is used to provide timing and timout mechanism
+//	DMA channel1 is setup to be level senstive, and transfer
+//	bytes from PRT0 timer to a RAM location for reading.
+
+
+//	call this routine to reset the PRT0 timer and DMA1 channel
+//	for another pulse width capture.
+//	_eio555TO should be properly initialized first
+//	it is recommended to enable interrupt shortly after this
+//	function. It's okay to call with interrupt enabled.
+
+//char _555TO;
+
+#asm
+_eioSetupAI::
+	ld		a,i
+	push	af
+	di
+;	xor	a
+;	ld		(_555TO),a
+	in0	a,(TCR)
+	and	11101110b		;	clears interrupt, clears count-down
+	out	(TCR),a
+
+	in0	a,(DSTAT)
+	and	01010101b		;	disables DMA1 and DMA1 interrupt
+	out0	(DSTAT),a
+	pop	af
+	jp		po,noInt1
+	ei
+noInt1:
+
+	ld		hl,_eio555TO	;	reload the time-out period to PRT
+	ld		a,(hl)
+	out0	(TMDR0L),a
+	inc	hl
+	ld		a,(hl)
+	out0	(TMDR0H),a
+
+	ld		a,TMDR0L			;	I/O source: PRT timer
+	out0	(IAR1),a
+	xor	a
+	out0	(IAR1+1),a
+
+	ld		a,1				;	count: 1 bytes
+	out0	(BCR1),a
+	xor	a
+	out0	(BCR1+1),a
+
+	ld		hl,_eioBrdAIBuf	;	set up MAR1
+	in0	a,(BBR)			;			aaaaaaaa aaaaaaaa
+	sla	a					; + bbbb bbbb
+	rl		b					; ------------------------
+	sla	a
+	rl		b
+	sla	a
+	rl		b
+	sla	a
+	rl		b
+	ld		d,a
+	ld		e,0
+	or		a
+	add	hl,de
+	out0	(MAR1),l
+	out0	(MAR1+1),h
+	ld		a,b
+	adc	a,0
+	out0	(MAR1+2),a
+
+	ld		bc,CS4
+	out	(c),a				;	strobe timer trigger, 
+
+	in0	a,(DCNTL)		;	set DMA mode
+	and	11110100b		;	level sense
+	or		00000010b		;	fixed IAR to MAR1 transfer
+	out0	(DCNTL),a
+
+	in0	a,(DSTAT)		;	enables DMA and DMA interrupt
+	and	01010101b
+	or		10001001b
+	out0	(DSTAT),a
+	
+	in0	a,(TCR)
+	or		00010001b		;	enables PRT0 interrupt, start count-down
+	out0	(TCR),a
+	
+	ret
+	
+#endasm
+
+#INT_VEC PRT0_VEC _eio555TOISR
+
+#INT_VEC DMA1_VEC _eio555LoISR
+
+unsigned tocnt;
+
+#asm
+_eio555TOISR::
+	;	PRT counter reaches zero, timed out!
+	push	af
+	push	hl
+	in0	a,(TCR)		;	clears error condition
+	and	11111110b	;	clears count-down
+	out0	(TCR),a
+	in0	a,(TMDR0L)
+	ld		hl,0
+	ld		(_eioBrdAIReg),hl
+	xor	a
+	out0	(TMDR0L),a
+	out0	(TMDR0H),a
+	ld		(_eioBrdAIBuf),a
+	pop	hl
+	pop	af
+	ei
+	ret
+
+_eio555Reset:
+	;	shared by both interrupt routines to start
+	;	reading the next value
+;	ld		hl,TOCnt
+;	inc	(hl)
+	push	bc
+	push	de
+	call	_eioSetupAI
+	pop	de
+	pop	bc
+	pop	hl
+	pop	af
+	ei
+	ret
+
+_eio555LoISR::
+	;	/TMRDONE goes low
+	push	af
+	push	hl
+	in0	a,(TMDR0H)
+	ld		(_eioBrdAIReg+1),a
+	ld		a,(_eioBrdAIBuf)
+	ld		(_eioBrdAIReg),a
+	jr		_eio555Reset
+
+#endasm
+
+void _eioSetupAI1st() {
+	//	call this routine to setup analog input repetitive reading.
+	//	self contained, no need to setup anything else first.
+	_eioBrdAIReg = 0;
+	_eioBrdAIBuf = 0;
+	_eio555TO = 0xffff;
+	_eioSetupAI();
+	EI();
+}
+
+//#funcchain _GLOBAL_INIT _eioSetupAI1st
+
+/*** BeginHeader eioBrdDbnc, eioBrdDbnced */
+
+extern int eioBrdDbnced;
+extern int eioBrdThis, eioBrdLast;
+
+void eioBrdDbnc();
+
+/*** EndHeader */
+
+#if EIODBNC
+
+int eioBrdDbnced;
+int eioBrdThis;
+int eioBrdLast;
+
+void eioBrdDbncInit() {
+	eioBrdThis = eioBrdLast = eioBrdDbnced = 0;
+}
+
+#funcchain _GLOBAL_INIT eioBrdDbncInit
+
+char _eioBrdDBTmp;
+
+#asm
+eioBrdDbnc::				;	12 for call
+	ld		hl,(eioBrdThis)
+	ld		(eioBrdLast),hl
+	ld		bc,_IN_LOBANK	;	9
+	in		l,(c)				;	9
+	ld		bc,_IN_HIBANK	;	9
+	in		h,(c)				;	9
+	ld		(eioBrdThis),hl	;	12
+	ld		hl,eioBrdLast		;	9	hl = eioBrdLast
+	ld		bc,eioBrdThis		;	9	bc = eioBrdThis
+	ld		de,eioBrdDbnced	;	9	de = eioBrdDbnced
+	ld		a,(bc)				;	6	a = *eioBrdThis
+	xor	(hl)					;	6	a = *eioBrdThis ^ *eioBrdLast
+	ld		(_eioBrdDBTmp),a	;	tmp = *eioBrdThis ^ *eioBrdLast
+	or		(hl)					;	a = tmp | *eioBrdLast
+	push	af						;	(sp) = tmp | *eioBrdLast
+	ld		a,(_eioBrdDBTmp)	;	a = tmp
+	cpl							;	a = ~tmp
+	ex		de,hl
+	or		(hl)					;	a = ~tmp | *eioBrdDbnced
+	ex		de,hl
+	ex		(sp),hl				;	(sp) = hl, h = tmp | *eioBrdLast
+	and	h						;	a = (~tmp | *eioBrdDbnced) & (tmp | *eioBrdLast)
+	pop	hl						;	restore hl
+	ld		(de),a				;	*eioBrdDbnced = (~tmp | *eioBrdDbnced) & (tmp | *eioBrdLast)
+	inc	bc						;	4
+	inc	de						;	4
+	inc	hl						;	4
+	ld		a,(bc)				;	6	a = *eioBrdThis
+	xor	(hl)					;	6	a = *eioBrdThis ^ *eioBrdLast
+	ld		(_eioBrdDBTmp),a	;	tmp = *eioBrdThis ^ *eioBrdLast
+	or		(hl)					;	a = tmp | *eioBrdLast
+	push	af						;	(sp) = tmp | *eioBrdLast
+	ld		a,(_eioBrdDBTmp)	;	a = tmp
+	cpl							;	a = ~tmp
+	ex		de,hl
+	or		(hl)					;	a = ~tmp | *eioBrdDbnced
+	ex		de,hl
+	ex		(sp),hl				;	(sp) = hl, h = tmp | *eioBrdLast
+	and	h						;	a = (~tmp | *eioBrdDbnced) & (tmp | *eioBrdLast)
+	pop	hl						;	restore hl
+	ld		(de),a				;	*eioBrdDbnced = (~tmp | *eioBrdDbnced) & (tmp | *eioBrdLast)
+	ret							;	9
+	;	total of 170 states
+#endasm
+
+#funcchain _eioDbnc eioBrdDbnc
+
+#endif
+
+/*** BeginHeader eioBrdInitSafe */
+
+void eioBrdInitSafe();
+
+/*** EndHeader */
+
+void eioBrdInitSafe() {
+	auto int i;
+
+	for (i = EIO_EE_BRD_B; i < EIO_EE_BRD_B+EIO_EE_BRD_X; ++i) {
+		ee_wr(i,0);
+	}
+}
+
+/*** BeginHeader _eioBrdInit */
+
+void _eioBrdInit(int flags);
+
+/*** EndHeader */
+
+void _eioBrdInit(int flags) {
+}
+
+/*** BeginHeader _eioBeeper */
+
+void _eioBeeper(char state);
+
+/*** EndHeader */
+
+void _eioBeeper(char state) {
+}
+
+/*** BeginHeader sysIsRunWithDC */
+
+int sysIsRunWithDC();
+extern char OPMODE;
+
+/*** EndHeader */
+
+int sysIsRunWithDC() {
+	return !(OPMODE & 0x08);
+}
+
+/*** BeginHeader eioBrdOn485, eioBrdOff485 */
+
+void eioBrdOn485();
+
+void eioBrdOff485();
+
+/*** EndHeader */
+
+#asm
+eioBrdOn485::
+	push	af
+	push	bc
+	ld		bc, 0x4140
+	ld		a,1
+	out	(c),a
+	pop	bc
+	pop	af
+	ret
+
+eioBrdOff485::
+	push	af
+	push	bc
+	ld		bc,0x4140
+	xor	a
+	out	(c),a
+	pop	bc
+	pop	af
+	ret
+#endasm
+
+/*** BeginHeader _eioBrdAI */
+
+int _eioBrdAI(unsigned chan);
+
+/*** Endheader */
+
+int _eioBrdAI(unsigned chan) {
+	auto unsigned i;
+	
+#asm xmemok
+		ld		a,i
+		push	af
+		di
+		ld		hl,(_eioBrdAIReg)
+		ex		de,hl
+		ld		hl,@SP+i+2
+		add	hl,sp
+		ld		(hl),e
+		inc	hl
+		ld		(hl),d
+		pop	af
+		jp		po,_noInt
+		ei
+_noInt:
+#endasm
+	return _eio555TO-i;
+}
+
+/*** BeginHeader */
+
+#endif
+
+/*** EndHeader */
+

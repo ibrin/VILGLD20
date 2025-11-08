@@ -1,0 +1,379 @@
+/*****************************************************************************
+
+BL14/1500 LCD port Specific Stuff Here
+
+*****************************************************************************/
+
+/*** BeginHeader */
+
+#ifndef _LP_BL145_LIB
+#define _LP_BL145_LIB
+
+/*** endHeader */
+
+/*
+
+D0-D7 mapped to P1A0 to P1A7
+/WR mapped to P1B6
+LCD mapped to P1B7
+A0 mapped to P1B5
+
+*/
+
+/*** BeginHeader */
+
+#define LCD_NWR 6
+#define LCD_STB 7
+#define LCD_A0 5
+
+/*** EndHeader */
+
+/*** BeginHeader lpOutData */
+
+void lpOutData(int content);
+
+/*** EndHeader */
+
+#asm
+lpOutData::
+	call	lp_entry
+		
+	;	put cmd to P1A
+	out0	(PIOCA),c
+	xor	a
+	out0	(PIOCA),a
+	out0	(PIODA),h			;	PIODA <- h
+	
+	;	/WR cleared
+	out0	(PIOCB),c
+	ld		a,(PIOCBShadow)
+	and	00011111b
+	out0	(PIOCB),a
+	in0	b,(PIODB)
+	res	LCD_NWR,b
+	;	A0 asserted
+	res	LCD_A0,b
+	res	LCD_STB,b
+	out0	(PIODB),b			;	PIODB <- /WR=0 A0=0 STB=0
+	
+	;	strobe LCD
+	set	LCD_STB,b
+	out0	(PIODB),b			;	PIODB <- /WR=0 A0=0 STB=1
+	res	LCD_STB,b
+	out0	(PIODB),b			;	PIODB <- /WR=0 A0=0 STB=0
+
+	jp		lp_exit
+#endasm
+
+/*** BeginHeader lpOutCmd */
+
+void lpOutCmd(content);
+
+/*** EndHeader */
+
+#asm
+lpOutCmd::
+	call	lp_entry
+		
+	;	put cmd to P1A
+	out0	(PIOCA),c
+	xor	a
+	out0	(PIOCA),a
+	out0	(PIODA),h			;	PIODA <- h
+	
+	;	/WR cleared
+	out0	(PIOCB),c
+	ld		a,(PIOCBShadow)
+	and	00011111b
+	out0	(PIOCB),a
+	in0	b,(PIODB)
+	res	LCD_NWR,b
+	;	A0 asserted
+	set	LCD_A0,b
+	res	LCD_STB,b
+	out0	(PIODB),b			;	PIODB <- /WR=0 A0=1 STB=0
+	
+	;	strobe LCD
+	set	LCD_STB,b
+	out0	(PIODB),b			;	PIODB <- /WR=0 A0=1 STB=1
+	res	LCD_STB,b
+	out0	(PIODB),b			;	PIODB <- /WR=0 A0=1 STB=0
+
+	jp		lp_exit
+#endasm
+
+/*** Beginheader lpOutCmdOutData */
+
+void lpOutCmdOutData(int x);
+
+/*** EndHeader */
+
+#asm
+lpOutCmdOutData::
+	call	lp_entry
+		
+	;	put cmd to P1A
+	out0	(PIOCA),c
+	xor	a
+	out0	(PIOCA),a
+	out0	(PIODA),h			;	PIODA <- h
+	
+	;	/WR cleared
+	out0	(PIOCB),c
+	ld		a,(PIOCBShadow)
+	and	00011111b
+	out0	(PIOCB),a
+	in0	b,(PIODB)
+	res	LCD_NWR,b
+	;	A0 asserted
+	set	LCD_A0,b
+	res	LCD_STB,b
+	out0	(PIODB),b			;	PIODB <- /WR=0 A0=1 STB=0
+	
+	;	strobe LCD
+	set	LCD_STB,b
+	out0	(PIODB),b			;	PIODB <- /WR=0 A0=1 STB=1
+	res	LCD_STB,b
+	out0	(PIODB),b			;	PIODB <- /WR=0 A0=1 STB=0
+
+	;	put data to P1A
+	out0	(PIODA),l			;	PIODA <- l
+	
+	;	/WR cleared
+	;	A0 cleared
+	res	LCD_A0,b
+	out0	(PIODB),b			;	PIODB <- /WR=0 A0=0 STB=0
+	;	strobe LCD
+	set	LCD_STB,b
+	out0	(PIODB),b			;	PIODB <- /WR=0 A0=0 STB=1
+	res	LCD_STB,b
+	out0	(PIODB),b			;	PIODB <- /WR=0 A0=0 STB=0
+
+	jp		lp_exit	
+#endasm
+
+/*** BeginHeader lpOutCmdInData */
+
+int lpOutCmdInData(int x);
+
+/*** EndHeader */
+
+#asm
+lpOutCmdInData::
+	call	lp_entry
+	
+	;	put data to P1A
+	out0	(PIOCA),c
+	xor	a
+	out0	(PIOCA),a
+	out0	(PIODA),h		;	PIODA <- h
+	
+	;	/WR cleared
+	out0	(PIOCB),c
+	ld		a,(PIOCBShadow)
+	and	00011111b
+	out0	(PIOCB),a
+	in0	b,(PIODB)
+	res	LCD_NWR,b
+	;	A0 asserted
+	set	LCD_A0,b
+	res	LCD_STB,b
+	out0	(PIODB),b		;	PIODB <- /WR=0 A0=1 STB=0
+	
+	;	strobe LCD
+	set	LCD_STB,b
+	out0	(PIODB),b		;	PIODB <- /WR=0 A0=1 STB=1
+	res	LCD_STB,b
+	out0	(PIODB),b		;	PIODB <- /WR=0 A0=1 STB=0
+	
+	out0	(PIOCA),c
+	ld		a,0xff
+	out0	(PIOCA),a
+	
+	;	/WR asserted
+	set	LCD_NWR,b
+	out0	(PIODB),b		;	PIODB <- /WR=1 A0=1 STB=0
+	;	A0 cleared
+	res	LCD_A0,b
+	;	put data to P1A
+	out0	(PIODB),b		;	PIODB <- /WR=1 A0=0 STB=0
+	;	set strobe
+	set	LCD_STB,b
+	out0	(PIODB),b		;	PIODB <- /WR=1 A0=0 STB=1
+	;	read data
+	ld		h,0
+	;	set P1A to input
+	in0	l,(PIODA)		;	l <- PIODA
+	;	reset strobe
+	res	LCD_STB,b
+	out0	(PIODB),b		;	PIODB <- /WR=1 A0=0 STB=0
+
+	jp		lp_exit	
+#endasm
+
+/*** BeginHeader lpInData */
+
+int lpInData();
+
+/*** EndHeader */
+
+#asm
+lpInData::
+	call	lp_entry
+		
+	out0	(PIOCA),c
+	ld		a,0xff
+	out0	(PIOCA),a
+
+	out0	(PIOCB),c
+	ld		a,(PIOCBShadow)
+	and	00011111b
+	out0	(PIOCB),a
+	in0	b,(PIODB)	
+	;	/WR asserted
+	set	LCD_NWR,b
+	;	A0 cleared
+	res	LCD_A0,b
+	;	STB low
+	res	LCD_STB,b
+	;	put data to P1A
+	out0	(PIODB),b		;	PIODB <- /WR=1 A0=0 STB=0
+	;	set strobe
+	set	LCD_STB,b
+	out0	(PIODB),b		;	PIODB <- /WR=1 A0=0 STB=1
+	;	read data
+	ld		h,0
+	;	set P1A to input
+	in0	l,(PIODA)		;	l <- PIODA
+	;	reset strobe
+	res	LCD_STB,b
+	out0	(PIODB),b		;	PIODB <- /WR=1 A0=0 STB=0
+
+	jp		lp_exit	
+#endasm
+
+/*** BeginHeader lpInCmd */
+
+int lpInCmd();
+
+/*** EndHeader */
+
+#asm
+	;	save current states of P1A and P1B
+	;	/WR asserted
+	;	A0 asserted
+	;	set LCD
+	;	read P1A
+	;	clear LCD
+	;	restore P1A and P1B
+lpInCmd::
+	call	lp_entry
+	
+	out0	(PIOCA),c
+	ld		a,0xff
+	out0	(PIOCA),a
+
+	out0	(PIOCB),c
+	ld		a,(PIOCBShadow)
+	and	00011111b
+	out0	(PIOCB),a
+	in0	b,(PIODB)	
+	;	/WR asserted
+	set	LCD_NWR,b
+	;	A0 asserted
+	set	LCD_A0,b
+	;	STB low
+	res	LCD_STB
+	;	put data to P1A
+	out0	(PIODB),b		;	PIODB <- /WR=1 A0=1 STB=0
+	;	set strobe
+	set	LCD_STB,b
+	out0	(PIODB),b		;	PIODB <- /WR=1 A0=1 STB=1
+	;	read data
+	ld		h,0
+	;	set P1A to input
+	in0	l,(PIODA)		;	l <- PIODA
+	;	reset strobe
+	res	LCD_STB,b
+	out0	(PIODB),b		;	PIODB <- /WR=1 A0=1 STB=0
+
+	jp		lp_exit	
+#endasm
+
+/*** BeginHeader lp_entry */
+
+/*** endHeader */
+
+#asm
+lp_entry::
+	ex		de,hl		;	hl is now de, de is now hl
+	ex		(sp),hl	;	old de is now saved, ret address to hl
+	push	bc
+	push	af
+	ld		a,i
+	push	af
+
+	ex		de,hl		;	ret address to de, hl content preserved
+	push	de			;	push return address
+	
+	di
+	;	save current states of P1A and P1B
+	ld		c,0xcf
+	in0	d,(PIODA)
+	in0	e,(PIODB)
+	ret
+	
+#endasm
+
+/*** BeginHeader lp_exit */
+
+/*** endHeader */
+
+#asm
+lp_exit::
+	out0	(PIOCA),c
+	ld		a,(PIOCAShadow)
+	out0	(PIOCA),a
+	out0	(PIODA),d
+	out0	(PIOCB),c
+	ld		a,(PIOCBShadow)
+	out0	(PIOCB),a
+	out0	(PIODB),e
+	
+	pop	af
+	jp		po,noInt
+	ei
+noInt:
+	pop	af
+	pop	bc
+	pop	de
+	ret
+#endasm
+
+/*** BeginHeader lpInit */
+
+void lpInit();
+
+/*** EndHeader */
+
+#asm
+lpInit::
+	ld		a,(PIOCBShadow)
+	ld		c,0xcf
+	and	00011111b
+	out0	(PIOCB),c
+	out0	(PIOCB),a
+	ld		(PIOCBShadow),a
+	in0	a,(PIODB)
+	set	LCD_NWR,a
+	res	LCD_A0,a
+	res	LCD_STB,a
+	out0	(PIODB),a
+	ret
+#endasm
+
+/*** BeginHeader */
+
+#endif
+
+/*** EndHeader */

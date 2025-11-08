@@ -1,0 +1,120 @@
+/*****************************************************************************
+
+LCD port with 8-bit IO address
+
+*****************************************************************************/
+
+/*** BeginHeader */
+
+#ifndef _LP_8_LIB
+#define _LP_8_LIB
+
+/*** endHeader */
+
+/*** BeginHeader lpOutData */
+
+void lpOutData(int content);
+
+/*** EndHeader */
+
+#asm
+lpOutData::
+	out0	(LCDWR),l
+	ret
+#endasm
+
+/*** BeginHeader lpOutCmd */
+
+void lpOutCmd(content);
+
+/*** EndHeader */
+
+#asm
+lpOutCmd::
+	out0	(LCDWR+1),l
+	ret
+#endasm
+
+/*** Beginheader lpOutCmdOutData */
+
+void lpOutCmdOutData(int x);
+
+/*** EndHeader */
+
+#asm
+lpOutCmdOutData::
+	ld		a,i
+	push	af
+	
+	out0	(LCDWR+1),h
+	out0	(LCDWR),l
+	
+	pop	af
+	jp		po,noInt
+	ei
+noInt:
+	ret
+#endasm
+
+/*** BeginHeader lpOutCmdInData */
+
+int lpOutCmdInData(int x);
+
+/*** EndHeader */
+
+#asm
+lpOutCmdInData::
+	ld		a,i
+	push	af
+	
+	out0	(LCDWR+1),h
+	ld		h,0
+	in0	l,(LCDRD)
+	
+	pop	af
+	jp		po,noInt
+	ei
+noInt:
+	ret
+#endasm
+
+/*** BeginHeader lpInData */
+
+int lpInData();
+
+/*** EndHeader */
+
+#asm
+lpInData::
+	in0	l,(LCDRD)
+	ld		h,0
+	ret
+#endasm
+
+/*** BeginHeader lpInCmd */
+
+int lpInCmd();
+
+/*** EndHeader */
+
+#asm
+lpInCmd::
+	in0	l,(LCDRD+1)
+	ld		h,0
+	ret
+#endasm
+
+/*** BeginHeader lpInit */
+
+void lpInit();
+
+/*** EndHeader */
+
+void lpInit() {}
+
+/*** BeginHeader */
+
+#endif
+
+/*** EndHeader */
+

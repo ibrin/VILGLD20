@@ -1,0 +1,62 @@
+/*** BeginHeader _dumInit */
+
+void _dumInit(long Param, char CRTS, struct _Channel *pChan);
+
+/*** EndHeader */
+
+void _dumInit(long Param, char CRTS, struct _Channel *pChan) {
+	segChain _aascInitDF {
+		DevFunc[DEV_DUM].DevOpen = _dumInit;
+		DevFunc[DEV_DUM].DevClose = _dumClose;
+		DevFunc[DEV_DUM].TxSwitch = _dumTxSw;
+		DevFunc[DEV_DUM].RxSwitch = _dumRxSw;
+		DevFunc[DEV_DUM].DevGetError = _dumGetErr;
+		DevFunc[DEV_DUM].DevClrError = _dumClrErr;
+	}
+
+}
+
+/*** BeginHeader _dumClose */
+
+void _dumClose (struct _Channel *pChan);
+
+/*** EndHeader */
+
+void _dumClose (struct _Channel *pChan) {
+}
+
+/*** BeginHeader _dumTxSw */
+
+void _dumTxSw(char OnOff, struct _Channel *pChan);
+
+/*** EndHeader */
+
+void _dumTxSw(char OnOff, struct _Channel *pChan) {
+}
+
+/*** BeginHeader _dumRxSw */
+
+void _dumRxSw(char OnOff, struct _Channel *pChan);
+
+/*** EndHeader */
+
+void _dumRxSw(char OnOff, struct _Channel *pChan) {
+}
+
+/*** BeginHeader _dumGetErr */
+
+void _dumGetErr(struct _Channel *pChan);
+
+/*** EndHeader */
+
+void _dumGetErr(struct _Channel *pChan) { return 0; }
+
+/*** BeginHeader _dumClrErr */
+
+void _dumClrErr(struct _Channel *pChan);
+
+/*** EndHeader */
+
+vsoid _dumClrErr(struct _Channel *pChan) {
+}
+

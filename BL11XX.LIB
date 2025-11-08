@@ -1,0 +1,856 @@
+/*** BeginHeader */
+#if BOARD_TYPE!=LITTLE_GIANT
+#error "Little Giant only."
+#endif
+/*** EndHeader */
+
+/*** Beginheader ad_rd10 */
+
+int ad_rd10(int chan);
+
+/*** Endheader */
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+ad_rd10                      <DRIVERS.LIB>
+
+SYNTAX: int ad_rd10(int chan);
+
+KEY WORDS: LITTLE_GIANT, ADC, ANALOG, INPUT
+
+DESCRIPTION: Reads a 10-bit value from the Little Giant A/D converter. 
+The low 3 bits of "chan" specify the channel number (0 - 7); the fourth 
+bit must be 0 for bipolar mode, or 1 for unipolar mode (add 8 to the 
+channel number for unipolar mode).  The return value is shifted left by 2 
+bits, so it appears as a 12-bit number.
+
+RETURN VALUE: -2048 to 2047 if bipolar mode; 0 to 4095 if unipolar mode;
+-32768 if an error occurs.
+END DESCRIPTION **********************************************************/
+#asm nodebug
+
+; AD_RD : Read Analog/Digital Converter
+;
+; INPUT :
+;          HL = Channel Number ( See Comments Above )
+; OUTPUT:
+;          HL = Converter Input ( See Above )
+;          HL = 8000h for Error
+
+
+adtbl:  db  43h,47h,53h,57h,4bh,4fh,5bh,5fh
+				db  63h,67h,73h,77h,6bh,6fh,7bh,7fh
+
+ad_rd10::
+				xor     a            ; Accumulate LTC1091/3/4 Address
+				out0    (AD_ADE),a   ; Reset A/D
+				ld      de,adtbl
+				add     hl,de     ;get control word from table
+				ld      a,(hl)
+				push    af        ;save code
+				ld  b,010h        ;write code *** fix nov 90 switch chan problem
+				ld  c,020h        ;read code
+#ifndef NODISINT
+				ex  af,af'
+				ld  a,i           ;save interrupt state
+				ex  af,af'
+				di                ;disable interrupts
+#endif
+				ld  d,1           ;enable adc
+				out0    (AD_ADE),d        ;out 01h
+				out0    (TRDR),a  ;out code
+				ld d,a            ;save code in d
+				out0    (CNTR),b  ;write
+								  ;  res   0,b      ; *** nov 90 fix
+ad1:    in0 a,(CNTR)
+				and a,b
+				jr      nz,ad1      ;loop till write complete
+; do again for delay in multiplexer
+				xor a
+				out0    (AD_ADE),a      ; Reset A/D
+				inc    a         ;enable adc
+				out0    (AD_ADE),a        ;out 01h
+				out0    (TRDR),d        ;out code
+				out0    (CNTR),b        ;write
+;  res   0,b      ; *** nov 90 fix
+ad1a:    in0 a,(CNTR)
+				and a,b
+				jr      nz,ad1a      ;loop till write complete
+
+				out0    (CNTR),c    ; read code
+ad2:    in0 a,(CNTR)
+				and a,c
+				jr      nz,ad2      ;loop till read
+				in0 d,(TRDR)    ;byte returned
+				out0    (CNTR),c    ;read next
+ad3:    in0 a,(CNTR)    ; test read complete
+				and a,c
+				jr      nz,ad3
+				in0 e,(TRDR)    ;second byte returned to e
+; restore interrupts if disabled
+#ifndef  NODISINT
+				ex  af,af'
+				jp  po,ad4      ;if interrupts were off
+				ei
+#endif
+ad4:
+
+; bit reverse result
+				ld      a,d     ;first byte
+				rra
+				rl      l
+				rra
+				rl      l
+				rra
+				rl      l
+				rra
+				rl      l
+				rra
+				rl      l
+				rra
+				rl      l
+				rra
+				rl      l
+				rra
+				rl      l
+				ld      h,0
+				rr      e
+				adc hl,hl
+				rr      e
+				adc hl,hl
+				xor a
+				adc hl,hl
+				adc hl,hl       ;hl now has 10 bit value left shifted 2
+				pop     af              ; Restore Flags
+				and     20h             ; Adjust Sign for BiPolar
+				jr      nz,conv10
+				bit     3,h             ; Check if Sign Extension Required
+				jr      z,conv10
+				ld      a,0F0h
+				or      h
+				ld      h,a
+conv10:
+				xor     a               ; Disable A/D
+				out0    (AD_ADE),a
+				ret
+#endasm
+
+/*** Beginheader ad_rd12 */
+
+int ad_rd12(int chan);
+
+/*** Endheader */
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+ad_rd12                      <DRIVERS.LIB>
+
+SYNTAX: int ad_rd12(int chan);
+
+KEY WORDS: LITTLE_GIANT, ADC, ANALOG, INPUT
+
+DESCRIPTION: Reads 12-bit value from the Little Giant A/D converter.  The
+low 3 bits of "chan" specify the channel number (0 - 7); the fourth bit must
+be 0 for bipolar mode, or 1 for unipolar mode (add 8 to the channel number
+for unipolar mode).
+
+RETURN VALUE: -2048 to 2047 if bipolar mode; 0 to 4095 if unipolar mode;
+-32768 if an error occurs.
+END DESCRIPTION **********************************************************/
+#asm nodebug
+
+; AD_RD : Read Analog/Digital Converter
+;
+; INPUT :
+;          HL = Channel Number ( See Comments Above )
+; OUTPUT:
+;          HL = Converter Input ( See Above )
+;          HL = 8000h for Error
+
+; initial control byte
+;  7    6   5    4    3     2    1    0
+; strt pwr MSBF UNI SEL 0 SEL 1 ODD  SGL
+
+adtbl:  db  0c3h,0c7h,0d3h,0d7h,0cbh,0cfh,0dbh,0dfh
+				db  0e3h,0e7h,0f3h,0f7h,0ebh,0efh,0fbh,0ffh
+
+ad_rd12::
+				xor     a               ; Accumulate LTC1091/3/4 Address
+				out0    (AD_ADE),a      ; Reset A/D
+				ld      de,adtbl
+				add     hl,de            ;get control word from table
+				ld      a,(hl)
+				push    af          ;save code
+				ld  b,011h        ;write code  ** fix nov 90
+				ld  c,020h        ;read code
+#ifndef NODISINT
+				ex  af,af'
+				ld  a,i     ;save interrupt state
+				ex  af,af'
+				di              ;disable interrupts
+#endif
+				ld  d,1         ;enable adc
+				out0    (AD_ADE),d        ;out 01h
+				out0    (TRDR),a        ;out code
+				out0    (CNTR),b        ;write
+	res   0,b      ; fix nov 90
+ad1:    in0 a,(CNTR)
+				and a,b
+				jr      nz,ad1      ;loop till write complete
+				out0    (CNTR),c    ; read code
+ad2:    in0 a,(CNTR)
+				and a,c
+				jr      nz,ad2      ;loop till read
+				in0 d,(TRDR)    ;byte returned
+				out0    (CNTR),c    ;read next
+ad3:    in0 a,(CNTR)    ; test read complete
+				and a,c
+				jr      nz,ad3
+				in0 e,(TRDR)    ;second byte returned to e
+; restore interrupts if disabled
+#ifndef NODISINT
+				ex  af,af'
+				jp  po,ad4      ;if interrupts were off
+				ei
+#endif
+ad4:
+
+; bit reverse result
+				ld      a,d     ;first byte
+				rra                 ;toss first bit
+				ld          hl,0        ;clear hl
+				rra
+				rl      l
+				rra
+				rl      l
+				rra
+				rl      l
+				rra
+				rl      l
+				rra
+				rl      l
+				rra
+				rl      l
+				rra
+				rl      l
+; now get next 5 bits
+						ld      a,e
+				rr      a
+				adc hl,hl
+				rr      a
+				adc hl,hl
+						rr      a
+						adc hl,hl
+						rr      a
+						adc hl,hl
+						rr      a
+						adc hl,hl
+; hl now has 12 bit value
+				pop     af              ; Restore Flags
+				and     20h             ; Adjust Sign for BiPolar
+				jr      nz,conv10
+				bit     3,h             ; Check if Sign Extension Required
+				jr      z,conv10
+				ld      a,0F0h
+				or      h
+				ld      h,a
+conv10:
+				xor     a               ; Disable A/D
+				out0    (AD_ADE),a
+				ret
+
+#endasm
+
+
+/*** Beginheader ad_rd10s */
+
+int ad_rd10s(int chan, int count, int *buf, unsigned int divider);
+
+/*** Endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+ad_rd10s                     <DRIVERS.LIB>
+
+SYNTAX: int ad_rd10s(int chan, int count, int *buf, unsigned int divider);
+
+KEY WORDS: LITTLE_GIANT, ADC, ANALOG, INPUT
+
+DESCRIPTION: Samples data from the Little Giant A/D converter at uniform
+intervals in time.  "chan" is the channel number (0 - 7) plus 8 for unipolar
+mode (otherwise bipolar).  "count" specifies the number of samples to collect
+and "buf" points to a buffer where the samples will be stored.  "divider"
+determines the sample rate based on the formula, rate = clock/(20*divider).
+divider should not be smaller than 36, which yields 12800 samples per second
+with a 9.216 MHz clock. Interrupts will be disabled unless NODISINT is
+defined.
+
+RETURN VALUE: 1, if successful; 0 if sample missed due to divider too small
+or interrupt during sampling.
+END DESCRIPTION **********************************************************/
+#asm nodebug
+
+; AD_RD : Read Analog/Digital Converter
+;
+; INPUT :
+;          HL = Channel Number ( See Comments Above )
+; OUTPUT:
+;          HL = Converter Input ( See Above )
+;          HL = 8000h for Error
+
+
+adtbl:  db  43h,47h,53h,57h,4bh,4fh,5bh,5fh
+				db  63h,67h,73h,77h,6bh,6fh,7bh,7fh
+
+ad_rd10s::
+
+#ifndef NODISINT
+		  ld  a,i     ;save interrupt state
+		  di              ;disable interrupts
+#endif
+		  push    af
+
+
+		  ld    de,adtbl
+		  add   hl,de            ;get control word from table
+		  ld    d,(hl)              ;control word to d
+		  ld    b,010h          ;write code
+		  ld    c,020h        ;read code
+		  ld    e,0ffh          ;first time flag
+		  ld    iy,0
+		  add   iy,sp
+		  exx
+		  ld    e,(iy+6)
+		  ld    d,(iy+7)        ;count
+		  ld    l,(iy+8)
+		  ld    h,(iy+9)        ;buffer pointer
+		  ld    bc,1              ;return argument
+		  exx
+
+		  in0   a,(TCR)        ;get timer control register
+		  and   011h           ;keept timer 0 settings
+		  out0  (TCR),a        ;stop timer
+		  ld    a,(iy+10)      ; divider least
+		  out0  (TMDR1L),a
+		  out0  (RLDR1L),a
+		  ld    a,(iy+11)
+		  out0  (TMDR1H),a
+		  out0  (RLDR1H),a
+		  in0   a,(TCR)
+		  and   011h
+		  or    2
+		  out0  (TCR),a     ;start timer
+		  in0   a,(TCR)
+		  in0   a,(TMDR1L)  ;reset flag if set
+		  jr    ads00a      ;begin
+
+;  hl a/d value
+;   b 010h write command
+;   c 020h read command
+;   d code to start a/d
+;   e 0ff non zero for first time through loop
+
+; send command to a/d
+adsendc:
+ads00:
+		  in0   a,(CNTR)    ; test read complete
+		  jp    p,ads00
+		  in0   a,(TRDR)    ;second byte returned to de
+		  ex    af,af'      ;save data value
+ads00a:
+		  out0  (TRDR),d    ;set up control code for a/d
+		  out0  (AD_ADE),b  ; reset a/d, bit 0 is zero
+; wait for timer flag to go up
+ads01:
+		  in0   a,(TCR)
+		  jp    p,ads01a    ;not ready yet if positive
+; to come here indicates sample rate too fast
+		  exx
+		  ld bc,0     ;flag sample rate too fast
+		  exx
+ads01a:
+		  in0   a,(TCR)     ;timer control register
+		  jp    p,ads01a    ; if sign not set
+; now begin test
+
+		  out0  (AD_ADE),d  ;start a/d, all possible d's have 1 in bit 0
+; now get a/d going again
+		  out0  (CNTR),b
+; 17 microseconds until ready for next step
+; reset timer flag
+		  in0   a,(TCR)
+		  in0   a,(TMDR1L)      ;timer reset
+;
+		  ex    af,af'      ;get back value
+		  rra
+		  adc   hl,hl
+		  rra
+		  adc   hl,hl
+		  add   hl,hl
+		  add   hl,hl
+		  ld    a,20h
+		  and   d       ;check bipolar
+		  jr    nz,ad1     ;no extension needed
+		  bit   3,h     ;see if sign on
+		  jr    z,ad1   ;not negative
+		  ld    a,0f0h
+		  or    h
+		  ld    h,a     ;sign extended
+;
+ad1:  in0 a,(CNTR)
+;     and a,b
+		  jp      p,ad1      ;loop till write complete
+		  out0    (CNTR),c    ; read code
+; 17 microseconds available till next step
+; put away result and check count
+		  ld    a,e     ;check for first step
+		  ld    e,0     ;clear for other times
+		  or    a
+		  jr    nz,ad2  ; skip put away on first loop
+		  ld    a,l      ;least
+		  exx
+		  ld    (hl),a
+		  inc   hl
+		  exx
+		  ld    a,h      ;most
+		  exx
+		  ld    (hl),a
+		  inc   hl
+		  dec   de
+		  ld    a,e
+		  or    d
+		  exx
+		  jr    z,addone       ;if count done
+ad2:  in0   a,(CNTR)
+		  and   a,c
+		  jr    nz,ad2      ;loop till read
+		  in0   a,(TRDR)    ;byte returned
+		  out0  (CNTR),c    ;read next
+; 17 microseconds
+; bit reverse most significent byte in parallel with reading next
+		  ld    h,0
+		  rra
+		  rl    l
+		  rra
+		  rl    l
+		  rra
+		  rl    l
+		  rra
+		  rl    l
+		  rra
+		  rl    l
+		  rra
+		  rl    l
+		  rra
+		  rl    l
+		  rra
+		  rl    l
+ad3:
+		  jp  adsendc     ;loop
+
+addone:
+		  exx
+		  ld l,c
+		  ld h,b      ;argument returned from bc
+		  pop   af
+#ifndef NODISINT
+		  jp    po,add1
+		  ei
+add1:
+#endif
+		  ret
+#endasm
+
+
+/*** BeginHeader ad_rd12a */
+
+int ad_rd12a(int chan);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+ad_rd12a                     <DRIVERS.LIB>
+
+SYNTAX: int ad_rd12a(int chan);
+
+KEY WORDS: LITTLE_GIANT, ADC, ANALOG, INPUT
+
+DESCRIPTION: Reads a 12-bit value from the Little Giant alternate A/D
+converter LTC1290. The low 3 bits of chan specify the channel number
+(0 - 7); the fourth bit must be 0 for bipolar mode, or 1 for unipolar mode
+(add 8 to the channel number for unipolar mode). Execution time with a
+9.216 MHz system clock is about 350 microseconds. Interrupts are disabled
+for about 300 microseconds.
+
+RETURN VALUE: Undefined.
+END DESCRIPTION **********************************************************/
+#asm nodebug
+;LTC1290 sent data out MSB first, CSIO of Z180 trans/receive data LSB first
+;since LTC1290 waits for 2 falling edge of ACLK before reconizing /CS and
+;ACLK=SCLK, two leading SCLK must be added.
+;A/D operation is designed as:
+;
+;CS low, CSIO sents first bit to AD is ACLK...
+;
+;First byte
+;CSIO CNTL Bit      0     1       2        3       4     5     6     7
+;CSIO to AD        ACLK  SGL/DIF  ODD/SIGN  SEL1  SEL0  UNI   MSBF  WL1
+;Example:(0xa6)     0       1        1       0     0     1     0     1
+;2nd byte
+;CSIO to AD        WL0    x      x      x      x      x     x     x
+;Example:(0x01)     1     0      0      0      0      0     0     0
+;(result of the previous conversion)
+;CS high
+;CSIO send 6 bytes of ACLK to AD for conversion time
+;CS low, first 1 dummy bit of ACLK...
+;First byte
+;AD to CSIO         x     B0    B1    B2     B3     B4    B5    B6
+;2nd byte
+;AD to CSIO         B7    B8     B9     B10     B11     x     x
+
+adtbl:  db  082h,086h,092h,096h,08ah,08eh,09ah,09eh
+	db  0a2h,0a6h,0b2h,0b6h,0aah,0aeh,0bah,0beh
+;
+ad_rd12a::
+				xor     a               ; Accumulate LTC1091/3/4 Address
+				out0    (AD_ADE),a      ; Reset A/D
+				ld  b,010h        ;high speed write code
+				out0   (CNTR),b    ; must have clocks for CS to take effect
+				ld  c,020h        ;high speed read code
+				ld      de,adtbl
+				add     hl,de            ;get control word from table
+				ld      a,(hl)
+				and 20h               ; set zero flag for later use
+				push af                  ;save flag
+
+#ifndef NODISINT
+				ex  af,af'
+				ld  a,i     ;save interrupt state
+				ex  af,af'
+				di              ;disable interrupts
+#endif
+
+ad0001:
+				 in0   a,(CNTR)
+				 and   b
+				 jr nz,ad0001
+; enable A/D
+				ld  a,1                 ;enable adc
+				out0    (AD_ADE),a      ;out 01h
+				ld      a,(hl)
+				out0    (TRDR),a        ;out code
+				out0    (CNTR),b        ;write first config. byte
+ad0:    in0 a,(CNTR)
+				 and   b
+				jr  nz,ad0              ;loop till write complete
+				ld a,01h                ;2nd config. byte
+				out0    (TRDR),a        ;out code
+				out0    (CNTR),b        ;write 2nd config. byte
+ad00:   in0 a,(CNTR)
+				 and   b
+				jr  nz,ad00              ;loop till write complete
+
+				ld  a,0                 ;dis-enable adc
+				out0    (AD_ADE),a      ;out 0h
+
+; transmit 7 bytes to clock A/D sufficient to complete conversion
+				 ld    d,80h         ;must leave transmit line high at end
+				out0    (CNTR),b     ;write 7 bytes for A/D conversion ACLK
+ad01:   in0 a,(CNTR)
+				and b
+				jr  nz,ad01          ;loop till write complete
+				out0    (CNTR),b     ;write 7 bytes for A/D conversion ACLK
+ad02:   in0 a,(CNTR)
+				and b
+				jr  nz,ad02          ;loop till write complete
+				out0    (CNTR),b     ;write 7 bytes for A/D conversion ACLK
+ad03:   in0 a,(CNTR)
+				and b
+				jr  nz,ad03          ;loop till write complete
+				out0    (CNTR),b     ;write 7 bytes for A/D conversion ACLK
+ad04:   in0 a,(CNTR)
+				and b
+				jr  nz,ad04          ;loop till write complete
+				out0    (CNTR),b     ;write 7 bytes for A/D conversion ACLK
+ad05:   in0 a,(CNTR)
+				and b
+				jr  nz,ad05          ;loop till write complete
+				out0    (CNTR),b     ;write 7 bytes for A/D conversion ACLK
+ad06:   in0 a,(CNTR)
+				and b
+				jr  nz,ad06          ;loop till write complete
+				out0    (TRDR),d     ;out code, leave outdata line high (wl0, wl1)
+				out0    (CNTR),b     ;write 7 bytes for A/D conversion ACLK
+ad07:   in0 a,(CNTR)
+				and b
+				jr  nz,ad07          ;loop till write complete
+
+				ld  a,1              ;enable adc
+				out0    (AD_ADE),a   ;out 01h
+				out0    (CNTR),c     ; read code
+ad2:    in0 a,(CNTR)
+				and c
+				jr  nz,ad2           ;loop till read complete
+				in0 l,(TRDR)         ;first byte returned to l
+				out0    (CNTR),c     ;read next
+ad3:    in0 a,(CNTR)                 ;test read complete
+				 and   c
+				jr  nz,ad3
+				in0 h,(TRDR)         ;second byte returned to h
+
+				ld  a,0              ;dis-enable adc
+				out0    (AD_ADE),a   ;out 0h
+				out0   (CNTR),b      ;start clock to unglitch A/D deselect
+
+				srl    h             ; shift right
+				rr     l
+
+				pop     af           ; Restore Flags
+				jr      nz,conv10
+				bit     3,h          ; Check if Sign Extension Required
+				jr      z,conv10
+				ld      a,0F0h
+				or      h
+				ld      h,a
+
+conv10:              ;result in hl
+				 in0   a,(CNTR)
+				 and   b
+				 jr nz,conv10   ; wait for last write to continue
+
+#ifndef NODISINT
+				ex  af,af'
+				ret po
+				ei
+#endif
+				 ret         ;result in hl
+#endasm
+
+/*** BeginHeader wdac */
+
+int wdac(int value);
+
+/*** EndHeader wdac */
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+wdac                         <DRIVERS.LIB>
+
+SYNTAX: int wdac(int value);
+
+KEY WORDS: LITTLE_GIANT, DAC, ANALOG, OUTPUT
+
+DESCRIPTION: Writes value to the Little Giant DAC. value should be in the
+range 0 - 4095, with an output of 2.5*value/4096 volts.
+
+RETURN VALUE: Undefined.
+END DESCRIPTION **********************************************************/
+#asm nodebug
+wdac::
+; bit reverse input
+				 ld    a,l         ;least sig
+				 ex af,af'         ;save least
+				 ld    a,h         ;most sig
+				 rla
+				 rla
+				 rla
+				 rla
+				 rla            ;most sig bit in carry
+				 rr    l
+				 rla
+				 rr    l
+				 rla
+				 rr    l
+				 rla
+				 rr    l     ;least 4 bits in l bits 7-4
+				 ex af,af'
+				 rla
+				 rr    h
+				 rla
+				 rr    h
+				 rla
+				 rr    h
+				 rla
+				 rr    h
+				 rla
+				 rr    h
+				 rla
+				 rr    h
+				 rla
+				 rr    h
+				 rla
+				 rr    h
+; 12 bits most in hl bit 4, least in hl bit 15
+; restore interrupts if disabled
+				 ld    b,010h      ;write code
+#ifndef NODISINT
+				ld  a,i     ;save interrupt state
+				ex  af,af'
+				di              ;disable interrupts
+#endif
+				out0    (TRDR),l        ;out most significent
+				out0    (CNTR),b        ;write
+dc1:    in0 a,(CNTR)
+				and a,b
+				jr      nz,dc1      ;loop till write complete
+				out0    (TRDR),h        ;out least significent
+				out0    (CNTR),b        ;write
+dc2:     in0   a,(CNTR)
+				 and   a,b
+				 jr    nz,dc2      ;wait until done
+				 ld a,0
+				 out0  (SC),a     ;set scl low
+				 ld (0),hl         ;write to eprom
+				 inc   a
+				 out0  (SC),a     ;restore scl
+#ifndef  NODISINT
+				ex  af,af'
+				ret  po      ;if interrupts were off
+				ei
+#endif
+				ret
+#endasm
+
+/*** Beginheader ad_rd */
+
+int ad_rd(int chan);
+
+/*** endheader */
+
+/*=========================================================================
+
+	Read A/D adapts to either 10 bit or 12 bit version depending
+	on configuration flag in eeprom
+ =========================================================================*/
+
+/* START FUNCTION DESCRIPTION ********************************************
+ad_rd                        <DRIVERS.LIB>
+
+SYNTAX: int ad_rd(int chan);
+
+KEY WORDS: LITTLE_GIANT, ADC, ANALOG, INPUT
+
+DESCRIPTION: Same as ad_rd10.
+
+RETURN VALUE: Undefined.
+END DESCRIPTION **********************************************************/
+int ad_rd(int chan)
+{
+	return ad_rd10(chan);
+}                            // modify when 12 bit available
+
+/*** Beginheader setctc */
+
+void setctc(char nctc, char mode, char timer, char intr);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+setctc                       <DRIVERS.LIB>
+
+SYNTAX: void setctc(char nctc, char mode, char timer, char intr);
+
+KEY WORDS: LITTLE_GIANT, TIMER, INTERRUPT
+
+DESCRIPTION: Initializes CTC counter "nctc" (0 - 3).  "mode" specifies 
+one of 7 possible counter modes.  A mode of 0 runs the counter at 
+sysclock/16, triggering immediately.  1 runs the counter at sysclock/256, 
+triggering immediately. 2 sets the counter to run off of an external clock. 
+4 runs the counter at sysclock/16, triggering on the rising edge of CLK/. 
+5 runs the counter at sysclock/256, triggering on the rising edge of CLK/. 
+6 runs the counter at sysclock/16, triggering on the falling edge of CLK/. 
+7 runs the counter at sysclock/256, triggering on the falling edge of CLK/. 
+"timer" specifies the time constant to load into the counter.  "intr" 
+indicates whether or not the timer should cause interrupts (non-zero to 
+enable interrupts, zero to disable interrupts).
+
+RETURN VALUE: void.
+END DESCRIPTION **********************************************************/
+nodebug void setctc(char nctc, char mode, char timer, char intr)
+{
+	static int  ioadr;
+	static char ctl;
+	static char cvmode[8] =
+			{
+				0x5, 0x25, 0x45, 0x45, 0x1d, 0x3d, 0xd, 0x2d
+			};
+	
+	ioadr = nctc + CTC0;     // I/O address
+	outport(ioadr, 0x3);     // software reset
+	outport(CTC0, CTC0_VEC); // set interrupt vector for all ctc units
+	ctl = cvmode[mode];
+	outport(ioadr, ctl);
+	outport(ioadr, timer);
+	if (intr) 
+		outport(ioadr, ctl ^ 0x84); // enable interrupts
+}
+
+/*** Beginheader setdaisy  */
+
+void setdaisy(char code);
+
+/*** Endheader  */
+
+/* START FUNCTION DESCRIPTION ********************************************
+setdaisy                     <DRIVERS.LIB>
+
+SYNTAX: void setdaisy(char code);
+
+KEY WORDS: LITTLE_GIANT, INTERRUPT
+
+DESCRIPTION: Sets the relative priority of interrupts between the 3 I/O
+units in the KIO based on the value of code: 0 - disabled; 1 - SIO,CTC,PIO;
+2 - SIO,PIO,CTC; 3 - CTC,SIO,PIO (system default); 4 - CTC,PIO,SIO;
+5 - PIO,SIO,CTC; 6 - PIO,CTC,SIO; and 7 - disabled.
+
+RETURN VALUE: Undefined.
+END DESCRIPTION **********************************************************/
+nodebug void setdaisy(char code)
+{
+	outport(KIOC, (inport(KIOC) & 0x80) | 8 | (code & 7));
+}
+
+/*** Beginheader setled1 */
+
+int setled1(char value);
+
+/*** Endheader */
+
+char s0_wreg5;               // may be defined in SIO driver also
+
+/* START FUNCTION DESCRIPTION ********************************************
+setled1                      <DRIVERS.LIB>
+
+SYNTAX: int setled1(char value);
+
+KEY WORDS: OUTPUT
+
+DESCRIPTION: Turns LED #1 on if value is non-zero, or off if value is zero.
+
+RETURN VALUE: Undefined.
+END DESCRIPTION **********************************************************/
+nodebug int setled1(char value)
+{
+	char var;
+	
+	if (value) 
+		value = 0x80;
+	intoff(&var);
+	outport(SIOCA, 5);
+	outport(SIOCA, s0_wreg5 = (s0_wreg5 & 0x7f) | value);
+	inton(&var);
+}
+
+/*** BeginHeader _sysZIfPwrFail */
+
+/*** EndHeader */
+
+#asm
+_sysZIfPwrFail::
+			in0   a,(0x4b)   ; make sure pointer is to register zero
+			ld a,10h
+			out0  (0x4b),a   ; reset ext status for DCD test
+			in0   a,(0x4b)   ; status
+			bit   3,a      ;test DCD
+			ret
+#endasm
+

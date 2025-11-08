@@ -1,0 +1,3644 @@
+/* START LIBRARY DESCRIPTION *********************************************
+DRIVERS.LIB
+	Copyright (c) 1994, Z-World.
+
+DESCRIPTION: Miscellaneous hardware drivers library. Many of these routines
+disable interrupts for short periods. Define NODISINT to prevent this.
+
+SUPPORT LIB'S: 
+END DESCRIPTION **********************************************************/
+// 2-28-95 Added support for MicroG2.
+// 12-15-95
+// Use LCDRD to read LCD. Not all boards has LCDRD==LCDWR.
+// 11-16-95
+// Rename board 8 to LittleG and board 9 to MicroG.
+// 8-15-95
+// Added support for flash eprom on the Little Star in function
+// relocate_int1().
+
+// 7-18-95
+// Redo the fix for the RTC when using the SmartCoreZ1.
+
+// 7-6-95
+// Correct function setperiodic() so that the RTC stays in 24hour mode. 
+// Correct init_timer() so that TREGE is not zeroed and TREGD's bit 2 is 1.
+
+// 6-7-95
+// Put back correction for tm_wr and tm_rd for the SmartCore Z1. 
+// Put back function eei_wr to complement eei_rd.
+// Changes were inadvertenly written over on 5-2-95 via sourcesafe.
+
+// 5-12-95
+// Support flash for Rugged Giant (fp02420 and up).
+// Support flash for Little Genius (fp02706 and up).
+
+// 3-21-95
+// Added generic WriteFlash routines for all boards that has Flash.
+
+// 2-15-95 
+// Added support for the MicroGenius
+
+// 2-10-95  
+// Make mktime treat year < 80 to be offset by 100. 
+
+// 1-20-95
+// made tm_rd() and tm_wr() work for Toshiba clock also. Moved in tmc_rd & wr
+// from CPLC.LIB
+
+// 12-14-94
+// init_timer() for the epson clock is accessing incorrect io registers.
+// The incorrect io registers also latch data to the plcbus.
+
+// 10-26-94
+// Add support for the Little Genius.
+
+// 8-27-94
+// Add window to service stepper motor expansion card interrupt
+// within plcbus_isr.
+
+// 8-12-94
+// Modify plcbus_isr to save and restore the plcbus so that the other
+// interrupt service routine per plcbus expansion card does not need to
+// save and restore them. 
+
+// 
+// 7-7-94
+// Add support for the Z104 and Z104ISA
+// Add support for the 9MHZ Rugged Giant
+/* fixes:
+	Nov 6 90 Add support for %0nd etc format in printf
+	Nov 8 90 Fix hv_wr was disabling interrupts
+	Nov 10 90 fix ad_rd10 - bad readings when previous reading on
+						non similar channel (sel 0 different)
+						slow down write clock
+	Nov 24 90 same fix for ad_rd12
+*/
+
+// 3-14-94  added support for the Little Star   aoc
+
+
+/*** Beginheader */
+
+/* Codes for the various types of boards */
+
+#define BL11xx				1
+#define LITTLE_GIANT		BL11xx
+
+#define TINY_GIANT		3
+
+#define BL13xx				2
+#define SMARTBLOCK		BL13xx
+
+#define BL12xx				4
+#define PLC_BOARD			BL12xx
+
+#define PK21xx				5
+#define CPLC_BOARD		PK21xx
+
+#define PK22xx				6
+#define L_STAR				PK22xx
+
+#define Z104ISA			7
+
+#define BL16xx				8
+#define LittleG			BL16xx
+
+#define BL14xx				9
+#define MicroG				BL14xx
+
+#define CM71xx				10
+#define CM72xx				CM71xx
+#define SCoreZ1			CM71xx
+
+#define BL15xx				11
+#define MicroG2			BL15xx
+
+#define PK23xx				12
+#define TinyStar			PK23xx
+
+#define LP31xx				13
+
+/*** Endheader */
+
+/*** Beginheader plcport */
+
+int plcport(int bit);
+
+/*** Endheader plcport*/
+
+/* START FUNCTION DESCRIPTION ********************************************
+plcport                      <DRIVERS.LIB>
+
+SYNTAX: int plcport(int bit);
+
+DESCRIPTION: Checks the specified bit of the PLC bus port.
+
+PARAMETER1: the bit to check
+
+RETURN VALUE: 1, if if specified bit is set, else zero.
+END DESCRIPTION **********************************************************/
+plcport(int bit)
+{
+	return !IBIT(PIODA, bit);
+}
+
+
+/*** Beginheader set16adr, set12adr, set4adr, read4data, read12data,
+	 write4data, write12data */
+
+/* manipulate the PLC expansion bus
+	address is up to 16 bits containing 4 x 4 bit fields
+	most significent 4 bits is bus expansion address not used by many boards
+	next 12 bits is 3 4 bit addresses with first address stored least nibble
+	most address stored is nibble represented by bits 8-11
+*/
+/* setxxadr sets up bus address, selecting a particular card */
+
+void set16adr(int adr);
+void set12adr(int adr);
+void set4adr(int adr);        // change only  bits 8-11 least sig of address
+
+char read4data(int adr);     // different registers on same board
+char read12data(int adr);
+void  write4data(int adr, char dat);
+void  write12data(int adr, char dat);
+
+/*** Endheader */
+
+extern SHBUS0;
+
+/* START FUNCTION DESCRIPTION ********************************************
+set16adr                     <DRIVERS.LIB>
+
+SYNTAX: void set16adr(int adr);
+
+KEY WORDS: 
+
+DESCRIPTION: Sets the current address for the PLCBus. All read and write
+operations will access this address until a new address is set.
+
+PARAMETER1:  a 16-bit physical address (for 4-bit bus).
+The high order nibble contains the expansion register value,
+while the remaining nibbles form a 12-bit
+address (the first and third nibbles must be swapped).
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+set12adr                     <DRIVERS.LIB>
+
+SYNTAX: void set12adr(int adr);
+
+DESCRIPTION: Sets the current address for the PLCBus.  All read and write
+operations will access this address until a new address is set.
+
+PARAMETER1: a 12-bit physical address (for 4-bit bus) with the first and 
+third nibbles swapped (most significant nibble in the low four bits).
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+set4adr                      <DRIVERS.LIB>
+
+SYNTAX: void set4adr(int adr);
+
+KEY WORDS: 
+
+DESCRIPTION: Sets the current address for the PLCBus.  All read and write
+operations will access this address until a new address is set. A 12-bit 
+address may be passed to this function, but only the last  4 bits will be set.
+This function should only be called if the first  8 bits of the address are 
+the same as the address in the previous call to set12adr.
+
+PARAMETER1: "adr" contains the last 4-bits of the physical address (for 4-bit
+bus) in bits 8 - 11.  
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+read4data                    <DRIVERS.LIB>
+
+SYNTAX: char read4data(int adr);
+
+DESCRIPTION: Sets the last 4 bits of the current PLCBus address using "adr"
+(bits 8 - 11).  Then reads 4 bits of data off of the bus with a BUSRD0 cycle.
+
+PARAMETER1:  bits 8 - 11 specify the address to read.
+
+RETURN VALUE: PLCBus data in lower 4 bits (upper bits undefined).
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+read12data                   <DRIVERS.LIB>
+
+SYNTAX: char read12data(int adr);
+
+KEY WORDS: 
+
+DESCRIPTION: Sets the current PLCBus address using the 12-bit "adr."  
+Then reads 4 bits of data off of the bus with a BUSRD0 cycle.
+
+RETURN VALUE: PLCBus data in lower 4 bits (upper bits undefined).
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+write4data                   <DRIVERS.LIB>
+
+SYNTAX: void write4data(int adr, char dat);
+
+KEY WORDS: 
+
+DESCRIPTION: Sets the last 4 bits of the current PLCBus address using "adr"
+(bits 8 - 11). Then writes 4 bits of data (low 4 bits of dat) to the bus.
+
+PARAMETER1:  bits 8 - 11 specify the address to read.
+
+PARAMETER2:  bits 0 - 3 specify the data to write to the bus.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+write12data                  <DRIVERS.LIB>
+
+SYNTAX: void write12data(int adr, char dat);
+
+DESCRIPTION: Sets the current PLCBus address using the 12-bit "adr." 
+Then writes 4 bits of data (low 4 bits of dat) to the bus.
+
+PARAMETER1:  12 bit address to set the PLCBus to.
+
+PARAMETER2:  bits 0 - 3 specify the data to write to the bus.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+#asm
+set16adr::      ; setxadr(int) sets 16 bit address using 4 nibbles
+	ex de,hl
+	ld hl,SHBUS0+1
+	ld a,BUSEXP    ;address of bus expansion register
+	ld (hl),a   ; shadow bus expansion
+	ld a,h
+	rra
+	rra
+	rra
+	rra      ;bus expansion most sig
+	dec   hl
+	ld 	(hl),a   ;shadow value of busexpansion register
+	ld		bc,BUSWR
+	out	(c),a   ;write bus expansion register
+	ex de,hl
+set12adr::              ; FIX MGL per MS added colon to make global
+	ex de,hl
+	ld hl,SHBUS0+1
+	ld (hl),e   ; shadow BUSADR0
+	ld		bc,BUSADR0
+	out	(c),e
+	ld a,e
+	rra
+	rra
+	rra
+	rra
+	inc   hl
+	ld (hl),a   ; shadow BUSADR1
+	ld		bc,BUSADR1
+	out	(c),a ;second nibble
+	inc   hl
+	ld (hl),d   ;3rd nibble
+	ld		bc,BUSADR2
+	out	(c),d
+	ret
+; set only bus address 2
+set4adr::
+	ex de,hl
+	ld hl,SHBUS0+3
+	ld (hl),d   ; bits 8-11
+	ld		bc,BUSADR2
+	out	(c),d
+	ret
+read12data::
+	call  set12adr
+	ld		bc,BUSRD0
+	in		l,(c)
+	ld    h,0
+	ret
+read4data::
+	call  set4adr
+	ld		bc,BUSRD0
+	in		l,(c)
+	ld h,0
+	ret
+write12data::
+	call  set12adr
+	pop   hl    ;return
+	pop   de    ;arg1
+	pop   de    ;arg2
+	ld		bc,BUSWR
+	out	(c),e
+	push  de
+	push  de
+	jp (hl)     ;return
+write4data::
+	call  set4adr
+	pop   hl
+	pop   de
+	pop   de
+	ld		bc,BUSWR
+	out	(c),e
+	push  de
+	push  de
+	jp (hl)
+#endasm
+
+/*** BeginHeader */
+
+char *eebank0(void);
+char *eebank1(void);
+
+/*** EndHeader */
+
+/*** Beginheader entint_,intr1,intr2,intr3  */
+/*** Endheader */
+
+
+/* START _FUNCTION DESCRIPTION ********************************************
+entint_                      <DRIVERS.LIB>
+
+SYNTAX:
+
+KEY WORDS: 
+
+DESCRIPTION:
+
+RETURN VALUE: 
+END DESCRIPTION **********************************************************/
+
+/* START _FUNCTION DESCRIPTION ********************************************
+intr1                        <DRIVERS.LIB>
+
+SYNTAX:
+
+KEY WORDS: 
+
+DESCRIPTION:
+
+RETURN VALUE: 
+END DESCRIPTION **********************************************************/
+
+/* START _FUNCTION DESCRIPTION ********************************************
+intr2                        <DRIVERS.LIB>
+
+SYNTAX:
+
+KEY WORDS: 
+
+DESCRIPTION:
+
+RETURN VALUE: 
+END DESCRIPTION **********************************************************/
+
+/* START _FUNCTION DESCRIPTION ********************************************
+intr3                        <DRIVERS.LIB>
+
+SYNTAX:
+
+KEY WORDS: 
+
+DESCRIPTION:
+
+RETURN VALUE: 
+END DESCRIPTION **********************************************************/
+
+#asm nodebug fast
+
+; ENTINT.: Enter from Interrupt
+;
+; CALLING:
+;           push    af
+;           push    hl
+;           call    entint.
+; INPUT  :
+;           None
+; OUTPUT :
+;           None
+entint_::
+	pop   hl    ; Return Address
+	push  de
+	push  bc
+	in0   c,(CBR)
+	push  bc
+	exx
+	ex af,af'
+	push  af
+	push  hl
+	push  de
+	push  bc
+	push  iy
+;   push  ix
+#if((BOARD_TYPE==PLC_BOARD)+(BOARD_TYPE==CPLC_BOARD)+(BOARD_TYPE==L_STAR))
+; code to save bus state for expansion bus
+	ld hl,(SHBUS0)
+	push  hl
+	ld hl,(SHBUS1)
+	push  hl
+; end of expansion bus code
+#endif
+
+#if((BOARD_TYPE==LittleG))
+; code to save bus state for expansion bus
+	ld hl,(SHBUS0)
+	push  hl
+	ld hl,(SHBUS1)
+	push  hl
+; end of expansion bus code
+#endif
+
+#if((BOARD_TYPE==Z104ISA))
+; code has to save bus state for expansion bus
+	ld      hl, (SHBUS0)
+	push    hl
+	ld      hl, (SHBUS1)
+	push    hl
+; end of expansion bus code
+	ld      hl, (SHHiAddr)          ; save PC104 High Address
+	push    hl
+
+#endif
+
+	ld hl,(RST28SWT)  ; RST28 Switch
+	ld e,(hl)
+	push  de    ; Save Switch on Top of Stack
+	ld a,(RST28SWT_OFF)
+	ld (hl),a      ; Disable Switch
+	exx         ; Restore Return Address
+	jp (hl)     ; Return
+
+
+#if((BOARD_TYPE==PLC_BOARD)+(BOARD_TYPE==CPLC_BOARD)+(BOARD_TYPE==L_STAR))
+; module to set expansion bus address
+; from e-d-c-b  which is bus expan, busadr0, busadr1, busadr2
+;  which is a long at SHBUS or SHBUS0 (least) SHBUS1 (most)
+
+resxadr::
+	ld hl,SHBUS0+1  ; point to BUSADR0 shadow
+	ld a,BUSEXP
+	ld (hl),a   ;set shadow
+	out0  (BUSADR0),a
+	dec   hl
+	ld (hl),e   ; shadow for bus expansion
+	out0  (BUSWR),e      ; set expansion register
+	inc   hl    ;point to BUSADR0 shadow
+	ld    (hl),d
+	out0  (BUSADR0),d
+	inc   hl
+	ld (hl),c
+	out0  (BUSADR1),c
+	inc   hl
+	ld (hl),b
+	out0  (BUSADR2),b
+	ret
+#endif
+
+#if((BOARD_TYPE==LittleG))
+; module to set expansion bus address
+; from e-d-c-b  which is bus expan, busadr0, busadr1, busadr2
+;  which is a long at SHBUS or SHBUS0 (least) SHBUS1 (most)
+
+resxadr::
+	ld hl,SHBUS0+1  ; point to BUSADR0 shadow
+	ld a,BUSEXP
+	ld (hl),a   ;set shadow
+	out0  (BUSADR0),a
+	dec   hl
+	ld (hl),e   ; shadow for bus expansion
+	out0  (BUSWR),e      ; set expansion register
+	inc   hl    ;point to BUSADR0 shadow
+	ld    (hl),d
+	out0  (BUSADR0),d
+	inc   hl
+	ld (hl),c
+	out0  (BUSADR1),c
+	inc   hl
+	ld (hl),b
+	out0  (BUSADR2),b
+	ret
+#endif
+
+#if((BOARD_TYPE==Z104ISA))
+; module to set expansion bus address
+; from e-d-c-b  which is bus expan, busadr0, busadr1, busadr2
+;  which is a long at SHBUS or SHBUS0 (least) SHBUS1 (most)
+
+resxadr::
+	ld hl,SHBUS0+1  ; point to BUSADR0 shadow
+	ld a,BUSEXP
+	ld (hl),a   ;set shadow
+	out0  (BUSADR0),a
+	dec   hl
+	ld (hl),e   ; shadow for bus expansion
+	out0  (BUSWR),e      ; set expansion register
+	inc   hl    ;point to BUSADR0 shadow
+	ld    (hl),d
+	out0  (BUSADR0),d
+	inc   hl
+	ld (hl),c
+	out0  (BUSADR1),c
+	inc   hl
+	ld (hl),b
+	out0  (BUSADR2),b
+	ret
+#endif
+
+intr1::           ; Returns from Interrupt
+	pop   de    ; DE = RST28 Switch
+	ld hl,(RST28SWT)
+	ld (hl),e      ; Restore
+#if ((BOARD_TYPE==PLC_BOARD)+(BOARD_TYPE==CPLC_BOARD)+(BOARD_TYPE==L_STAR))
+; code for expansion bus
+	pop   bc       ; most of shadow registers
+	pop   de       ;least of shadow registers
+	call  resxadr
+; end of expansion bus code
+#endif
+
+#if ((BOARD_TYPE==LittleG))
+; code for expansion bus
+	pop   bc       ; most of shadow registers
+	pop   de       ;least of shadow registers
+	call  resxadr
+; end of expansion bus code
+#endif
+
+#if (BOARD_TYPE==Z104ISA)
+	pop     hl
+	ld      bc, HIADDR
+	out     (c), l
+	ld      (SHHiAddr), hl
+; code for expansion bus
+	pop     bc          ; most of shadow registers
+	pop     de          ; least of shadow registers
+	call    resxadr
+; end of expansion bus code
+#endif
+
+;   pop   ix
+	pop   iy
+	pop   bc
+	pop   de
+	pop   hl
+	pop   af
+	ex af,af'
+	exx
+	pop   bc
+	out0  (CBR),c
+	pop   bc
+	pop   de
+	pop   hl
+	pop   af
+	ei
+	reti
+intr2::           ; Return Without Resetting Z80 Peripherials
+	pop   de    ; DE = RST28 Switch
+	ld hl,(RST28SWT)
+	ld (hl),e      ; Restore
+#if ((BOARD_TYPE==PLC_BOARD)+(BOARD_TYPE==CPLC_BOARD)+(BOARD_TYPE==L_STAR))
+; code for expansion bus
+	pop   bc       ; most of shadow registers
+	pop   de       ;least of shadow registers
+	call  resxadr
+; end of expansion bus code
+#endif
+
+#if ((BOARD_TYPE==LittleG))
+; code for expansion bus
+	pop   bc       ; most of shadow registers
+	pop   de       ;least of shadow registers
+	call  resxadr
+; end of expansion bus code
+#endif
+
+#if (BOARD_TYPE==Z104ISA)
+	pop     hl
+	ld      bc, HIADDR
+	out     (c), l
+	ld      (SHHiAddr), hl
+; code for expansion bus
+	pop     bc          ; most of shadow registers
+	pop     de          ; least of shadow registers
+	call    resxadr
+; end of expansion bus code
+#endif
+;   pop   ix
+	pop   iy
+	pop   bc
+	pop   de
+	pop   hl
+	pop   af
+	ex af,af'
+	exx
+	pop   bc
+	out0  (CBR),c
+	pop   bc
+	pop   de
+	pop   hl
+	pop   af
+	ei
+	ret
+intr3::           ; Return from NMI
+	pop   de    ; DE  = RST28 Switch
+	ld hl,(RST28SWT)
+	ld (hl),e      ; Restore
+#if ((BOARD_TYPE==PLC_BOARD)+(BOARD_TYPE==CPLC_BOARD)+(BOARD_TYPE==L_STAR))
+; code for expansion bus
+	pop   bc       ; most of shadow registers
+	pop   de       ;least of shadow registers
+	call  resxadr
+; end of expansion bus code
+#endif
+
+#if ((BOARD_TYPE==LittleG))
+; code for expansion bus
+	pop   bc       ; most of shadow registers
+	pop   de       ;least of shadow registers
+	call  resxadr
+; end of expansion bus code
+#endif
+
+#if (BOARD_TYPE==Z104ISA)
+	pop     hl
+	ld      bc, HIADDR
+	out     (c), l
+	ld      (SHHiAddr), hl
+; code for expansion bus
+	pop     bc          ; most of shadow registers
+	pop     de          ; least of shadow registers
+	call    resxadr
+; end of expansion bus code
+#endif
+
+;   pop   ix
+	pop   iy
+	pop   bc
+	pop   de
+	pop   hl
+	pop   af
+	ex af,af'
+	exx
+	pop   bc
+	out0  (CBR),c
+	pop   bc
+	pop   de
+	pop   hl
+	pop   af
+	retn
+
+#endasm
+
+
+/*** BeginHeader hv_wr,hv_enb,hv_dis */
+
+void hv_wr(char v);           // write character
+void hv_enb(void);            // enable output
+void hv_dis(void);            // disable output
+
+/*** EndHeader   hv_wr,hv_enb,hv_dis */
+
+/* START FUNCTION DESCRIPTION ********************************************
+hv_wr                        <DRIVERS.LIB>
+
+SYNTAX: void hv_wr(char v);
+
+KEY WORDS: HIGH_VOLTAGE, OUTPUT
+
+DESCRIPTION: Writes 8 bits to the high voltage driver.  Each bit affects 
+one high voltage output.  A 1 enables the corresponding output; 0 disables 
+the output.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+hv_enb                       <DRIVERS.LIB>
+
+SYNTAX: void hv_enb(void);
+
+KEY WORDS: HIGH_VOLTAGE, OUTPUT
+
+DESCRIPTION: Enables high voltage driver.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+hv_dis                       <DRIVERS.LIB>
+
+SYNTAX: void hv_dis(void);
+
+KEY WORDS: HIGH_VOLTAGE, OUTPUT
+
+DESCRIPTION: Disables high voltage driver.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+
+#if BOARD_TYPE==PLC_BOARD    // for PLC board special code
+
+#asm nodebug
+HVSTB: equ 8h  ;high voltage driver strobe line on PIO
+HVOE: equ 4h   ; high voltage enable line on PIO
+hv_wr::
+#ifndef NODISINT
+	ld a,i   ;get interrupt status
+	di
+	push  af ;save it
+#endif
+	out0  (TRDR),l ;out data
+	ld a,010h
+	out0  (CNTR),a ;start output
+hvaa: in0   a,(CNTR)
+	and   010h
+	jr nz,hvaa  ;wait
+; note: resPIODB and setPIODB disable interrupts briefly
+	ld hl,HVSTB
+	push  hl ;hvstrobe
+	call  resPIODB ; reset the strobe
+	pop   hl
+	ld hl,HVSTB
+	push  hl
+	call  setPIODB ; set the strobe
+	pop   hl
+	ld hl,HVSTB
+	push  hl ;hvstrobe
+	call  resPIODB ; reset the strobe
+	pop   hl
+#ifndef NODISINT
+	pop   af
+	ret   po ;if interrupts were off
+	ei
+#endif
+	ret
+hv_enb::
+	ld hl,HVOE
+	push  hl
+	call  resPIODB ;disables interrupts briefly
+	pop   hl
+	ret
+hv_dis::
+	ld hl,HVOE
+	push  hl
+	call  setPIODB
+	pop   hl
+	ret
+#endasm
+
+#endif
+
+#if BOARD_TYPE!=PLC_BOARD
+/*======================================================================*\
+High Voltage Driver Test
+hv_wr(dat)
+\*======================================================================*/
+
+
+/* hv_wr(int v)  output 8 bits to high voltage driver */
+#asm nodebug
+hv_wr::
+#ifndef NODISINT
+	ex af,af'
+	ld a,i   ;get interrupt status
+	di
+	ex af,af'
+#endif
+; modification 16-AUG-91 to prepare for future modification of
+; Tiny Giant Card to replace 5825 with 5841 high voltage driver
+; Modification 5-Dec-91 to allow for option of 5830/31 driver on rev C
+; tiny giant cards
+	ld bc,BMS      ; set I/O address and check for Tiny Giant
+	bit   7,b      ; sign set means Tiny
+	jr z,hvab      ; if Little Giant, etc.
+	ld a,l
+	and   0f0h     ; 4 bits
+	ld l,a
+	rrca
+	rrca
+	rrca
+	rrca
+	or l
+	ld l,a      ; duplicate upper 4 bits for Tiny
+hvab:
+; end of mod
+	out0  (TRDR),l ;out data
+	ld a,010h
+	out0  (CNTR),a ;start output
+hvaa: in0   a,(CNTR)
+	and   010h
+	jr nz,hvaa  ;wait
+	ld a,l      ; mod 5-dec-91 to provide for 5830 option
+	out   (C),a    ;strobe to latch (BC still set)
+#ifndef NODISINT
+	ex af,af'
+	ret   po ;if interrupts were off
+	ei
+#endif
+	ret
+#endasm
+/* enable hivoltage driver */
+
+nodebug void hv_enb(void)
+{
+	outport(BMO, 1);     // enable driver
+}
+
+nodebug void hv_dis(void)
+{
+	outport(BMO, 0);     // disable driver
+}
+
+#endif
+
+/*** BeginHeader lcd_init,lputc,lprintf */
+
+/*============= Liquid Crystal Display drivers =============
+
+	begin:    lcd_init(0x18);
+
+	to send characters, position cursor, etc:
+
+		  lputc(char)  use special chars for control
+
+		  lputs(char *)   sends a null terminated string
+
+		  lprintf(....)   does a printf to display
+
+============================================================*/
+
+
+
+void lcd_init(char mode);
+int lputc(char ch);
+int lprintf(char *format, ...);
+
+/*** EndHeader    */
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+lcd_init                     <DRIVERS.LIB>
+
+SYNTAX: void lcd_init(char mode);
+
+KEY WORDS: LITTLE_GIANT, DISPLAY, OUTPUT
+
+DESCRIPTION: Initializes the liquid crystal display. "mode" should normally
+be set to 0x18.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+
+#ifndef LCDWR
+#error "There is no LCD port (LCDWR not defined)"
+#else
+nodebug void lcd_init(char kk)
+{
+	static unsigned int k;
+	
+	kk = kk | 0x20;
+	outport(LCDWR, kk);
+	for (k = 0; k < 400; k++)
+		;                    // 4 ms delay
+	for (k = 0; k < 3; k++)
+	{
+		outport(LCDWR, kk);
+		del100();
+	}                        // 4 times function set per Sieko
+	lcdcmd(6);
+	lcdcmd(0xe);
+	lcdcmd(1);
+	lcdcmd(0x80);
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+del100                       <DRIVERS.LIB>
+
+SYNTAX: int del100(void);
+
+KEY WORDS: INTERNAL
+
+DESCRIPTION: Provides a short delay.
+
+RETURN VALUE: Undefined.
+END DESCRIPTION **********************************************************/
+nodebug del100(void)
+{
+	static int k;
+
+	for (k = 0; k < 8; k++)
+		;
+}
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+lcdcmd                       <DRIVERS.LIB>
+
+SYNTAX: int lcdcmd(char cmd);
+
+KEY WORDS: INTERNAL
+
+DESCRIPTION: Sends a single command to the LCD.
+
+PARAMETER1: command to send
+
+RETURN VALUE: Undefined.
+END DESCRIPTION **********************************************************/
+nodebug lcdcmd(char cmd)
+{
+	lcd_wait();
+	outport(LCDWR, cmd);
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+lputc                        <DRIVERS.LIB>
+
+SYNTAX: int lputc(char cc);
+
+KEY WORDS: LITTLE_GIANT, DISPLAY, OUTPUT
+
+DESCRIPTION: Sends a character to the LCD and updates the cursor (without
+wrap around).
+
+PARAMETER1: "cc" is the character to send; if the high bit is set, it 
+will be treated as a control character.  Possible control characters are 
+as follows:
+	\n            Newline ( Position Cursor to Line 1, Column 0 )
+	\xFF          Clear Screen
+	\xF0          Clear Line 0
+	\xF1          Clear Line 1
+	\xF2          Cursor OFF ( cursor invisible, blink off)
+	\xF3          Cursor ON  ( solid cursor block )
+	\xF4          Cursor BLINK (blinks continuously)
+	\xF5          Shift Display Left
+	\xF6          Shift Display Right
+	\x80 - \xA7   Position Cursor Line 0
+	\xC0 - \xE7   Position Cursor Line 1
+
+RETURN VALUE: Undefined.
+END DESCRIPTION **********************************************************/
+nodebug indirect int lputc(char cc)
+{
+	lcd_wait();
+	if ((cc & 0x80) ^0x80)   // non ascii character
+	{
+		if (cc == 0xA)
+		{
+			lcdcmd(0xC0);
+			return;
+		}                    // line feed, more to line 1, col 1
+		else
+		{
+			outport(LCDWR + 1, cc);
+			return;
+		}                    // out char
+	}
+	else
+	{
+		switch (cc)
+		{
+			case 0xff:
+				lcdcmd(1);
+				break;       // clear screen
+			case 0xf0:
+				lcd_clr_line(0x80);
+				break;       // clear line 0
+			case 0xf1:
+				lcd_clr_line(0xc0);
+				break;       // clear line 1
+
+			// FIX MGL 12/23/92 cleared line before turning cursor off
+			case 0xf2:
+				lcdcmd(0xc);
+				break;       // cursor off
+			case 0xf3:
+				lcdcmd(0xe);
+				break;       // cursor on
+			case 0xf4:
+				lcdcmd(0xd);
+				break;       // cursor blink
+			case 0xf5:
+				lcdcmd(0x18);
+				break;       // display left
+			case 0xf6:
+				lcdcmd(0x1c);
+				break;       // display right
+			default:
+				lcdcmd(cc);  // direct command
+		}
+	}
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+lcd_clr_line                 <DRIVERS.LIB>
+
+SYNTAX: int lcd_clr_line(char code);
+
+KEY WORDS: INTERNAL
+
+DESCRIPTION: Clears a line on the LCD.
+
+PARAMETER1: "code" should be 0x80 to clear line 
+0 and 0xC0 to clear line 1.
+
+RETURN VALUE: Undefined.
+END DESCRIPTION **********************************************************/
+nodebug lcd_clr_line(char code)
+{
+	static int k;
+	
+	lcdcmd(code);
+	for (k = 0; k < 28; k++)
+	{
+		lcd_wait();
+		outport(LCDWR + 1, ' ');
+	}
+	lcd_wait();
+	lcdcmd(code);
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+lcd_wait                     <DRIVERS.LIB>
+
+SYNTAX: int lcd_wait(void);
+
+KEY WORDS: INTERNAL
+
+DESCRIPTION: Waits until the LCD is ready to accept data.
+
+RETURN VALUE: Undefined.
+END DESCRIPTION **********************************************************/
+nodebug int lcd_wait(void)
+{
+// aoc, 12-15-95  while (IBIT(LCDWR, 7));
+	while( IBIT(LCDRD, 7)); // distinguished between read and write port
+}
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+lprintf                      <DRIVERS.LIB>
+
+SYNTAX: int lprintf(char *fmt, ...);
+
+KEY WORDS: LITTLE_GIANT, DISPLAY, OUTPUT
+
+DESCRIPTION: Same as printf, but outputs to LCD.
+
+RETURN VALUE: Undefined.
+END DESCRIPTION **********************************************************/
+nodebug lprintf(char *fmt, ...)
+{
+
+	doprnt(lputc, fmt, ((char *) &fmt + sizeof (fmt)),NULL);
+}
+
+#endif
+
+/*** BeginHeader lputs */
+
+char *lputs(char *p);        // put char string to lcd
+
+/*** EndHeader lputs */
+
+/* START FUNCTION DESCRIPTION ********************************************
+lputs                        <DRIVERS.LIB>
+
+SYNTAX: char *lputs(char *p);
+
+KEY WORDS: LITTLE_GIANT, DISPLAY, OUTPUT
+
+DESCRIPTION: Sends the null-terminated string, pointed to by "p", to the 
+LCD and updates the cursor (without wrap around).  All characters (except 
+null) are sent directly to the LCD; control characters are not recognized.
+
+PARAMETER1: pointer to null-terminated string to send
+
+RETURN VALUE: Pointer to the string.
+END DESCRIPTION **********************************************************/
+#ifndef LCDWR
+#error "There is no LCD port (LCDWR not defined)"
+#else
+nodebug char *lputs(char *p)
+{
+	static char *pp;
+	
+	pp = p;
+	while (*pp)
+	{
+		lcd_wait();
+		outport(LCDWR + 1, *pp++);
+	}
+	return p;
+}
+
+#endif
+/*** Beginheader intoff, inton, doint  */
+
+char * intoff(char *var);
+char * inton(char *var);
+void doint();
+
+/*** Endheader */
+
+/*
+	routine to disable interrupts in a section of code
+
+	intoff(char *var)     disables interrupts, saves int state in var
+
+	inton(char *var)      restores interrupt off-on state
+
+	doint()              enables interrupts for short period
+
+	If the interrupts were off, these do nothing. If they were on they
+	are disabled by intoff and enabled by inton. var is used to save
+	the on-off state
+
+*/
+
+/* START FUNCTION DESCRIPTION ********************************************
+intoff                       <DRIVERS.LIB>
+
+SYNTAX: char * intoff(char *var);
+
+KEY WORDS: LITTLE_GIANT, INTERRUPT
+
+DESCRIPTION: Saves the current interrupt state in var and then disables
+interrupts.
+
+PARAMETER1: Address to save current interrupt state to.
+
+RETURN VALUE: var.
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+inton                        <DRIVERS.LIB>
+
+SYNTAX: char * inton(char *var);
+
+KEY WORDS: ALL_BOARDS, INTERRUPT
+
+DESCRIPTION: Enables interrupts if they were previously on, according to
+var. var must have been set previously by a call to intoff.
+
+RETURN VALUE: var.
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+doint                        <DRIVERS.LIB>
+
+SYNTAX: void doint(void);
+
+KEY WORDS: ALL_BOARDS, INTERRUPT
+
+DESCRIPTION: Enables interrupts for a short time and then disables them (if
+they were previously off). This allows interrupts to be processed in code
+where they are otherwise disabled.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+#asm nodebug
+intoff::
+	ld a,i      ; int ff to parity flag
+	push  af    ; get flags to e
+	pop   de
+	ld (hl),e      ;save state  at *var
+	di
+	ret
+inton::
+	ld e,(hl)   ;get state
+	push  de
+	pop   af    ;to pe flag
+	ret   po    ;if interrupts not on, don't turn on
+	ei
+	ret
+doint::           ;make a window for an interrupt to take place
+	ld a,i
+	ret   pe       ;if interrupts on
+	ei
+	nop
+	nop
+	di
+	ret
+#endasm
+
+
+/*** BeginHeader */
+// mask for values read from timer
+ char tm_mask[] =
+	 {
+		 0xf, 0x7, 0xf, 0x7, 0xf, 0x3, 0xf, 0x3, 0xf, 0x1, 0xf, 0xf, 0x7
+	 };
+/*** Endheader    */
+
+/*** BeginHeader tm_rd */
+
+int tm_rd(struct tm * t);
+
+							
+/*** Endheader    */
+
+/*=================== read timer =============================
+  t - pointer to 7 byte array or structure
+=============================================================*/
+
+/* START FUNCTION DESCRIPTION ********************************************
+tm_rd                        <DRIVERS.LIB>
+
+SYNTAX: int tm_rd(struct tm *t);
+
+KEY WORDS: REAL-TIME CLOCK
+
+DESCRIPTION: Reads the current system time into the structure t.
+
+PARAMETER1: Address read time into.
+
+RETURN VALUE: 0 if successful; -1 if clock failing or not installed.
+END DESCRIPTION **********************************************************/
+nodebug int tm_rd(struct tm * t)
+{
+	auto int i;
+
+#if (BOARD_TYPE == LP31xx)
+	return rtcGetDateTime(t);
+#elif (BOARD_TYPE==PK22xx)
+	i = _72421Exists();
+	if (!i) {
+		i = _8250Exists();
+		if (i) i = tmc_rda(t, 0);		//	printf("Toshiba 8250 RTC found.\n");
+		else i = -1;					//
+			//	printf("None of Epson 72421 or Toshiba 8250 RTC is found.\n");
+	} else {
+		i = tm_rda(t,0);		//	printf("Epson 72421 RTC found.\n");
+	}
+	
+#else
+#ifdef TREGD
+	i =  tm_rda(t, 0);             // 7-18-95
+#endif                                 // 4-10-95, SCoreZ1    
+	 
+#ifdef RTALE
+	i = tmc_rda(t, 0);
+#endif    
+
+//2-15-95
+#if (BOARD_TYPE==MicroG) || (BOARD_TYPE==MicroG2)
+	i = ReadTime1302(t);
+#endif
+#endif
+	if (t->tm_year < 80) t->tm_year += 100;
+	return i;
+}
+
+
+/*** BeginHeader tm_rda */
+					  
+/*** Endheader    */
+
+extern char tm_mask[];
+
+/* START FUNCTION DESCRIPTION ********************************************
+tm_rda                       <DRIVERS.LIB>
+
+SYNTAX: int tm_rda(struct tm *t, char mode);
+
+KEY WORDS: LITTLE_GIANT, CLOCK
+
+DESCRIPTION: Read or write the contents of the timer chip to/from the
+structure t. 
+
+PARAMETER1: Address to read time to or from.
+
+PARAMETER2: mode must be 0 to read from the timer; non-zero to write to
+the timer.
+
+RETURN VALUE: 0 if successful; -1 if clock failing or not installed.
+END DESCRIPTION **********************************************************/
+nodebug int tm_rda(struct tm * t, char mode)
+{
+	static unsigned int k, j;
+	static char *p;
+
+#if BOARD_TYPE==SCoreZ1                         // 7-18-95
+	tm_outport(TREGD, inport(TREGD) | 0x04);     // 7-18-95
+#else                                           // 7-18-95
+	ISET(TREGD, 2);          // so RTC no put board to sleep
+#endif                                          // 7-18-95
+
+#if BOARD_TYPE == SCoreZ1                       // 7-18-95      
+		tm_outport(TREGD+2, 4);  // 24 hour mode
+#else                                           // 7-18-95
+		outport(TREGD+2, 4);      // set hold          
+#endif                                          // 7-18-95
+
+	// 2-10-95, 500 is too many tries, for (k = 0; k < 500; k++)
+	for(k=0; k< 50; k++)            // 2-10-95, 50 tries is enough
+	{
+
+#if BOARD_TYPE == SCoreZ1                       // 7-18-95      
+		tm_outport(TREGD, inport(TREGD) | 0x01);  // 7-18-95
+#else                                           // 7-18-95
+		ISET(TREGD, 0);      // set hold          
+#endif                                          // 7-18-95
+		
+		if (!IBIT(TREGD, 1)) 
+			goto tmrd2;      // test for busy
+
+#if BOARD_TYPE == SCoreZ1                       // 7-18-95
+		tm_outport(TREGD, inport(TREGD) & 0xfe);  // 7-18-95
+#else                                           // 7-18-95
+		IRES(TREGD, 0);      // clear hold
+#endif                                          // 7-18-95
+
+	}
+	return - 1;              // error return
+
+	tmrd2:       // interrupts taking more than 1 second cause time loss
+	p = (char *)t;
+	p--;
+	j = SEC1 - 1;
+	for (k = 0; k < 12; k += 2)
+	{
+		if (mode)
+		{
+#if BOARD_TYPE == SCoreZ1
+			tm_outport(++j, * ++p % 10);     // 7-18-95
+			tm_outport(++j, (*p / 10)%10);        // 7-18-95
+#else                                     // 7-18-95
+			outport(++j, * ++p % 10);        
+			outport(++j, (*p / 10)%10);           
+#endif                                    // 7-18-95
+		}
+		else
+			* ++p = (inport(++j) & tm_mask[k])
+			+ (inport(++j) & tm_mask[k + 1]) * 10;
+	}
+
+	if (mode)
+	{
+#if BOARD_TYPE == SCoreZ1                 // 7-18-95
+		tm_outport(++j, * ++p);             // 7-18-95 
+#else                                     // 7-18-95      
+		outport(++j, * ++p);
+#endif                                    // 7-18-95
+	}
+	else
+		* ++p = inport(++j) & tm_mask[12];
+
+#if BOARD_TYPE == SCoreZ1                    // 7-18-95
+	tm_outport(TREGD, inport(TREGD) & 0xfe);  // 7-18-95
+#else                                        // 7-18-95
+	IRES(TREGD, 0);
+#endif                                       // 7-18-95
+	return 0;
+}
+
+/*** BeginHeader tmc_rd, tmc_rda */
+
+int tmc_rd(struct tm * t);
+							
+/*** Endheader    */
+
+// tmc_wr and tmc_rd are no longer needed, tm_rd and tm_wr will work for
+// the Toshiba clock. They have been retained for backwards compatibility.
+// tmc_rd and tmc_wr have NOT been modified to support Epson clocks.
+// B.Murtha 1/20/95
+
+extern char tm_mask[];
+
+/* START FUNCTION DESCRIPTION ********************************************
+tmc_rd                       <CPLC.LIB>
+
+SYNTAX: int tmc_rd(struct tm *t);
+
+KEYWORDS: clock, read
+
+DESCRIPTION: Reads Real Time Clock information into struct tm *t.
+
+PARAMETER1: Address to read time from.
+
+RETURN VALUE: 0, if RTC was properly accessed; else -1.
+END DESCRIPTION **********************************************************/
+nodebug int tmc_rd(struct tm * t)
+{
+	return tmc_rda(t, 0);
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+rd_rtosh                     <CPLC.LIB>
+
+SYNTAX: int rd_rtosh(int adr);
+
+KEYWORDS: clock, read
+
+DESCRIPTION: Low level routine to read data from the RTC register adr.
+
+PARAMETER1: RTC register to read from.
+
+RETURN VALUE: data read from the RTC; -1, if RTC is busy.
+END DESCRIPTION **********************************************************/
+#asm nodebug
+rd_rtosh::
+	ld bc,RTALE
+	out   (c),l    ; out to address
+	
+#if BOARD_TYPE == Z104ISA   
+	ld      bc, RTRR
+#else
+	ld      bc, RTRW
+#endif
+	in l,(c)    ; get result
+	ld h,0      ; hl has result
+; if xbusy set return negative number
+	ld bc,RTALE
+	ld a,0fh
+	out   (c),a ; point to status
+	
+#if BOARD_TYPE == Z104ISA   
+	ld      bc, RTRR
+#else
+	ld      bc, RTRW
+#endif
+
+	in a,(c)
+	and   1     ;test xbusy
+	ret   z
+	ld hl,-1
+	ret
+#endasm
+
+/* START FUNCTION DESCRIPTION ********************************************
+wr_rtosh                     <CPLC.LIB>
+
+SYNTAX: int wr_rtosh(int adr, int val);
+
+KEYWORDS: clock, write
+
+DESCRIPTION: Write data val to RTC register adr.
+
+PARAMETER1: RTC register to write to.
+
+PARAMETER2: value to write.
+
+RETURN VALUE: 0, if register is written to properly; else 0.
+END DESCRIPTION **********************************************************/
+#asm nodebug
+wr_rtosh::
+	ld   hl,2
+	add  hl,sp
+	ld   e,(hl)          ; address in e
+	inc  hl
+	inc  hl
+	ld   d,(hl)          ; data in d
+
+	ld   bc,RTALE
+	out  (c),e           ; set address
+	ld   bc,RTRW
+	out  (c),d           ; out value
+	ld   bc,RTALE
+	ld   a,0fh
+	out  (c),a           ; point to status
+#if BOARD_TYPE == Z104ISA   
+	ld      bc, RTRR
+#else
+	ld      bc, RTRW
+#endif
+	in   a,(c)
+	and   1
+	ld   hl,0            ;
+	ret  z               ; returns 0 if okay
+	ld   hl,-1           ; returns -1 if problem
+	ret
+#endasm
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+tmc_rda                      <CPLC.LIB>
+
+SYNTAX: int tmc_rda(struct tm *t, char mode);
+
+KEYWORDS: time, read, write
+
+DESCRIPTION: If mode = 1, writes time struct *t to the RTC; else reads 
+RTC data into time struct *t.
+
+PARAMETER1: Address to read time to or from.
+
+PARAMETER2: mode must be 0 to read from the timer; non-zero to write to
+the timer.
+
+RETURN VALUE: 0, if the operation is succesful; else 0.
+END DESCRIPTION **********************************************************/
+nodebug int tmc_rda(struct tm * t, char mode)
+{
+	int         k, j, i, ntry;
+	static char *p;
+	
+	ntry = 10;
+	while (--ntry && rd_rtosh(0) < 0)
+		;                    // ten tries to clear busy
+	
+	if (!ntry) 
+		return -1;
+	
+	if (mode) 
+		wr_rtosh(0xe, 5);    // set protection key for write
+
+	for (ntry = 0; ntry < 10; ntry++)
+	{
+		p = (char *)t;
+		p--;
+		j = 0;
+		for (k = 0; k < 12; k += 2)
+		{
+			if (mode)
+			{
+				if (wr_rtosh(k,  * ++p % 10) < 0) 
+					k = 15;  // Break off to main loop
+				if (wr_rtosh(k + 1, (*p / 10)%10) < 0) 
+					k = 15;  // Break off to main loop
+			}
+			else
+			{
+				j = rd_rtosh(k);
+				i = rd_rtosh(k + 1);
+				* ++p = ((j & tm_mask[k]) + (i & tm_mask[k + 1]) * 10);
+				if (j < 0 || i < 0) 
+					k = 15; // break off to main loop
+			}
+		}
+
+		// if (k == 15) 
+		if(k >= 15)             // 5-25-94, k is now 17    
+			continue; // break off to start again
+		if (mode)
+		{
+			if (wr_rtosh(12, t->tm_wday) < 0) 
+				continue;
+		}
+		else
+		{
+			if ((j = rd_rtosh(12)) < 0) 
+				continue;
+			t->tm_wday = j & tm_mask[12];
+		}
+		wr_rtosh(0xe, 0);    // write protect
+		return 0;
+	}                        // if failed after 10 tries
+	wr_rtosh(0x0e, 0);       // write protect
+	return -1;
+}
+
+
+/*** BeginHeader tm_wr  */
+
+
+int tm_wr(struct tm * t);
+
+
+/*** EndHeader  */
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+tm_wr                        <DRIVERS.LIB>
+
+SYNTAX: int tm_wr(struct tm *t);
+
+KEY WORDS: CLOCK
+
+DESCRIPTION: Sets the system time according to the structure t.
+
+RETURN VALUE: 0 if successful; -1 if clock failing or not installed.
+END DESCRIPTION **********************************************************/
+nodebug int tm_wr(struct tm *t)
+{
+	auto int i;
+#if (BOARD_TYPE == LP31xx)
+	return rtcSetDateTime(t);
+#elif (BOARD_TYPE==PK22xx)
+	i = _72421Exists();
+	if (!i) {
+		i = _8250Exists();
+		init_timer();                 
+		if (i) i = tmc_rda(t, 1);		//	printf("Toshiba 8250 RTC found.\n");
+		else i = -1;					//
+			//	printf("None of Epson 72421 or Toshiba 8250 RTC is found.\n");
+	} else {
+		i = tm_rda(t,1);		//	printf("Epson 72421 RTC found.\n");
+	}
+	return i;
+#else
+#ifdef TREGD
+		init_timer();                    // 4-10-95, SCoreZ1
+		return tm_rda(t, 1);             // 4-10-95, SCoreZ1
+#endif                                 // 4-10-95, SCoreZ1    
+
+#ifdef RTALE                     // if Toshiba                      
+	return tmc_rda(t, 1);
+#endif    
+
+//2-15-95
+#if (BOARD_TYPE==MicroG) || (BOARD_TYPE==MicroG2)
+	return WriteTime1302(t);
+#endif
+#endif
+}
+
+/*** BeginHeader tmc_wr  */
+
+int tmc_wr(struct tm * t);
+
+/*** EndHeader  */
+
+/*===============write timer, intializing it ===============
+		  t - pointer to 7 byte array or structure
+===========================================================*/
+// tmc_wr and tmc_rd are no longer needed, tm_rd and tm_wr will work for
+// the Toshiba clock. They have been retained for backwards compatibility.
+// tmc_rd and tmc_wr have NOT been modified to support Epson clocks.
+
+/* START FUNCTION DESCRIPTION ********************************************
+tmc_wr                       <CPLC.LIB>
+
+
+SYNTAX: int tmc_wr(struct tm *t);
+
+KEYWORDS: clock
+
+DESCRIPTION: Write time structure to the real time clock.
+
+RETURN VALUE: 
+END DESCRIPTION **********************************************************/
+nodebug int tmc_wr(struct tm * t)
+{
+	return tmc_rda(t, 1);    // write actual data
+}
+
+/*** BeginHeader _dow_sec */
+
+int _dow_sec(unsigned long sec);
+
+/*** EndHeader */
+
+int _dow_sec(unsigned long sec) {
+	return (((unsigned int)(sec / 86400L))+2)%7;
+}
+
+/*** BeginHeader mktmsec */
+
+unsigned long mktmsec(
+	char yr,
+	char mon,
+	char mday,
+	char hr,
+	char min,
+	char sec);
+
+/*** EndHeader */
+
+unsigned long mktmsec(
+	char yr,
+	char mon,
+	char mday,
+	char hr,
+	char min,
+	char sec) {
+	auto struct tm tm1;
+
+	tm1.tm_year = yr;
+	tm1.tm_mon = mon;
+	tm1.tm_mday = mday;
+	tm1.tm_hour = hr;
+	tm1.tm_min = min;
+	tm1.tm_sec = sec;
+	return mktime(&tm1);
+}
+
+/*** Beginheader isInDST */
+
+int isInDST(unsigned long ltime);
+
+/*** EndHeader */
+
+int isInDST(unsigned long ltime) {
+	auto struct tm tm1;
+	auto unsigned long apr1stSun, octLastSun;
+	auto tmpDOW;
+	
+	mktm(&tm1, ltime);
+	tm1.tm_mon = 4;
+	tm1.tm_mday = 1;
+	tm1.tm_hour = 0;
+	tm1.tm_min = 0;
+	tm1.tm_sec = 0;
+	apr1stSun = mktime(&tm1);
+	tmpDOW = _dow_sec(apr1stSun);
+	apr1stSun += 86400L * (tmpDOW?(7-tmpDOW):0);
+	tm1.tm_mon = 10;
+	tm1.tm_mday = 31;
+	octLastSun = mktime(&tm1);
+	tmpDOW = _dow_sec(octLastSun);
+	octLastSun -= 86400L * tmpDOW;
+	return !((ltime < octLastSun) && (ltime >= apr1stSun));
+}
+
+/*** BeginHeader _mktm_date */
+
+void _mktm_date(struct tm *timeptr, unsigned day);
+
+/*** EndHeader _mktm_date */
+
+// what does this routine do?? NLR
+void _mktm_date(struct tm *timeptr, unsigned int day) {
+	unsigned int leap;
+
+// day = (unsigned int)(time / 86400UL);         // days since 1-1-80
+	timeptr->tm_wday = (day + 2) % 7;  // day of week
+	timeptr->tm_year = 80;
+	while (day >= 1461)
+	{                             // the leap years groups
+		timeptr->tm_year += 4;
+		day -= 1461;
+	}
+	if (day >= 366)
+	{
+		day--;
+		while (day >= 365)
+		{
+			timeptr->tm_year++;
+			day -= 365;
+		}
+	}
+	
+//	timeptr->tm_year %= 100;
+
+	leap = (timeptr->tm_year % 4) == 0;
+	timeptr->tm_mon = 0;
+
+	while (day >= __dom[leap][timeptr->tm_mon])
+		day -= __dom[leap][timeptr->tm_mon++];
+
+	++timeptr->tm_mon;
+	timeptr->tm_mday = day + 1;
+}
+
+/*** Beginheader __dom */
+
+extern int __dom[2][12];
+
+/*** EndHeader */
+
+int __dom[2][12] =
+	{
+		{
+			31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31
+		},
+		{
+			31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31
+		}
+	};
+
+/*** Beginheader mktm   */
+
+int mktm(struct tm * t, long time);
+
+/*** Endheader   */
+
+/* START FUNCTION DESCRIPTION ********************************************
+mktm                         <DRIVERS.LIB>
+
+SYNTAX: int mktm(struct tm *timeptr, long time);
+
+KEY WORDS: CLOCK
+
+DESCRIPTION: Fills the structure, pointed to by "timeptr," according to 
+time, specified in seconds since January 1, 1980.
+
+PARAMETER1: Address to read time into.
+
+PARAMETER2: seconds since January 1, 1980.
+
+RETURN VALUE: Undefined.
+END DESCRIPTION **********************************************************/
+nodebug int mktm(timeptr, time)
+struct tm   *timeptr;
+long time;
+
+{
+	_mktm_date(timeptr,time/86400UL);
+	timeptr->tm_hour = (char)((time % 86400UL) / 3600UL);
+	timeptr->tm_min  = (char)((time % 3600UL)   / 60UL);
+	timeptr->tm_sec  = (char)(time % 60UL);
+}
+
+/*** BeginHeader __jom */
+
+extern int __jom[2][12];
+
+/*** EndHeader */
+
+int __jom[2][12] =
+		{
+			{
+				0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334
+			},
+			{
+				0, 31, 60, 91, 121, 152, 182, 213, 244, 274, 305, 335
+			}
+		};
+
+/*** BeginHeader _mktime_date */
+
+unsigned _mktime_date(struct tm *timeptr); 
+
+/*** EndHeader */
+// returns days since 1-1-80 I presume?? NLR
+unsigned _mktime_date(struct tm *timeptr) {
+	unsigned year, days;
+
+	if (timeptr->tm_mon > 12) {
+		timeptr->tm_year += timeptr->tm_mon / 12;
+		timeptr->tm_mon = (timeptr->tm_mon-1) % 12 + 1;
+	}
+	else if (timeptr->tm_mon == 0) timeptr->tm_mon = 1;
+	if( timeptr->tm_year >= 80)           // 2-15-95, >= not just >
+											// 2-10-95
+		 year = timeptr->tm_year - 80;      // 2-10-95
+	else                                    // 2-10-95
+		year = timeptr->tm_year + 20;       // 2-10-95
+
+	days = (year / 4) * 1461;
+	year &= 0x03;       // year %= 4
+	if (year)
+	{
+		days += 366;
+		if (year - 1)
+			days += 365 * (year - 1);
+	}
+	return
+		days
+		+ (__jom[year == 0][timeptr->tm_mon - 1] + timeptr->tm_mday - 1);
+}
+
+/*** Beginheader mktime  */
+
+long mktime(struct tm * t);
+
+/*** Endheader */
+
+/*============== computer time in seconds from structure tm =======*/
+/* START FUNCTION DESCRIPTION ********************************************
+mktime                       <DRIVERS.LIB>
+
+SYNTAX: long mktime(struct tm *timeptr);
+
+KEY WORDS: ALL_BOARDS, CLOCK
+
+DESCRIPTION: Converts the contents of timeptr into a long integer.
+
+PARAMETER1: Address to read time from.
+
+RETURN VALUE: Time in seconds since January 1, 1980.
+END DESCRIPTION **********************************************************/
+nodebug long mktime(timeptr)
+struct tm   *timeptr;
+{
+	return (
+		_mktime_date(timeptr) * 86400L
+		+ timeptr->tm_hour * 3600L
+		+ timeptr->tm_min * 60
+		+ timeptr->tm_sec
+	);
+}
+
+/*** Beginheader clock  */
+
+long clock(void);
+
+/*** Endheader   */
+
+/* START FUNCTION DESCRIPTION ********************************************
+clock                        <DRIVERS.LIB>
+
+SYNTAX: long clock(void);
+
+KEY WORDS: LITTLE_GIANT, CLOCK
+
+DESCRIPTION: Reads the system clock and converts time to a long integer.
+
+RETURN VALUE: System time in seconds since January 1, 1980.
+END DESCRIPTION **********************************************************/
+nodebug long clock(void)
+{
+	struct tm t;
+
+	if (tm_rd(&t))
+		return (0);
+	return (mktime(&t));
+}
+
+/*** BeginHeader phy_adr,dmacopy */
+
+long phy_adr(char *adr);
+int dmacopy(long dest, long src, unsigned cnt);
+
+/*** EndHeader phy_adr,dmacopy */
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+phy_adr                      <DRIVERS.LIB>
+
+SYNTAX: long phy_adr(char *adr);
+
+KEY WORDS: DMA
+
+DESCRIPTION: Converts a logical (16-bit) address to a physical (32-bit)
+address.
+
+PARAMETER1: "adr" points to the address.
+
+RETURN VALUE: 32-bit address returned as a long.
+END DESCRIPTION **********************************************************/
+#asm nodebug
+phy_adr::
+	ld a,h      ; Calculate 4k Page of p
+	and   0f0h
+	ld b,a      ; Save Page for Reference in b
+
+	in0   a,(CBAR)    ; Bank Area Base Page
+	rla
+	rla
+	rla
+	rla
+	and   0f0h        ;bank area
+	ld    e,a         ;save bank area in e
+	in0   a,(CBAR)
+	and   0f0h
+	ld    d,a         ;save common in d
+; if page < bank use zero
+	ld a,b      ;page
+	cp e        ;bank
+	jr nc,phy2     ;if not zero
+	ex de,hl
+	ld bc,0
+	ret         ;return address passed
+phy2:
+; if page<common and common!=bank
+;
+	ld a,d      ;common
+	cp e        ; compare bank common
+	jr z,phy3      ;if equal
+	ld a,b      ;page
+	cp d        ; compare page common
+	jr nc,phy3
+; page is less use bank
+	in0   a,(BBR)
+	jr phy4
+phy3:
+	in0   a,(CBR)  ;use common
+phy4:
+	ld    de,0
+	rra
+	rr    d
+	rra
+	rr    d
+	rra
+	rr    d
+	rra
+	rr    d
+	and   0fh
+	add   hl,de
+	adc   a,0
+	ex    de,hl
+	ld    c,a
+	ld    b,0      ;bcde
+	ret
+#endasm
+
+/* START FUNCTION DESCRIPTION ********************************************
+dmacopy                      <DRIVERS.LIB>
+
+SYNTAX: int dmacopy(long dest, long src, unsigned cnt);
+
+KEY WORDS: DMA
+
+DESCRIPTION: Uses DMA to copy count bytes from one physical address (src)
+to another (dest).
+
+PARAMETER1: physical address of destination.
+
+PARAMETER2: physical address of source.
+
+PARAMETER3: number of bytes to copy.
+
+RETURN VALUE: Undefined.
+END DESCRIPTION **********************************************************/
+#asm nodebug
+dmacopy::
+	ld iy,-2    ; Setup IY as Frame Pointer
+	add   iy,sp
+wait:
+	in0   a,(30h)     ; Read DSTAT
+	and   40h      ; Wait for DMA0 Free
+	jr nz,wait
+
+	ld a,(iy+8) ; Setup Source Register
+	out0  (20h),a
+	ld a,(iy+9)
+	out0  (21h),a
+	ld a,(iy+10)
+	out0  (22h),a
+
+	ld a,(iy+4) ; Setup Destination Register
+	out0  (23h),a
+	ld a,(iy+5)
+	out0  (24h),a
+	ld a,(iy+6)
+	out0  (25h),a
+
+	ld a,2      ; Set Burst Mode for Copy
+;  ld a,0      ; Set Steal Cycle Mode
+	out0  (31h),a
+
+	ld a,(iy+12)   ; Set Byte Count for Copy
+	out0  (26h),a
+	ld a,(iy+13)
+	out0  (27h),a
+
+	in0   a,(30h)     ; Set DE0 and Reset /DWE0
+	and   0C0h
+	or 40h
+	out0  (30h),a
+
+	ret         ; Copy Started
+#endasm
+
+/*** BeginHeader outportn */
+
+int outportn(int port, char *buf, char count);
+			 // a routine to output an array of data items to an I/O port
+
+/*** EndHeader outportn */
+
+/* START FUNCTION DESCRIPTION ********************************************
+outportn                     <DRIVERS.LIB>
+
+SYNTAX: int outportn(int port, char *buf, char count);
+
+KEY WORDS: ALL_BOARDS
+
+DESCRIPTION: Writes count bytes to the specified output port. "buf" points 
+to the sequence of bytes to write.
+
+PARAMETER1: output port.
+
+PARAMETER2: pointer to bytes to write.
+
+PARAMETER3: number of bytes to write.
+
+RETURN VALUE: Undefined.
+END DESCRIPTION **********************************************************/
+#asm nodebug
+outportn::
+	pop   hl    ;return address
+	exx
+	pop   bc    ;port
+	pop   hl    ;pointer to buffer
+	pop   de    ;count in e
+outportn1:
+	ld    a,(hl)
+	inc   hl
+	out   (c),a
+	dec   e
+	jr nz,outportn1
+	exx
+
+
+	push  hl
+	push  hl
+	push  hl
+	push  hl
+	ret
+#endasm
+
+/*** beginheader init_timer0 */
+
+int init_timer0(unsigned count);
+
+/*** Endheader */
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+init_timer0                  <DRIVERS.LIB>
+
+SYNTAX: int init_timer0(unsigned count);
+
+KEY WORDS: LITTLE_GIANT, TIMER, INTERRUPT, RTK
+
+DESCRIPTION: Initializes timer 0.
+
+PARAMETER1: "count" is the value placed in the reload
+register.  For a 9.216 MHz clock, some common count values and the
+frequencies they generate are: 9126 - 50Hz; 7680 - 60Hz; 7200 - 64Hz;
+4608 - 100Hz; 2304 - 200Hz; 1152 - 400Hz; 900 - 512Hz; 600 - 768Hz;
+500 - 928Hz; 450 - 1024Hz.
+
+RETURN VALUE: Undefined.
+END DESCRIPTION **********************************************************/
+nodebug int init_timer0(unsigned count)
+{
+							 // count is value to load in reload reg
+							 /* for 9.216 mhz clock:
+								9216    50 hz
+								7680    60 hz
+								7200    64 hz
+								4608    100 hz
+								2304    200 hz
+								1152    400 hz 2.5 milliseconds
+								900     512 hz
+								600     768 hz  1.3 ms
+								500     928 hz
+								450    1024 hz                */
+
+							 // disable counting and interrupts
+	IRES(TCR, 0);
+	IRES(TCR, 4);
+	IRES(TCR, 6);
+	outport(RLDR0L, count);
+	outport(RLDR0H, count >> 8); // set reload reg
+	outport(TMDR0L, count);
+	outport(TMDR0H, count >> 8); // set data reg
+	ISET(TCR, 0);
+	ISET(TCR, 4);                // enable interrupts
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+timer0_isr                   <DRIVERS.LIB>
+
+SYNTAX: void timer0_isr(void);
+
+KEY WORDS: INTERNAL
+
+DESCRIPTION: Timer 0 interrupt service routine. Runs the real-time kernel.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+#INT_VEC PRT0_VEC timer0_isr // Run-Time Kernel with no Keypad
+nodebug interrupt ret timer0_isr(void)
+{
+	inport(TCR);
+	inport(TMDR0L);
+	run_timer();
+}
+
+/*** BeginHeader init_timer1, tdelay */
+
+int init_timer1(unsigned count);
+void tdelay(int delay);
+
+/*** EndHeader init_timer1 */
+
+/* initialize timer 1 */
+/* START FUNCTION DESCRIPTION ********************************************
+init_timer1                  <DRIVERS.LIB>
+
+SYNTAX: int init_timer1(unsigned count);
+
+KEY WORDS: TIMER, INTERRUPT, KEYPAD, RTK, INPUT
+
+DESCRIPTION: Initializes timer 1. 
+
+PARAMETER1: count is the value placed in the reload
+register. For a 9.216 MHz clock, some common count values and the
+frequencies they generate are: 9126 - 50Hz; 7680 - 60Hz; 7200 - 64Hz;
+4608 - 100Hz; 2304 - 200Hz; 1152 - 400Hz; 900 - 512Hz; 600 - 768Hz;
+576 - 800Hz; 500 - 928Hz; 450 - 1024Hz; 288 - 1600Hz.
+
+RETURN VALUE: Undefined.
+END DESCRIPTION **********************************************************/
+
+#ifdef RUNKERNEL
+#funcchain _sys_25msPostEI run_timer
+#endif
+
+#asm
+init_timer1:: jp sysInitTimer1
+#endasm
+
+/* START FUNCTION DESCRIPTION ********************************************
+tdelay                       <DRIVERS.LIB>
+
+SYNTAX: void tdelay(int msec);
+
+KEY WORDS: TIMER
+
+DESCRIPTION: Waits for msec milliseconds, assuming that timer 1 is running
+at 1280Hz.
+
+RETURN VALUE: N/A.
+END DESCRIPTION **********************************************************/
+void tdelay(int msec)
+{
+	auto tmpMS;
+	auto unsigned long StartMS;
+
+	tmpMS = msec;
+	StartMS = MS_TIMER + msec;
+	while (MS_TIMER - StartMS >= tmpMS) hitwd();       // wait for interrupt routine to count it down
+}
+
+/*** Beginheader save_shadow, restore_shadow,write24data,write8data,
+		 read24data0, read8data0, read24data1, read8data1, set24adr, 
+		 set8adr, relocate_int1, plcbus_isr */
+
+void save_shadow(void);
+void restore_shadow(void);
+void write24data(long address, char data);
+void write8data(long address, char data);
+int  read24data0(long address);
+int  read8data0(long address);
+int  read24data1(long address);
+int  read8data1(long address);
+void set24adr(long address);
+void set8adr(long address);
+void relocate_int1(void);
+void plcbus_isr(void);
+
+/*** Endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+save_shadow                  <DRIVERS.LIB>
+
+SYNTAX: void save_shadow(void);
+
+KEY WORDS: PLCBUS
+
+DESCRIPTION: Saves PLCBus shadow registers on the stack.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+restore_shadow               <DRIVERS.LIB>
+
+SYNTAX: void restore_shadow(void);
+
+KEY WORDS: PLCBUS
+
+DESCRIPTION: Restores PLCBus shadow registers from the stack and resets 
+the current bus address.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+#asm
+save_shadow::
+  pop de
+  ld hl,SHBUS0                 ; get expansion reg
+  ld b,(hl)
+  inc   hl
+  ld c,(hl)                    ; get BUSADR0
+  push bc                      ; Save Expansion, BUSADR0 on stack
+
+  inc   hl
+  ld b,(hl)                    ; get BUSADR1
+  inc   hl
+  ld c,(hl)                    ; get BUSADR2
+  push bc                      ; Save BUSADR1, BUSADR2 on stack
+
+  ex de,hl
+  jp (hl)
+
+restore_shadow::           ; set 24-bit addr in 3-bytes addr in BCDE
+	pop hl
+	pop  de      ; 7-6-94 pop bc                  ; b= Bus exp   c=BUSADR0
+	pop  bc      ; 7-6-94 pop de                  ; d= BUSADR1   e=BUSADR2
+	push hl
+	call set24adr
+	ret                                 
+
+
+#endasm
+
+/*************************************************************************
+ Functions for accessing an 8-bit PLCBus
+**************************************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+write24data                  <DRIVERS.LIB>
+
+SYNTAX: void write24data(long address, char data);
+
+KEY WORDS: PLCBUS
+
+DESCRIPTION: Sets the current PLCBus address using the 24-bit address. 
+Then writes 8 bits of data to the bus.
+
+PARAMETER1: 24-bit address to write to
+
+PARAMETER2: data to write
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+write8data                   <DRIVERS.LIB>
+
+SYNTAX: void write8data(long address, char data);
+
+KEY WORDS: PLCBUS
+
+DESCRIPTION: Sets the last 8 bits of the current PLCBus address using
+address (bits 16 - 23). Then writes 8 bits of data to the bus.
+
+PARAMETER1: (bits 16 - 23) are the address of the PLCBus to write.
+
+PARAMETER2: data to write to bus
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+read24data0                  <DRIVERS.LIB>
+
+SYNTAX: int read24data0(long address);
+
+KEY WORDS: PLCBUS
+
+DESCRIPTION: Sets the current PLCBus address using the 24-bit address. 
+Then reads 8 bits of data off of the bus with a BUSRD0 cycle.
+
+RETURN VALUE: PLCBus data in lower 8 bits (upper bits 0).
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+read8data0                   <DRIVERS.LIB>
+
+SYNTAX: int read8data0(long address);
+
+KEY WORDS: PLCBUS
+
+DESCRIPTION: Sets the last 8 bits of the current PLCBus address using
+address (bits 16 - 23). Then reads 8 bits of data off of the bus with a
+BUSRD0 cycle.
+
+PARAMETER1: (bits 16 - 23) are the address of the PLCBus to read.
+
+RETURN VALUE: PLCBus data in lower 8 bits (upper bits 0).
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+read24data1                  <DRIVERS.LIB>
+
+SYNTAX: int read24data1(long address);
+
+KEY WORDS: PLCBUS
+
+DESCRIPTION: Sets the current PLCBus address using the 24-bit address. Then
+reads 8 bits of data off of the bus with a BUSRD1 cycle.
+
+RETURN VALUE: PLCBus data in lower 8 bits (upper bits 0).
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+read8data1                   <DRIVERS.LIB>
+
+SYNTAX: int read8data1(long address);
+
+KEY WORDS: PLCBUS
+
+DESCRIPTION: Sets the last 8 bits of the current PLCBus address using
+address (bits 16 - 23). Then reads 8 bits of data off of the bus with a
+BUSRD1 cycle.
+
+PARAMETER1: (bits 16 - 23) are the address of the PLCBus to read.
+
+RETURN VALUE: PLCBus data in lower 8 bits (upper bits 0).
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+set24adr                     <DRIVERS.LIB>
+
+SYNTAX: void set24adr(long address);
+
+KEY WORDS: PLCBUS
+
+DESCRIPTION: Sets the current address for the PLCBus. All read and write
+operations will access this address until a new address is set.
+
+PARAMETER1: address is a 24-bit physical address (for 8-bit bus) with the
+first and third bytes swapped (low byte most significant).
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+set8adr                      <DRIVERS.LIB>
+
+SYNTAX: void set8adr(long address);
+
+KEY WORDS: PLCBUS
+
+DESCRIPTION: Sets the current address for the PLCBus. All read and write
+operations will access this address until a new address is set.
+
+PARAMETER1:
+address contains the last 8-bits of the physical address (for 8-bit bus) 
+in bits 16 - 23. A 24-bit address may be passed to this function, but only the
+last 8 bits will be set. This function should only be called if the first
+16 bits of the address are the same as the address in the previous call to
+set24adr.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+
+#asm
+read24data0::
+	call  set24adr
+	ld		bc,BUSRD0
+	in		l,(c)
+	;
+	ld    h,0
+	ret
+read8data0::
+	call  set8adr
+	ld		bc,BUSRD0
+	in		l,(c)
+	;
+	ld h,0
+	ret
+
+read24data1::
+	call  set24adr
+	ld		bc,BUSRD1
+	in		l,(c)
+	;
+	ld    h,0
+	ret
+read8data1::
+	call  set8adr
+	ld		bc,BUSRD1
+	in		l,(c)
+	ld h,0
+	ret
+
+write24data::
+	call  set24adr
+	pop   hl    ;return
+	pop   de    ;arg1
+	pop   de    ;arg2
+	pop   de    ;arg2
+	ld		bc,BUSWR
+	out	(c),e
+	push  de
+	push  de
+	push  de
+	jp (hl)     ;return
+write8data::
+	call  set8adr
+	pop   hl
+	pop   de
+	pop   de
+	pop   de
+	ld		bc,BUSWR
+	out	(c),e
+	push  de
+	push  de
+	push  de
+	jp (hl)
+
+set24adr::                     ; set 24-bit addr in 3-bytes addr in BCDE
+	ld hl,SHBUS0+1
+	ld (hl),c                   ; shadow BUSADR0
+	ld		a,c
+	ld		bc,BUSADR0
+	out	(c),a
+
+	inc   hl
+	ld (hl),d                   ; shadow BUSADR1
+	ld		bc,BUSADR1
+	out	(c),d
+	;
+
+set8adr::
+	ld hl,SHBUS0+3
+	ld (hl),e                   ;3rd byte
+	ld		bc,BUSADR2
+	out	(c),e
+	ret
+#endasm
+
+/* START FUNCTION DESCRIPTION ********************************************
+plcbus_isr                   <DRIVERS.LIB>
+
+SYNTAX: void plcbus_isr(void);
+
+KEY WORDS: INTERRUPT, PLCBUS
+
+DESCRIPTION: This function is used to service all PLCBus /AT line
+interrupts.  The /AT line is connected to INT1 of the Z180.  Each ISR is
+responsible for assuring it's device releases the /AT signal after service.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+#if ROM==1
+#INT_VEC INT0_VEC plcbus_isr
+//#else                 
+//#INT_VEC 0x18 plcbus_isr
+// cannot define at compile time for RAM code because vector may be serviced
+// before the complete vector and function is downloaded.
+#endif
+
+#asm root
+plcbus_isr::
+		 push af
+		 
+		in0 a,(CBR) ; 060193 TAK save CBR
+		push    af
+
+		 push hl
+		 push bc
+		 push de
+
+		 ld     hl, (SHBUS1)            ; save address for BUSADR2 (h)
+										;              and BUSADR1 (l)
+		 push   hl
+		 ld     hl, (SHBUS0)            ; save address for BUSADR0 (h)
+		 push   hl
+
+	  ; no need   in0  a,(ITC)
+	  ; no need   and 11111101b   ; disable ITE1
+	  ; no need   out0 (ITC),a
+
+	  ; do it later ei    ; enable the other interrupts
+						 ; do it later.
+
+#ifdef USE_UARTEXP
+		 call Duart_circ_int
+#endif
+
+#ifdef USE_UART2EXP
+		 call Duart2_circ_int
+#endif
+
+#ifdef USE_STEPPER
+		call sm_int                 ; 8-27-94, window for stepper motor                 
+									; expansion card.
+#endif
+		 ; no need in0 a,(ITC)
+		 ; no need or 00000010b    ; enable ITE1
+		 ; no need out0 (ITC),a
+
+		 ; do it before ret ei  ; enable the other interrupts, aoc 5-17-93
+			 ; has to do it here, else serial service gets data corruption
+				  
+		 pop    hl              ; restore BUSADR0
+		 ld		bc,BUSADR0
+		 out		(c),h
+		 ;
+		 ld     (SHBUS0), hl    ; copy to shadow in case someone change it
+		 pop    hl              ; restore BUSADR1 (l) and BUSADR2 (h)
+		 
+		 ld		bc,BUSADR1
+		 out		(c),l
+		 ld		bc,BUSADR2
+		 out		(c),h
+		 ;
+		 ld     (SHBUS1), hl    ; copy to shadow in case someone change it
+
+		 pop de
+		 pop bc
+		 pop hl
+
+		 pop af  ; 060193 TAK restore CBR
+		 out0    (CBR),a
+
+		 pop af
+		 ei         ; 6-8-94, do ei here
+		 ret
+#endasm
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+relocate_int1                <DRIVERS.LIB>
+
+SYNTAX: void relocate_int1(void);
+
+KEY WORDS: INTERRUPT, PLCBUS
+
+DESCRIPTION: Reprograms the INT1 vector.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void relocate_int1(void)
+{
+extern char OPMODE;
+auto char buf[128];
+
+// Dummy up REV_NO if it is not available in the eprom.
+#ifndef  REV_NO
+#define REV_NO 0
+#endif
+
+//#if ROM==0  
+//    *( (int *)(0x2000)) = 0x2017;
+//    *( (char *)(0x2017)) = 0xc3; // jump op code
+//  New eproms will automatically do the two previous statements
+// 5-3-95 *( (int *)(0x2018) ) = (int) plcbus_isr;    // do this at run time
+#if ((BOARD_TYPE==LittleG) && (REV_NO >= 2706)) 
+// effective only for versions 2706 and up
+	if( OPMODE & 0x80)         // is it flash?
+	{
+		buf[0] = (int) plcbus_isr & 0xff;
+		buf[1] = ((int) plcbus_isr >> 8) & 0xff;
+		WriteFlash(0x2018L, buf, 2);    // transfer the vector
+	}
+	else
+		*((int *)(0x2018)) = (int) plcbus_isr;
+#elif ((BOARD_TYPE==CPLC_BOARD) && (REV_NO >= 2420)) 
+// effective only for versions 2420 and up
+	if( OPMODE & 0x80)         // is it flash?
+	{
+		buf[0] = (int) plcbus_isr & 0xff;
+		buf[1] = ((int) plcbus_isr >> 8) & 0xff;
+		WriteFlash(0x2018L, buf, 2);    // transfer the vector
+	}
+	else
+		*((int *)(0x2018)) = (int) plcbus_isr;
+
+#elif (((BOARD_TYPE==L_STAR) && (REV_NO >= 2608)))
+// 81595 - Add support for the Little Star
+// effective only for versions 2608 and up
+	if (OPMODE & 0x80) {
+		memcpy(buf, (char*)0x2000, 128);
+		if (!(OPMODE & 0x04)) {					//	no EXP-232 for programming
+			*(int *)buf = (int)plcbus_isr;	//	directly write to INT0 vector
+		} else {
+			buf[0x17]=0xc3;								//	EXP-232 for programming
+			*(int*)&buf[0x18] = (int)plcbus_isr;	//	relayed vector
+		}
+		WriteFlash(0x2000, buf, 128);
+	} else {
+		if (!(OPMODE & 0x04)) {
+			*((int*)(0x2000)) = (int)plcbus_isr;
+		} else {
+			*((int *)(0x2018)) = (int) plcbus_isr;
+		}
+	}
+#elif BOARD_TYPE==SCoreZ1
+	if (OPMODE & 0x80) {
+		memcpy(buf, (char*)0x2000, 128);
+		*(int *)buf = 0x2017;
+		buf[0x17]=0xc3;
+		*(int*)&buf[0x18] = (int)plcbus_isr;
+		WriteFlash(0x2000, buf, 128);
+	} else {
+		*(int*)0x2000=0x2017;
+		*(char*)0x2017=0xc3;
+		*(int*)0x2018=(int)plcbus_isr;
+	}
+
+#else
+		*((int *)(0x2018)) = (int) plcbus_isr;                    
+#endif
+//#endif
+}
+
+/*** BeginHeader DelayTicks */
+
+firsttime int DelayTicks(unsigned int ticks);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+DelayTicks                      <DRIVERS.LIB>
+
+SYNTAX: int DelayTicks(CoData *pfb, unsigned ticks);
+
+KEYWORDS: costatement
+
+DESCRIPTION: tick time mechanism for the Costatement Constructs.
+firsttime declares the function for tie up with the costatement Driver.
+1 tick = .00078125 s.
+
+PARAMETER1: this parameter is implicit and should not be specified in the call
+
+PARAMETER2: the number of ticks to wait
+
+RETURN VALUE: 1, if the specified tick delay has lapsed; else 0.
+END DESCRIPTION **********************************************************/
+
+firsttime int DelayTicks(CoData *pfb, unsigned int ticks){
+	shared extern unsigned TICK_TIMER;
+	
+	if(ticks==0) return 1;
+	if(pfb->firsttime) 
+	{ 
+		pfb->firsttime=0;
+		pfb->content.ul=(unsigned long)TICK_TIMER;  // save current ticker
+	}
+	else if (TICK_TIMER - pfb->content.ul >= ticks)
+		return 1;
+	return 0;
+}
+
+
+/*** BeginHeader DelayMs */
+
+firsttime int DelayMs(long delayms);
+
+/*** Endheader DelayMs */
+
+/* START FUNCTION DESCRIPTION ********************************************
+DelayMs                      <DRIVERS.LIB>
+
+SYNTAX: int DelayMs(long delayms);
+
+KEYWORDS: costatement
+
+DESCRIPTION: Millisecond time mechanism for the Costatement Constructs.
+firsttime declares the function for tie up with the Costatement Driver.
+
+PARAMETER1: the number of milliseconds to wait
+
+RETURN VALUE: 1, if the specified millisecond delay has lapsed; else 0.
+END DESCRIPTION **********************************************************/
+extern shared unsigned long MS_TIMER;
+firsttime nodebug int DelayMs(CoData * pfb, long delayms)
+{
+	if (pfb->firsttime)
+	{
+		pfb->content.ul = MS_TIMER;
+		pfb->firsttime = 0;
+	}
+	else if ((MS_TIMER - pfb->content.ul) >= (unsigned long)delayms)
+		return 1;
+	return 0;
+}
+
+/*** BeginHeader DelaySec */
+
+firsttime int DelaySec(long delaysec);
+
+/*** Endheader DelaySec */
+
+/* START FUNCTION DESCRIPTION ********************************************
+DelaySec                     <DRIVERS.LIB>
+
+SYNTAX: int DelaySec(long delaysec);
+
+KEYWORDS: costatement
+
+DESCRIPTION: Second time mechanism for the Costatement Constructs.
+"firsttime" declares the function for tie up with the Costatement Driver.
+
+PARAMETER1: the number of seconds to wait
+
+RETURN VALUE: 1, if the specified second delay has lapsed; else 0.
+END DESCRIPTION **********************************************************/
+extern shared unsigned long SEC_TIMER;
+firsttime nodebug int DelaySec(CoData *pfb, long delaysec)
+{
+
+	if (pfb->firsttime)
+	{
+		pfb->content.ul = SEC_TIMER;
+		pfb->firsttime = 0;
+	}
+	else if ((SEC_TIMER - pfb->content.ul) >= (unsigned long)delaysec)
+		return 1;
+	return 0;
+}
+
+/*** Beginheader eei_wr */
+int eei_wr(int address, int data);
+/*** Endheader */
+
+/* START FUNCTION DESCRIPTION *******************************************
+eei_wr                        <DRIVERS.LIB>
+
+SYNTAX:  int eei_wr(int address, int data);
+
+KEYWORDS:   eeprom, write.
+
+DESCRIPTION: Writes two consecutive byte areas of the EEPROM for integer 
+data. Low byte of "data" is for ("address") and high byte of data is for
+("address+1").
+
+PARAMETER1: EEPROM address to write to
+
+PARAMETER2: the 2 bytes to write
+
+RETURN VALUE: 0 if write is okay. Negative number if eeprom write is not 
+					okay.
+END DESCRIPTION **********************************************************/
+nodebug int eei_wr(int address, int data)
+{
+	int state;
+	if((state = ee_wr(address, data )) < 0) return state;
+	if((state = ee_wr(address+1, data >> 8)) < 0) return state;
+	return 0;
+}
+
+/*** Beginheader eei_rd */
+
+int eei_rd(int adr);         // returns integer at address from eeprom
+
+/*** Endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+eei_rd                       <DRIVERS.LIB>
+
+SYNTAX: int eei_rd(int adr);
+
+KEYWORDS: eeprom, read
+
+DESCRIPTION: Reads two consecutive byte areas of the EEPROM for integer 
+data.  Low byte is from (adr) and high byte is from (adr+1).
+
+PARAMETER1: EEPROM address to read from
+
+RETURN VALUE: Integer data.
+END DESCRIPTION **********************************************************/
+nodebug int eei_rd(int adr)
+{
+	return ee_rd(adr) | (ee_rd(adr + 1) << 8);
+}
+
+/* High Speed Counter using the DMA */
+/*** Beginheader DMA0Count, DMA1Count, DMASnapShot */
+// registers defined are imbedded in the eprom
+
+int _DMAFLAG0;
+int _DMAFLAG1;
+
+void DMA0Count(unsigned int cnt);
+void DMA1Count(unsigned int cnt);
+unsigned DMASnapShot(char channel, unsigned *counter);
+void dma0_int(void);
+void dma1_int(void);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+DMA0Count                    <DRIVERS.LIB>
+
+SYNTAX: void DMA0Count(unsigned int cnt);
+
+KEYWORDS: dma, interrupt
+
+DESCRIPTION: Loads cnt to DMA0 counter for high speed pulse counting in 
+hardware.  Maximum count is 64k. _DMAFLAG0 is set to 0. If the DMA has 
+counted out, the interrupt service routine for DMA0 will generate an 
+interrupt in which  _DMAFLAG0 is set to 1.  Events are edge sensed. 
+C1A and C1B must both be low for /DREQ0 to generate an interrupt.
+
+PARAMETER1: number of pulses to count
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void DMA0Count(unsigned int cnt)
+{
+	static char dummy;    // do we need this???????????????????
+
+#GLOBAL_INIT
+	{
+		_DMAFLAG0 = 0;
+	}
+
+	_DMAFLAG0 = 0;           // reset flag when called
+	outport(SAR0L, 0);       // load src
+	outport(SAR0H, 0);
+	outport(SAR0B, 0);
+//51595   outport(DAR0L, 0);        // load dest
+//51595   outport(DAR0H, 0);        // writing to ROM is fine
+	outport(DAR0L, 0x1b);            // 51595, 0x1b is reserved, not used
+	outport(DAR0H, 0x00);            // 51595 
+	outport(DAR0B, 0);
+	outport(BCR0L, (char) cnt); // load count
+	outport(BCR0H, *( (char *)&cnt + 1) );
+
+//51595 outport(DMODE, '\B00100000'); // mem(inc)->mem(fixed)
+	outport(DMODE, '\B00110000');    //51595, mem(inc)->io(fixed)
+	outport(DCNTL, '\B00000100'   // /DREQ0 edge sensed    
+	| (inport(DCNTL) & '\B11111011') );
+	
+	outport(DSTAT, '\B01100100'   // enable DMA w/ interrupt
+	| (inport(DSTAT) & '\B10101000') );
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+DMA1Count                    <DRIVERS.LIB>
+
+SYNTAX: void DMA1(unsigned int cnt);
+
+KEYWORDS: dma, interrupt
+
+DESCRIPTION: Load cnt to the DMA1 counter for high speed pulse counting 
+in hardware.  Maximum count is 64k. _DMAFLAG1 is set to 0.  If the DMA has 
+count out, the interrupt service routine for DMA1 will generate an 
+interrupt, in which _DMAFLAG1 is set to 1.  Events are edge sensed.  C2A 
+and C2B must both be low for /DREQ1 to generate an interrupt.  C2B uses 
+one of the RS485 receivers for differential input. For example, tie 
+C2B- to 5 volts; when the signal at C2B+ is lower than 5 volts, a negative 
+edge is generated for the DMA counter.
+
+PARAMETER1: number of pulses to count
+
+RETURN VALUE: None.RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void DMA1Count(unsigned int cnt)
+{
+#GLOBAL_INIT
+	{
+		_DMAFLAG1 = 0;
+	}
+
+	_DMAFLAG1 = 0;               // reset flag when called
+	outport(MAR1L, 0);           // load memory
+	outport(MAR1H, 0);
+	outport(MAR1B, 0);
+// 51595  outport(IAR1L, 0);           // load I/O address
+// 51595  outport(IAR1H, 0x18);        // this is a read-only I/O port
+	outport(IAR1L, 0x1b);
+	outport(IAR1H, 0x00);            // 0x1b is reserved, not used
+	outport(BCR1L, (char) cnt);  // load count
+	outport(BCR1H, *( (char *)&cnt + 1) );
+	
+	outport(DCNTL, '\B00001000'  // /DREQ0 edge sensed, from memory to I/O
+	| (inport(DCNTL) & '\B11110100') );
+	
+	outport(DSTAT, '\B10011000'  // enable DMA w/ interrupt
+	| (inport(DSTAT) & '\B01010100') );
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+dma0_int                     <DRIVERS.LIB>
+
+SYNTAX: int dma0_int(void);
+
+KEYWORDS: interrupt, dma
+
+DESCRIPTION: Interrupt service routine for DMA0. _DMAFLAG0 is set to 1.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+interrupt void dma0_int(void)
+{
+	 outport(DSTAT, '\B00100000'        // turn off interrupt    
+	 | (inport(DSTAT) & '\B10101000'));
+	_DMAFLAG0 = 1;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+dma1_int                     <DRIVERS.LIB>
+
+SYNTAX: int dma1_int(void);
+
+KEYWORDS: dma, interrupt
+
+DESCRIPTION: Interrupt service routine for DMA1. _DMAFLAG1 is set to 1.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+interrupt void dma1_int(void)
+{
+	 outport(DSTAT, '\B00010000'        // turn off DMA        
+	 | (inport(DSTAT) & '\B01010100'));
+	_DMAFLAG1 = 1;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+DMASnapShot                  <DRIVERS.LIB>
+
+SYNTAX: unsigned int DMASnapShot(char channel, unsigned int *count);
+
+KEYWORDS: dma
+
+DESCRIPTION: Takes a "snap shot" of a DMA channel (0 or 1) for the number 
+of pulses counted.
+
+PARAMETER1: DMA channel (0 or 1) 
+
+PARAMETER2: number of pulses. 
+
+RETURN VALUE: None.RETURN VALUE: 0, if pulse train is to fast to have a snap shot taken;
+1, if a "snap shot" is obtained and valid data is in *count.
+END DESCRIPTION **********************************************************/
+
+/*************************************************************************
+(1) disables interrupt.
+(2) reads high-low pair of address counter three times in a row.
+(3) reenables interrupt.
+(4) compares first and second pairs.
+(5) if they match, data are valid.
+(6) else compare the second and the third pairs.
+(7) If they match, data are valid.
+(8) if all three readings are different, pulse is too fast for "snapshot."
+(9) Returns 1, if a snapshot was successful, else 0.
+**************************************************************************/
+#asm nodebug fast
+DMA0RRR:
+		ld      a,i
+		push    af
+		di                ; disable interrupt and take a quick snap shot
+		in0 c,(SAR0L)     ; first snapshot
+		in0 b,(SAR0H)
+		in0 e,(SAR0L)     ; second snapshot
+		in0 d,(SAR0H)
+		in0 l,(SAR0L)     ; third snapshot
+		in0 h,(SAR0H)
+rrrCommon:
+		pop af
+		jp  po,rrr1       ; already off before di
+		ei
+rrr1:
+		ret
+
+DMA1RRR:
+		ld      a,i
+		push    af
+		di                ; disable interrupt and take a quick snap shot
+		in0 c,(MAR1L)     ; first snapshot
+		in0 b,(MAR1H)
+		in0 e,(MAR1L)     ; second snapshot
+		in0 d,(MAR1H)
+		in0 l,(MAR1L)     ; third snapshot
+		in0 h,(MAR1H)
+		jr      rrrCommon
+
+DMASnapShot::
+		pop iy                 ; return address
+		pop hl                 ; channel in a
+		ld  a,l
+		or  a
+		jr  z,sshot2           ; if channel 0
+		call    DMA1RRR        ; else if channel 1
+		jr      sshot3         ; continue
+sshot2:
+		call    DMA0RRR        ;
+sshot3:
+		push    hl
+		ld      a,1            ; if a==1 no error
+		ld      h,b            ; bc->hl
+		ld      l,c
+		xor 0                  ; reset C flag without changing A
+		sbc hl,de              ; hl=bc-de
+		pop hl
+		jr  z,sshot1           ; if equal, we're done
+		xor 0                  ; reset C flag without changing A
+		sbc hl,de              ; hl=hl(original)-de
+		jr  z,sshot1
+		ld  a,0
+sshot1:
+		ex      (sp),hl    ; address of counter
+		push    hl         ; push back something to take place of channel
+		ld      (hl),e     ; low byte
+		inc hl
+		ld      (hl),d     ; high byte
+		ld      h,0        ; load status: a == 1 means the snapshot is okay
+		ld      l,a        ; a == 0 means the snapshot cannot be taken
+		jp      (iy)       ; this is a return
+#endasm
+
+
+#INT_VEC DMA0_VEC dma0_int;
+#INT_VEC DMA1_VEC dma1_int;
+
+
+/*** Beginheader tosht0  */
+
+int tosht0(int data);
+
+/*** Endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+tosht0                       <DRIVERS.LIB>
+
+SYNTAX: int tosht0(int data);
+
+KEYWORDS: clock, write
+
+DESCRIPTION: Write data to Toshiba TC8250 RTC register 0x0d to change the 
+output on pin TOUT.
+
+PARAMETER1: data to write
+
+The following are valid data:
+		0           1    Hz pulse           50% duty ratio
+		1           2    Hz pulse               "
+		2           4    Hz pulse               "
+		3           8    Hz pulse               "
+		4           16   Hz pulse               "
+		5           32   Hz pulse               "
+		6           64   Hz pulse               "
+		7           128  Hz pulse               "
+		8           256  Hz pulse               "
+		9           512  Hz pulse               "
+		10          1024 Hz pulse               "
+		11          2048 Hz pulse               "
+		12          1 min. pulse            Pulse width 30.5 us
+											Positive Pulse
+		13          10 mins. pulse              "
+		14          TOUT = VDD fixed
+		15          TOUT = VSS fixed
+
+RETURN VALUE:     Returns 0 if writes okay.
+	Returns -1 if failed.
+END DESCRIPTION **********************************************************/
+nodebug int tosht0(int data)
+{
+	int  ntry;
+	
+	ntry = 10;
+	while (--ntry && (rd_rtosh(0) < 0))
+		;                    // clear busy
+	if (!ntry) 
+		return -1;          // RTC busy
+	wr_rtosh(0xe, 5);        // unprotect to write RTC
+	ntry = 10;
+	while (--ntry && (wr_rtosh(0x0d, data) < 0))
+		;                    // write to register
+							 // at least ten tries
+	wr_rtosh(0x0e, 0);       // write protect RTC
+	if (ntry) 
+		return 0;            // succesfully write to register 0xd
+	return -1;              // unsuccessful write to register 0xd
+}
+
+/*** BeginHeader powerdown,powerup  */
+void powerdown(void);
+void powerup(void);
+/*** EndHeader                      */
+
+/* START FUNCTION DESCRIPTION ********************************************
+powerdown                    <DRIVERS.LIB>
+
+SYNTAX: void powerdown(void);
+
+KEY WORDS: POWER
+
+DESCRIPTION: Turns the power off (suicide); power can only be turned back
+on by external means.  Only works for boards with a switching power
+supply (except for the little star).
+
+RETURN VALUE: Undefined.
+END DESCRIPTION **********************************************************/
+nodebug void powerdown(void)
+{
+	outport(TREGE, 0x3);     // set to 1/64 sec, intr mode, mask ==1
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+powerup                      <DRIVERS.LIB>
+
+SYNTAX: void powerup(void);
+
+KEY WORDS: POWER
+
+DESCRIPTION: Reverses the effect of powerdown, so power stays on after
+external power is disabled.  See powerdown.
+
+RETURN VALUE: Undefined.
+END DESCRIPTION **********************************************************/
+nodebug void powerup(void)
+{
+	outport(TREGE, 0x2);
+}
+
+/*** BeginHeader setperiodic, sleep */
+
+void setperiodic(int period);
+void sleep(void);
+
+/*** EndHeader   */
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+nmiint                       <DRIVERS.LIB>
+
+SYNTAX: void nmiint(void);
+
+KEY WORDS: INTERNAL
+
+DESCRIPTION: Default power-fail interrupt handler. Does nothing and never
+returns.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+
+#JUMP_VEC NMI_VEC nmiint
+nodebug interrupt nmiint(void)
+{
+
+	while (1);
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+setperiodic                  <DRIVERS.LIB>
+
+SYNTAX: void setperiodic(int period);
+
+KEY WORDS: POWER
+
+DESCRIPTION: Sets a timer to periodically power up the Little Giant.  
+After this call, the board may be put to sleep and will automatically 
+awaken at the specified interval.  Execution will begin in the main 
+function when power is restored. Works only
+for boards that has a switching power supply except the Little Star.
+
+PARAMETER1: period may be 4 (to wake once per second), 
+8 (to wake once per minute), or 12 (to wake once per hour). 
+
+RETURN VALUE: Undefined.
+END DESCRIPTION **********************************************************/
+nodebug void setperiodic(int period)
+{
+// aoc, 7-6-95  outport(TREGF, 0);     // make sure everything is running
+	outport(TREGF, 0x04);   // aoc, 7-6-95, make sure everything is running  
+									// aoc, 7-6-95, in 24 hour mode.
+	outport(TREGE, (period | 2) & 0xe); // set time delay
+	return;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+sleep                        <DRIVERS.LIB>
+
+SYNTAX: void sleep(void);
+
+KEY WORDS: POWER
+
+DESCRIPTION: Puts the board to sleep.  Works for all boards that use
+a switching power supply except the Little Star.
+
+RETURN VALUE: Does not return.
+END DESCRIPTION **********************************************************/
+nodebug void sleep(void)
+{
+	static unsigned int k;
+	
+	while (1)
+	{
+		outport(TREGD, 0);   // power down
+		for (k = 0; k < 65000; k++)
+			;
+	}
+}
+
+/*** BeginHeader init_timer */
+
+void init_timer(void);
+
+/*** EndHeader  */
+
+/*============ routine to initialize timer =================*/
+
+char zero_time[] =
+	 {
+		 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 9, 8, 0
+	 };                      // an initial time and date
+
+/* START FUNCTION DESCRIPTION ********************************************
+init_timer                   <DRIVERS.LIB>
+
+SYNTAX: void init_timer(void);
+
+KEY WORDS: INTERNAL
+
+DESCRIPTION: Initializes the system clock.
+
+RETURN VALUE: Undefined.
+END DESCRIPTION **********************************************************/
+nodebug void init_timer(void)
+{
+	static unsigned int k;
+	static unsigned int ioadr;
+	
+#if BOARD_TYPE == SCoreZ1        // 7-18-95
+	tm_outport(TREGF, 7);         // 7-18-95 // test=0, 12/24=1, stop=1, rest=1
+#else                            // 7-18-95
+	outport(TREGF, 7);            // test=0, 12/24=1, stop=1, rest=1
+#endif                           // 7-18-95
+// 12-14-94, there is no such clock addresses; conflict with plcbus.
+// 12-14-94 ioadr = 0xe0;
+	ioadr = SEC1;       //12-14-94, use the eprom defined clock registers. 
+	k = 0;
+	for (k = 0; k < sizeof (zero_time); k++) 
+	{      
+#if BOARD_TYPE == SCoreZ1                 // 7-18-95
+		tm_outport(ioadr++, zero_time[k]);  // 7-18-95
+#else                                     // 7-18-95
+		outport(ioadr++, zero_time[k]);     // 7-18-95
+#endif
+	}
+//aoc, 7-6-95   outport(TREGE, 0);
+//aoc, 7-6-95   outport(TREGD, 0);
+	
+#if BOARD_TYPE == SCoreZ1                 // 7-18-95
+	tm_outport(TREGD, 0x04);               // 7-18-95  
+	tm_outport(TREGF, 4);                  // 7-18-95
+#else                                     // 7-18-95
+	outport(TREGD, 0x04);      // aoc, 7-6-95, make sure not sleep mode
+	outport(TREGF, 4);                     // 7-18-95
+#endif                                    // 7-18-95
+
+}
+
+/*** BeginHeader tm_outport */
+int tm_outport(int port, int data);
+/*** EndHeader */
+// tm_outport(int port, int data)
+// special routine to replace the regular outport when outporting to 
+// registers of the Real Time Clock. 
+// This routine does the following:
+// (1) disables interrupt
+// (2) changes DCNTL to 0xb0 for 2 memory wait states and 4 io wait states
+// (3) outport data to epson clock register
+// (4) reenable interrupt if necessary
+// This correction is only necessary when using the high speed (18Mhz) 
+// SmartCoreZ1 but is implemented just the same for the lower speed (9Mhz) 
+// SmartCoreZ1.
+#asm fast nodebug
+tm_outport::
+			pop      de
+			pop      bc
+			pop      hl
+			push     hl
+			push     bc
+			push     de
+
+			ld       a, i
+			ex       af, af'
+			
+			in0      d, (DCNTL)         
+			ld       a, d
+			and      00111111b         ; make sure no memory wait states
+			or       10000000b         ; 2 memory wait states
+			
+			di
+			out0     (DCNTL),a         ; set 2 memory wait states, rest is same
+			out      (c), l
+			out0     (DCNTL), d        ; restore the previous DCNTL           
+			
+			ex       af, af'
+			ret      po
+			ei
+			ret
+#endasm
+
+
+/*** BeginHeader WriteFlash */
+int WriteFlash(unsigned long physical_addr, char *buf, int count);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION **********************************************
+WriteFlash              <DRIVERS.LIB>
+
+SYNTAX:     int WriteFlash(unsigned long physical_addr, char *buf, int count)     
+
+KEYWORDS:   Write Flash EPROM.
+
+DESCRIPTION: Write "count" number of bytes pointed to by "buf" to the Flash
+Eprom absolute data location "physical_adr". Allocate data location by 
+declaring the byte arrays as initialized arrays or declare initialize xdata 
+array. If byte array is declared, convert logical memory to physical memory 
+with "phy_adr(array)". For initialized xdata, you can pass the array name 
+directly.
+
+PARAMETER1: Flash Eprom absolute data location  
+
+PARAMETER2: pointer to bytes to write  
+
+PARAMETER3: number of bytes to write   
+
+RETURN VALUES: 0 if Write Flash is okay.
+					-1 if Flash eprom is not in used.
+					-2 if physical_address is inside the BIOS area.
+					-3 if physical_address is within the Symbol Area
+						or the simulated eeprom area.
+					-4 if Write time out to the Flash eprom.   
+END DESCRIPTION *************************************************************/
+nodebug
+int WriteFlash(unsigned long physical_addr, char *buf, int count)
+{
+	extern char OPMODE;
+	char myscratch[256];
+	unsigned long start_sector;
+	unsigned long start_addr;
+	unsigned long end_limit;
+	int sector_size;
+	char *myptr;
+	int mycount;
+	int copy_count;
+	int needToWrite;
+		
+	if(!(OPMODE & 0x80)) return -1;
+	if( physical_addr < 0x2000L) return -2;
+	
+	switch(OPMODE & '\B00110000')
+	{
+		case 0x00:
+					start_sector = physical_addr & 0xfff80L;
+					sector_size = 128;
+					end_limit = 0xf000L;
+					break;
+		case 0x10:
+					start_sector = physical_addr & 0xfff80L;
+					sector_size = 128;
+					end_limit = 0x1f000L;
+					break;
+		case 0x20:
+					start_sector = physical_addr & 0xfff00L;
+					sector_size = 256;
+					end_limit = 0x3f000L;
+					break;
+		case 0x30:
+					start_sector = physical_addr & 0xfff00L;
+					sector_size = 256;
+					end_limit = 0x7f000L;
+					break;
+	}
+
+	if( (physical_addr+count) >= end_limit) return -3;
+
+	myptr = buf;
+	mycount = count;
+	start_addr = physical_addr;
+	
+	do
+	{
+		xmem2root(start_sector, myscratch, sector_size);
+		copy_count = (int)(start_sector+sector_size - start_addr);
+		if(copy_count > mycount) {
+			if (needToWrite = memcmp(myscratch+sector_size-copy_count, myptr, mycount))
+				memcpy(myscratch+sector_size-copy_count, myptr, mycount);
+		} else {
+			if (needToWrite = memcmp(myscratch+sector_size-copy_count, myptr, copy_count))
+				memcpy(myscratch+sector_size-copy_count, myptr, copy_count);
+		}
+		if(needToWrite) {
+			if (WriteRom(start_sector, myscratch)==-1) return -4;
+		}
+		start_sector += sector_size;
+		start_addr += copy_count;
+		myptr += copy_count;
+		mycount -= copy_count;
+	}while(mycount >= sector_size);
+
+	if(mycount > 0)
+	{
+		xmem2root(start_sector, myscratch, sector_size);
+		if (needToWrite = memcmp(myscratch, myptr, mycount)) {
+			memcpy(myscratch, myptr, mycount);
+			if(WriteRom(start_sector, myscratch)==-1) return -4;
+		}
+	}  
+	return 0;
+}
+
+/*** BeginHeader */
+
+#define z1Sw485(x) { if (x) on_485(); else off_485(); }
+
+/*** EndHeader */
+
+
+/*** BeginHeader off_485, on_485 */
+
+void off_485();
+void on_485();
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+off_485                      <DRIVERS.LIB>
+
+SYNTAX: void off_485(void);
+
+DESCRIPTION: Turns off the RS485 driver for the Z180 port 1. Different 
+boards have different method of driving the RS485.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+on_485                       <DRIVERS.LIB>
+
+SYNTAX: void on_485(void);
+
+DESCRIPTION: Turns on the RS485 driver for the Z180 port 1.  Different 
+boards have different method of driving the RS485.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+#asm fast nodebug 
+#if BOARD_TYPE==TINY_GIANT
+off_485::
+			  push bc
+			  push af
+			  ld a,0
+			  ld bc,ENB4851
+			  out (c),a
+			  pop af
+			  pop bc
+			  ret
+on_485::
+			  push bc
+			  push af
+			  ld a,1
+			  ld bc,ENB4851
+			  out (c),a
+			  pop af
+			  pop bc
+			  ret
+#elif BOARD_TYPE==PLC_BOARD
+off_485::
+			  push hl
+			  ld hl, 0x40
+			  push hl
+			  call resPIODB
+			  pop hl
+			  pop hl
+			  ret
+on_485::
+			  push hl
+			  ld hl, 0x40
+			  push hl
+			  call setPIODB
+			  pop hl
+			  pop hl
+			  ret
+#elif ((BOARD_TYPE==LITTLE_GIANT) + (BOARD_TYPE==CPLC_BOARD))
+off_485::
+			  push af
+			  ld a,0
+			  out0 (ENB485),a
+			  pop af
+			  ret
+on_485::
+			  push af
+			  ld a,1
+			  out0 (ENB485),a
+			  pop af
+			  ret
+#elif ((BOARD_TYPE==L_STAR) + (BOARD_TYPE==Z104ISA) + (BOARD_TYPE==LittleG))
+off_485::
+					 push af
+					 push bc
+					 ld  a,0
+					 ld  bc,ENB485
+					 out (c), a
+					 pop bc
+					 pop af
+					 ret
+on_485::
+					 push af
+					 push bc
+					 ld  a,0ffh        ; do it on all bits, ld  a,1
+					 ld  bc,ENB485
+					 out (c),a
+					 pop bc
+					 pop af
+					 ret
+#elif (BOARD_TYPE==MicroG) || (BOARD_TYPE==MicroG2)
+off_485::
+			  push   hl
+			  ld     hl, 0x02
+			  push   hl
+			  call   resPIOCB       ; set bit 1 as output
+			  pop    hl
+			  ld     hl, 0x02
+			  push   hl
+			  call   resPIODB
+			  pop    hl
+			  pop    hl
+			  ret
+on_485::
+			  push   hl
+			  ld     hl, 0x02
+			  push   hl
+			  call   resPIOCB       ; set bit 1 as output
+			  pop    hl
+			  ld     hl, 0x02
+			  push   hl
+			  call   setPIODB
+			  pop    hl
+			  pop    hl
+			  ret
+#else				//	lif BOARD_TYPE==SCoreZ1
+off_485::
+	jp		eioBrdOff485
+on_485::
+	jp		eioBrdOn485
+#endif
+
+#endasm
+
+/* END OF FILE */
+

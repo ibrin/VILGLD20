@@ -1,0 +1,295 @@
+/* START LIBRARY DESCRIPTION *********************************************
+LittleG.lib
+    Copyright (c) 1995, Z-World.
+
+DESCRIPTION: Support for the LittleG. 
+
+SUPPORT LIB'S: sys.lib, drivers.lib
+END DESCRIPTION **********************************************************/
+// 11-16-95 Change file name to LittleG.lib.
+/*** BeginHeader */
+#if BOARD_TYPE!=LittleG
+#error "LittleG only."
+#endif
+/*** EndHeader */
+
+/*** BeginHeader */   
+
+    //  Virtual registers for transistor outputs:
+    char HC6, HC5, HC4, HC3, HC2, HC1;
+    char OUTB8, OUTB7, OUTB6, OUTB5, OUTB4, OUTB3, OUTB2, OUTB1;
+
+    // *** Previous digital register inputs:
+    char BANK2PREV, BANK1PREV;
+        
+    // Virtual reg's for digital inputs; hold image of digital inputs:
+    char DIGIN12,DIGIN11,DIGIN10,DIGIN9;
+    char DIGIN8, DIGIN7, DIGIN6, DIGIN5, DIGIN4, DIGIN3, DIGIN2, DIGIN1;
+
+    char OUTBShadow;
+/*** EndHeader */
+
+/*** BeginHeader VIOInit, VIODrvr */
+void VIOInit();
+void VIODrvr();
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+VIOInit                 <LittleG.lib>
+
+SYNTAX: void VIOInit();
+
+KEYWORDS: Virtual IO's, Initialize.
+
+DESCRIPTION: Dummy function used as a host for GLOBAL_INIT of the
+             Virtual IO variables. Virtual input's are read and virtual
+             outputs are written out whenever the function VIODrvr() is
+             called. Inputs are DIGIN1 to DIGIN12. Outputs are OUTB1 to
+             OUTB8 and HC1 to HC6. DIGIN's has to be the same for two 
+             successive reads to be valid.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug
+void VIOInit()
+{
+    char *p;
+    int  k;
+#GLOBAL_INIT
+    {
+        p = &HC6;
+        for (k = 0; k < 14; k++) 
+            *p--= 0;
+        OUTBShadow = 0x00;      // zero the shadow register for the
+                                    // OUTBYTE output
+    }
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+VIODrvr                 <LittleG.lib>
+
+SYNTAX: void VIODrvr();
+
+KEYWORDS: Virtual IO's Driver
+
+DESCRIPTION: Update the virtual inputs DIGIN1 to DIGIN12.
+             The virtual outputs OUTB1 to OUTB8 and HC1 to HC6 are
+             send out to corresponding output ports.
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+#asm nodebug fast
+VIODrvr::
+; make sure 1 bit is on on all non-zero outputs
+    ld      hl, OUTB1
+    ld      b, 14       ; 14 outputs
+uoutb:          
+    ld      a, (hl)     
+    add     a, 0feh     ; if data is other than zero or 1, then carry happens
+    jr      nc, uoutc
+    ld      (hl), 1
+uoutc:
+    djnz    uoutb  
+
+    ex      af, af'         ; use alternate
+    ld      a, (OUTBShadow) ; get current shadow into a'
+    ex      af, af'         ; back to regular
+
+    ld      b, 8            ; 8 times
+    ld      hl, OUTB1        
+
+uoutd:
+    ld      a, (hl)
+    or      a
+    jr      z, reset_bit
+
+set_bit:
+    ex      af, af'        ; use alternate
+    or      00000001b      ; set the bit
+    jr      uoute          ; merge
+
+reset_bit:
+    ex      af, af'        ; alternate
+    and     11111110b      ; reset the bit
+
+uoute:
+    rrca                   ; rotate alternate to the right and around
+    ex      af, af'        ; regular
+    inc     hl
+    djnz    uoutd
+
+    ex      af, af'         ; use alternate
+    ld      bc, OUTBYTE
+    out     (c), a
+    ld      (OUTBShadow), a ; copy current state to shadow
+    ex      af, af'
+    
+    ld      hl, HC1
+    ld      bc, DRV1
+    outi                   ; out DRV1
+
+    ld      bc, DRV2
+    outi                   ; out DRV2
+
+    ld      bc, DRV3
+    outi                   ; out DRV3
+
+    ld      bc, DRV4
+    outi                   ; out DRV4
+
+    ld      bc, DRV5
+    outi                   ; out DRV5
+
+    ld      bc, DRV6
+    outi                   ; out DRV6
+    
+    ld      a, (BANK1PREV)
+    ld      d, a
+    ld      bc, INENLO
+    in      a, (c)         ; read bits 0 to 7 of INENLO
+
+    ld      (BANK1PREV), a  ; save current to previous
+    ld      e, a            ; save current to e
+    xor     d               ; get bit difference between current and previous
+    ld      hl, DIGIN1
+    ld      b, 8
+    call    alloc_bits
+
+    ld      a, (BANK2PREV)  ; do 4 bit of the second bank
+    ld      d, a
+    ld      bc, INENHI
+    in      a, (c)         ; read bits 0 to 3 of INENHI
+
+    ld      (BANK2PREV), a  ; save current to previous
+    ld      e, a            ; save current to e
+    xor     d               ; get bit difference between current and previous
+    ld      hl, DIGIN9
+    ld      b, 4
+    call    alloc_bits
+    
+    ret
+
+alloc_bits:
+    ld      c, 0
+alloca:
+    bit     0, a
+    jr      nz, allocc
+    bit     0, e
+    jr      z, allocb
+    ld      (hl), 1
+    jr      allocc
+allocb:
+    ld      (hl), c         ; zero
+allocc:
+    rra                     ; rotate a to the right
+    rr      e               ; rotate e to the right
+    inc     hl              ; increment data pointer
+    djnz    alloca          ; continue until b = 0
+    ret
+
+#endasm
+
+/*** BeginHeader up_digin */
+
+int up_digin(int chan);
+
+/*** Endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+up_digin                <LittleG.lib>
+
+SYNTAX: int up_digin(int chan);
+
+KEYWORDS: input, digital
+
+DESCRIPTION: Reads value of digital input port.  "chan" is the digital 
+channel 1-12.
+
+RETURN VALUE: 1 or 0, depending on the input voltage to the port.
+END DESCRIPTION **********************************************************/
+nodebug int up_digin(int chan)
+{
+    if( chan < 1 || chan > 12)
+        return -1;
+    if( chan < 9)
+        return (IBIT(INENLO, chan-1));
+    else
+        return (IBIT(INENHI, chan-9));
+}
+
+/*** BeginHeader up_setout */
+
+int up_setout(int nout, int onoff);
+
+/*** Endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+up_setout               <LittleG.lib>
+
+SYNTAX: int up_setout(int nout, int onoff);
+
+KEYWORDS: digital, output
+
+DESCRIPTION: Sets a digital output to 1 (active) or 0 (inactive).  
+"nout" is the digital output channel number 1-14 (OUTB1 to OUTB8 and HC1 
+to HC6). onoff is the binary output value for the specified channel: 
+1 => high or active; 0 => low or inactive.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug int up_setout(int nout, int onoff)
+{
+    auto char     k;
+
+    if(nout < 1 || nout > 14) return -1;
+
+    if (iff())          // If at least 1 interrupt is on
+    {
+        DI();
+        k = 1;          // change sequence to avoid conflict during INT call
+    }
+    else k = 0;          // No int's are on
+
+    nout = nout & 15;   // Mask for address domain.
+    *(&OUTB1 - 1 + nout) = (onoff != 0); // Store image in virtual reg
+                        // tempout = 0;
+    
+    if( nout < 9)
+    {
+        if(onoff) SET( &OUTBShadow, nout-1);
+        else RES( &OUTBShadow, nout-1);
+        outport(OUTBYTE, OUTBShadow);
+    }
+    else outport(DRV1+nout-9, onoff);
+
+    if (k) EI();
+}
+
+
+
+
+/*** BeginHeader _sysZIfPwrFail */
+
+/*** EndHeader */
+
+#asm
+_sysZIfPwrFail::
+			ld		bc, NMI				; 
+			in		a, (c)				; read NMI bit
+			bit	6, a					; test NMI bit
+			ret
+#endasm
+
+/*** BeginHeader brdChkKB, brdQuitChkKB, brdResKB */
+
+void brdChkKB();
+void brdQuitChkKB();
+void brdResKB();
+
+/*** EndHeader */
+
+#asm
+brdChkKB::
+brdQuitChkKB::
+brdResKB::
+	ret
+#endasm

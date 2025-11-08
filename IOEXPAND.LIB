@@ -1,0 +1,856 @@
+/* START LIBRARY DESCRIPTION *********************************************
+IOEXPAND.LIB
+    Copyright (c) 1994, Z-World.
+
+DESCRIPTION:  Little Giant Expansion Board functions can be divided into 
+two classes:  (1) functions that are hard coded for default base addresses, 
+0xFxxx and (2) functions that allow users to specify a board by its 
+node number.  Use of the former class is faster but is limited 
+to systems with one expansion board; the latter class, therefore, should 
+be limited to multiple expansion board applications.  To improve lookup 
+speed in class 2 functions there is a structure of default addresses.
+To improve lookup speed there is a structure that holds the default 
+addresses.  Instead of specifying a node number (0 - 3), specify -1.  
+This will load the correct default addresses.  The second set of functions 
+allows for stacking of up to four LGEX boards on top of the Little Giant. 
+The board addess are set through jumper J10.  Consult the I/O Expander 
+Technical Manual for the proper board addresses.
+
+SUPPORT LIB'S: sys.lib
+END DESCRIPTION **********************************************************/
+
+/*** BeginHeader */
+#if BOARD_TYPE!=LITTLE_GIANT
+#error "Little Giant only."
+#endif
+/*** EndHeader */
+
+/*** BeginHeader exp_init */
+
+int exp_init(int ppia, int ppib, int ppicu, int ppicl);
+
+/* Default base address = 0xFx0x */
+
+#define RDTTL  0xF400    // TTL inputs
+#define PAL    0xF800    // Pulse Width enable (out) PIN level (inp)
+#define POL    0xF801    // Polarity of pulse to measure
+#define PPIA   0xFC00    // PPI data A
+#define PPIB   0xFC01    // PPI data B
+#define PPIC   0xFC02    // PPI data C
+#define PPICN  0xFC03    // PPI control
+
+/*** EndHeader exp_init  */
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+exp_init                     <IOEXPAND.LIB>
+
+SYNTAX: int exp_init(int ppia, int ppib, int ppicu, int ppicl);
+
+KEY WORDS: LG_EX, pio, init
+
+DESCRIPTION: Initializes the PIO ports of a LG_EX with default address of
+0xFXXX.  The U5 PPI uses Mode 0 or the Basic I/O mode. ppia, ppib, ppicu, 
+ppicl are output values for the PPI output register.  Configures port A as 
+input, if ppia = -1; and Port B as input, if ppib = -1.  Configures Port C 
+upper nibble as inputs, if ppicu = -1; and Port C lower nibble as inputs, 
+if ppicl = -1.  All PPI output ports are reset to low when mode is changed.  
+It's important to output a correct value to the output port right after 
+the mode is changed.
+
+RETURN VALUE:  0
+END DESCRIPTION **********************************************************/
+nodebug exp_init(int ppia, int ppib, int ppicu, int ppicl)
+{
+    int mode;
+
+    outport(PAL, 0);         // PWM PAL EN=0
+    mode = 0x80;
+    if (ppia == -1)
+        SET(&mode, 4);
+
+    if (ppib == -1)
+        SET(&mode, 1);
+
+    if (ppicu == -1)
+        SET(&mode, 3);
+
+    if (ppicl == -1)
+        SET(&mode, 0);
+
+    outport(PPICN, mode);    // ALL PPI outport pins will be low !
+    outport(PPIA, ppia);     // set the correct outputs
+    outport(PPIB, ppib);
+    outport(PPIC, (ppicu << 4) | ppicl);
+    return 0;
+}
+
+/*** BeginHeader  mux_ch */
+
+    int mux_ch(int chan);
+
+/*** EndHeader  */
+
+/* START FUNCTION DESCRIPTION ********************************************
+mux_ch                       <IOEXPAND.LIB>
+
+SYNTAX: int mux_ch(int chan);
+
+KEY WORDS: LGEX, MUX.
+
+DESCRIPTION:  Sets the DG509A Multiplexer (U17) of the LGEX with default
+address of 0xFXXX. Chan is 0 to 3 for (AN0-,AN0+) to (AN3-,AN3+),
+respectively, to multiplex on (MUX-DA, MUX-DB).
+
+RETURN VALUE:  None.
+END DESCRIPTION **********************************************************/
+nodebug int mux_ch(int chan)
+{
+    int i;
+
+    i = inport(PPIA);
+    RES(&i, 6);          // chan 0
+    RES(&i, 7);
+
+    if (BIT(&chan, 0)) 
+        SET(&i, 6);
+
+    if (BIT(&chan, 1)) 
+        SET(&i, 7);
+
+    outport(PPIA, i);
+}
+
+/*** BeginHeader ad20_mux, ad20_rdy, ad20_cal, ad20_rd */
+
+    int  ad20_mux(int chan);
+    int  ad20_rdy(void);
+    int  ad20_cal(int mode);
+    long ad20_rd(void);
+
+/*** EndHeader ad20_mux, ad20_rdy, ad20_cal, ad20_rd  */
+
+/* START FUNCTION DESCRIPTION ********************************************
+ad20_mux                     <IOEXPAND.LIB>
+
+SYNTAX: int ad20_mux(int chan);
+
+KEY WORDS: LGEX, AD20, MUX.
+
+DESCRIPTION: Sets the DG509A Multiplexer for the 20 bit AD7703 of the LGEX
+with default address of 0xFXXX. Chans 0 to 3 select Unipolar operation
+(0 to 2.5V) for (AN0-,AN0+) to (AN3-,AN3+), respectively, while chans 4 to 
+7 select Bipolar operation (-2.5V to 2.5V) for (AN0-, AN0+) to (AN3-, AN3+),
+respectively.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug int ad20_mux(int chan)
+{
+    int i;
+
+    i = inport(PPIA);
+    RES(&i, 0);              // unipolar
+    RES(&i, 6);              // chan 0
+    RES(&i, 7);
+
+    if (BIT(&chan, 0))
+        SET(&i, 6);
+
+    if (BIT(&chan, 1))
+        SET(&i, 7);
+
+    if (BIT(&chan, 2) || BIT(&chan, 3))
+        SET(&i, 0);
+
+    outport(PPIA, i);
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+ad20_rdy                     <IOEXPAND.LIB>
+
+SYNTAX: int ad20_rdy(void);
+
+KEY WORDS: LGEX, AD20, READY
+
+DESCRIPTION: Tests AD7703 DRDY status from RDTTL Bit 1.
+
+RETURN VALUE: 0, if the AD20 is ready; else 1, if AD20 is busy.
+END DESCRIPTION **********************************************************/
+nodebug int ad20_rdy(void)
+{
+    return ( IBIT(RDTTL, 1) );
+}
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+ad20_cal                     <IOEXPAND.LIB>
+
+SYNTAX: int ad20_cal(int mode);
+
+KEY WORDS: LGEX, AD20, CALIBRATION.
+
+DESCRIPTION: Calibrates the AD7703 on the LGEX with default address of 
+0xFXXX. Mode 0 calibration does not use the multiplexer. Mode 1 calibration 
+uses the multiplexer to get zero and full scale on Ain. Mux ch0 is the A/D 
+signal to be measured. Mux ch1 is Ain for the Mode1 1st step to calibrate 
+the system offset.  Mux ch2 is Ain for Mode1 2nd step to calibrate the 
+system gain.  Mode 2 calibration uses the current channel to get Ain as 
+zero to calibrate the system offset.  The following shows the state of SC1 
+and SC2 during calibration:
+
+   mode     SC1   SC2   Cal Type       Zero     FS          Steps
+
+   0        0     0     self-cal       AGND     REF+        1
+   1        1     1     system offset  Ain                  1st of 2
+   1        0     1     system gain             Ain         2nd of 2
+   2        1     0     system offset  Ain      REF+        1
+
+
+RETURN VALUE: 0, if calibration was completed; else -1, if error during 
+calibration.
+END DESCRIPTION **********************************************************/
+#define SDAT 0x00
+#define CAL  0x01
+#define CS   0x02
+#define SC2  0x03
+#define SCK  0x04
+#define SC1  0x05
+
+nodebug int ad20_cal(int mode)
+{
+    int i, par;
+
+    par = inport(PPIA);
+    SET(&par, CS);           // disable AD7701 to transmit serial data
+    RES(&par, CAL);          // CAL low
+    outport(PPIA, par);      // output Port A
+
+    switch (mode)
+    {
+        case 0x00:
+            RES(&par, SC1);  // CS1=0, CS2=0, self calibration
+            RES(&par, SC2);
+            outport(PPIA, par);
+            SET(&par, CAL);  // CAL high
+            outport(PPIA, par);
+            for (i = 0; i < 4; i++)
+                ;
+            RES(&par, CAL);  // CAL low  after 4 CLK high
+            outport(PPIA, par);
+            break;
+        case 0x01:
+            ad20_mux(1);     // Uni- or Bi- polarity must same as CH0
+                             // CH1 is zero Ain for Mode 1 calibration
+            SET(&par, SC1);  // mode 1 system offset calibration
+            SET(&par, SC2);
+            outport(PPIA, par);
+            SET(&par, CAL);     // CAL high
+            outport(PPIA, par); // output Port A
+            for (i = 0; i < 4; i++)
+                ;
+            RES(&par, CAL);  // CAL low  after 4 CLK high
+                outport(PPIA, par);
+
+            while (ad20_rdy())
+                ;
+            ad20_mux(2);     // Uni- or Bi- polarity must same as CH0
+                             // CH2 is full scale Ain for Mode 1 calibration
+            RES(&par, SC1);  // mode 1 system gain calibration
+            SET(&par, SC2);
+            outport(PPIA, par);
+            SET(&par, CAL);  // CAL high
+            outport(PPIA, par); // output Port A
+            for (i = 0; i < 4; i++)
+                ;
+            RES(&par, CAL);  // CAL low after 4 CLK high
+            outport(PPIA, par);
+            break;
+        case 0x02:
+            // current channel is zero Ain for Mode 2 calibration
+            SET(&par, SC1);  // mode 2 system offset calibration
+            RES(&par, SC2);
+            outport(PPIA, par);
+            SET(&par, CAL);  // CAL high
+            outport(PPIA, par); // output Port A
+            for (i = 0; i < 4; i++)
+                ;
+            RES(&par, CAL);  // CAL low  after 4 CLK high
+            outport(PPIA, par);
+            break;
+        default:
+            return (-1);
+    }
+    while (ad20_rdy())
+        ;
+    return 0;
+}
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+ad20_rd                      <IOEXPAND.LIB>
+
+SYNTAX: long ad20_rd(void);
+
+KEY WORDS: LGEX, AD20 input.
+
+DESCRIPTION:  Reads 20 bit data from the AD7703 serial data port. Due to
+the 125 ms step response time of AD7703, a time delay should be guaranteed
+after a multiplexer switching.  A/D data will be valid when DRDY is low for
+up to 4 KHz output data rate.  The polarity and chan to read should be set
+previously with ad20_mux(..).  For Unipolar Mode (PA0=0), Ain ranges from
+0 to 2.5 volts.  The LSB = 2.5V/1048576 = 2.384 uV.  For Bipolar mode 
+(PA0 = 1), Ain ranges from -2.5V to 2.5V. The LSB = 5V/1048576 = 4.768 uV.
+
+RETURN VALUE: 20 bit A/D data.  For Unipolar mode, 0x00000 = AGND,
+0x7FFFF = 1.25V and 0xFFFFF = 2.5V.  For Bipolar mode, 0x00000 = -2.5V,
+0x7FFFF = AGND and 0xFFFFF = 2.5V.
+END DESCRIPTION **********************************************************/
+nodebug long ad20_rd(void)
+{
+    int   i, j, par;
+    long  ad_dat;
+
+    while (ad20_rdy())
+        ;
+    par = inport(PPIA);
+    RES(&par, CS);           // enable AD7703 to transmit serial data
+    outport(PPIA, par);      // output Port A
+    ad_dat = 0;
+    for (i = 0; i < 20; i++)
+    {    
+        if (IBIT(RDTTL, SDAT))
+        {
+            j = 19 - i;
+            SET(&ad_dat, j);
+        }
+        SET(&par, SCK);      // SCK low to high
+        outport(PPIA, par);  // output Port A
+        RES(&par, SCK);      // SCLK high to low
+        outport(PPIA, par);  // output Port A
+    }
+    SET(&par, CS);           // disable AD7701 transmit serial data
+    outport(PPIA, par);      // output Port A
+    return (ad_dat);
+}
+
+// Start of second set of functions for the LGEX.
+/*** BeginHeader exp_init_n, get_na, set_def_na, get_def_na */
+
+/* you may want to delete any of these definitions that you are not using */
+
+/* Base address = 0xEx0x */
+
+#define RDTTL_E  0xE400      // TTL inputs
+#define PAL_E    0xE800      // Pulse Width enable (out) PIN level (inp)
+#define POL_E    0xE801      // Polarity of pulse to measure
+#define PPIA_E   0xEC00      // PPI data A
+#define PPIB_E   0xEC01      // PPI data B
+#define PPIC_E   0xEC02      // PPI data C
+#define PPICN_E  0xEC03      // PPI control
+
+/* Base address = 0xDx0x */
+
+#define RDTTL_D  0xD400      // TTL inputs
+#define PAL_D    0xD800      // Pulse Width enable (out) PIN level (inp)
+#define POL_D    0xD801      // Polarity of pulse to measure
+#define PPIA_D   0xDC00      // PPI data A
+#define PPIB_D   0xDC01      // PPI data B
+#define PPIC_D   0xDC02      // PPI data C
+#define PPICN_D  0xDC03      // PPI control
+
+/* Base address = 0xCx0x */
+
+#define RDTTL_C  0xC400      // TTL inputs
+#define PAL_C    0xC800      // Pulse Width enable (out) PIN level (inp)
+#define POL_C    0xC801      // Polarity of pulse to measure
+#define PPIA_C   0xCC00      // PPI data A
+#define PPIB_C   0xCC01      // PPI data B
+#define PPIC_C   0xCC02      // PPI data C
+#define PPICN_C  0xCC03      // PPI control
+
+    struct node_addr
+    {
+        int ppicn;           // PPI control register
+        int ppida;           // PPI A data
+        int ppidb;           // PPI B data
+        int ppidc;           // PPI C data
+        int pal;             // PWM enable (out) PIN (in)
+        int pol;             // Polarity for PWM
+        int rdttl;           // TTL input
+        int num;             // node number
+    };
+
+struct node_addr def_na;
+
+int exp_init_n(int node, int ppia, int ppib, int ppicu, int ppicl, int def);
+int get_na(int node, struct node_addr * na);
+int set_def_na(int node);
+int get_def_na(struct node_addr * na);
+
+/*** EndHeader exp_init_n, get_na, set_def_na, get_def_na */
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+exp_init_n                   <IOEXPAND.LIB>
+
+SYNTAX: int exp_init_n(int node, int ppia, int ppib, int ppicu, 
+            int ppicl, int def);
+
+KEY WORDS: LGEX, pio, init
+
+DESCRIPTION: Initializes the PIO port of an LGEX board corresponding to the
+specified node.  Node is 0 to 3 for node addresses 0xCXXX to 0xFXXX,
+respectively. Consult the IO Expander Manual for address configuration.
+If node equals -1, the function uses the default address saved in def_na.
+If def equals 1, the node is saved as default node in def_na. If def equals
+0, the node is not saved.
+
+RETURN VALUE: 0, if initialization is okay; else -1, if unknown mode is
+requested.
+END DESCRIPTION **********************************************************/
+nodebug int exp_init_n(int node, int ppia, int ppib, int ppicu, 
+            int ppicl, int def)
+{
+    struct node_addr na;
+    int    mode;
+
+    if (node != -1)
+    {
+        if (get_na(node, &na))
+            return -1;       // if not valid node number
+    }
+    else
+        get_def_na(&na);
+
+    outport(na.pal, 0);      // Disable PWM PAL
+    mode = 0x80;
+    if (ppia == -1)
+        SET(&mode, 4);
+
+    if (ppib == -1)
+        SET(&mode, 1);
+
+    if (ppicu == -1)
+        SET(&mode, 3);
+
+    if (ppicl == -1)
+        SET(&mode, 0);
+
+    outport(na.ppicn, mode); // ALL PPI outport pins will be low !
+    outport(na.ppida, ppia); // set the correct outputs
+    outport(na.ppidb, ppib);
+    outport(na.ppidc, (ppicu << 4) | ppicl);
+    if (def)
+        def_na = na;         // save as default node addresses
+
+    return 0;
+}
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+get_na                       <IOEXPAND.LIB>
+
+SYNTAX: int get_na(int node, struct node_addr *na);
+
+KEY WORDS: LGEX, NODE ADDRESS.
+
+DESCRIPTION: Gets the corresponding node address from the specified node 
+(0-3).
+
+RETURN VALUE:  0, if node is proper; else -1 if node is out of range. 
+Node address data are returned in struct node_addr *na.
+END DESCRIPTION **********************************************************/
+nodebug int get_na(int node, struct node_addr * na)
+{
+    if (node > 3 || node < 0)  // test for valid node number
+        return -1;
+
+    na->num = node;
+    node <<= 12;               // make into something useful
+
+    na->ppida = 0xCC00 + node; // make the correct addr for node
+    na->ppidb = 0xCC01 + node;
+    na->ppidc = 0xCC02 + node;
+    na->ppicn = 0xCC03 + node;
+    na->pal   = 0xC800 + node;
+    na->pol   = 0xC801 + node;
+    na->rdttl = 0xC400 + node;
+    return 0;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+set_def_na                   <IOEXPAND.LIB>
+
+SYNTAX: int set_def_na(int node);
+
+KEY WORDS:  LGEX, DEFAULT NODE
+
+DESCRIPTION: Sets node address to default node address.
+
+RETURN VALUE: Data from get_na().
+END DESCRIPTION **********************************************************/
+nodebug int set_def_na(int node)
+{
+    return (get_na(node, &def_na) );
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+get_def_na                   <IOEXPAND.LIB>
+
+SYNTAX: int get_def_na(struct node_addr *na);
+
+KEY WORDS:  LGEX, DEFAULT NODE ADDRESS.
+
+DESCRIPTION: Gets the default node address.
+
+RETURN VALUE:  The node number.
+END DESCRIPTION **********************************************************/
+nodebug int get_def_na(struct node_addr *na)
+{
+    if (def_na.num < 0 || def_na.num > 3)
+        set_def_na(3);       // Set to default board addr
+    *na = def_na;
+    return (def_na.num);     // and return the def node
+}
+
+/*** BeginHeader mux_ch_n */
+
+    int mux_ch_n(int node, int chan, int def);
+
+/*** EndHeader mux_ch_n */
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+mux_ch_n                     <IOEXPAND.LIB>
+
+SYNTAX: int mux_ch_n(int node, int chan, int def);
+
+KEY WORDS: LGEX, MUX
+
+DESCRIPTION: Sets DF509A multiplexers on specified LGEX node. Node is 0 
+to 3 for address 0xCXXX to 0xFXXX, respectively.  Chan is 0 to 3 for 
+(AN0-,AN0+) to (AN3-,AN3+), respectively. If node equals -1, the function
+uses the default address saved in def_na. If def equals 1, the node is 
+saved as default node in def_na. If def equals 0, the node is not saved.
+
+RETURN VALUE: 0, if mux setup is okay; else -1, if node is out of range.
+END DESCRIPTION **********************************************************/
+nodebug int mux_ch_n(int node, int chan, int def)
+{
+    struct node_addr na;
+    int  i;
+
+    if (node != -1)
+    {
+        if (get_na(node, &na)) // if not valid node number
+            return -1;
+    }
+    else
+        get_def_na(&na);
+
+    i = inport(na.ppida);
+
+    RES(&i, 6);              // chan 0
+    RES(&i, 7);
+
+    if (BIT(&chan, 0))  
+        SET(&i, 6);
+
+    if (BIT(&chan, 1)) 
+        SET(&i, 7);
+
+    outport(na.ppida, i);
+
+    if (def)
+        def_na = na;
+
+    return 0;
+}
+
+
+/*** BeginHeader ad20_mux_n, ad20_rdy_n, ad20_cal_n, ad20_rd_n */
+
+int  ad20_mux_n(int node, int chan, int def);
+int  ad20_rdy_n(int node);
+int  ad20_cal_n(int node, int mode, int def);
+long ad20_rd_n(int node, int def);
+
+/*** EndHeader ad20_mux_n, ad20_rdy_n, ad20_cal_n, ad20_rd_n */
+
+
+/*       See comments for single board versions */
+
+#define SDAT 0x00
+#define CAL  0x01
+#define CS   0x02
+#define SC2  0x03
+#define SCK  0x04
+#define SC1  0x05
+
+/* START FUNCTION DESCRIPTION ********************************************
+ad20_mux_n                   <IOEXPAND.LIB>
+
+SYNTAX: int ad20_mux_n(int node, int chan, int def);
+
+KEY WORDS: LGEX, AD20, MUX
+
+DESCRIPTION: Sets the DG509A Multiplexer for the 20 bit AD7703 of an LGEX.
+Node 0-3 specifies the node address 0xCXXX to 0xFXXX, respectively.
+Chans 0 to 3 selects Unipolar operation (0 to 2.5V) for (AN0-,AN0+) to
+(AN3-,AN3+), respectively. While chans 4 to 7 selects Bipolar operation
+(-2.5V to 2.5V) for (AN0-,AN0+) to (AN3-,AN3+), respectively.If node
+equals -1, the function uses the default address saved in def_na.
+If def equals 1, the node is saved as default node in def_na. If def equals
+0, the node is not saved.
+
+RETURN VALUE: 0, if okay; else -1, for invalid node.
+END DESCRIPTION **********************************************************/
+nodebug int ad20_mux_n(int node, int chan, int def)
+{
+    int i;
+    struct node_addr na;
+
+    if (node != -1)
+    {
+        if (get_na(node, &na)) // if not valid node number
+            return -1;
+    }
+    else
+        get_def_na(&na);
+
+    i = inport(na.ppida);
+    RES(&i, 0);               // unipolar
+    RES(&i, 6);               // chan 0
+    RES(&i, 7);
+
+    if (BIT(&chan, 0))
+        SET(&i, 6);
+
+    if (BIT(&chan, 1))
+        SET(&i, 7);
+
+    if (BIT(&chan, 2) || BIT(&chan, 3))
+        SET(&i, 0);
+
+    outport(na.ppida, i);
+    if (def)
+        def_na = na;
+
+    return 0;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+ad20_rdy_n                   <IOEXPAND.LIB>
+
+SYNTAX: int ad20_rdy_n(int node);
+
+KEY WORDS:  LGEX, AD20, READY.
+
+DESCRIPTION: Tests AD7703 DRDY status from RDTTL Bit 1 of an specified
+LGEX node. Node 0-3 specifies the node addresses 0xCXXX to 0xFXXX,
+respectively. If node equals -1, the function uses the default node
+saved in def_na.
+
+RETURN VALUE: 0, if the AD20 is ready; else -1, if the AD20 is busy or
+node is out of range.
+END DESCRIPTION **********************************************************/
+nodebug int ad20_rdy_n(int node)
+{
+    struct node_addr na;
+
+    if (node != -1)
+    {
+        if (get_na(node, &na)) // if not valid node number
+            return -1;
+    }
+    else
+        get_def_na(&na);
+
+    return (IBIT(na.rdttl, 1));
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+ad20_cal_n                   <IOEXPAND.LIB>
+
+SYNTAX: int ad20_cal_n(int node, int mode, int def);
+
+KEY WORDS: LGEX, AD20, CALIBRATE
+
+DESCRIPTION: Calibrates the AD7703 on a specfied LGEX. Node 0-3 specifies
+the node address 0xCXXX to 0xFXXX, respectively. If node equals -1, the
+function uses the node saved in def_na. If def equals 1, the node is saved
+as default node in def_na. If def equals 0, the node is not saved. Mode 0
+calibration does not use the multiplexer.  Mode 1 calibration uses the
+multiplexer to get zero and full scale on Ain. Mux ch0 is the A/D signal to
+be measured. Mux ch1 is Ain for the Mode1 1st step to calibrate the system
+offset. Mux ch2 is Ain for Mode1 2nd step to calibrate the system gain.
+Mode 2 calibration uses the current channel to get Ain as zero to calibrate
+the system offset. The following shows the state of SC1 and SC2 during
+calibration:
+
+   mode     SC1   SC2   Cal Type       Zero     FS          Steps
+
+   0        0     0     self-cal       AGND     REF+        1
+   1        1     1     system offset  Ain                  1st of 2
+   1        0     1     system gain             Ain         2nd of 2
+   2        1     0     system offset  Ain      REF+        1
+
+RETURN VALUE:  0, if calibration was completed; else -1, if error
+during calibration.
+END DESCRIPTION **********************************************************/
+nodebug int ad20_cal_n(int node, int mode, int def)
+{
+    int    i, par, ppida, save_node;
+    struct node_addr na;
+
+    if (node != -1)
+    {
+        if (get_na(node, &na)) // if not valid node number
+            return -1;
+    }
+    else
+        get_def_na(&na);
+
+    save_node = def_na.num;
+    def_na    = na;
+    ppida     = na.ppida;
+    par       = inport(ppida);
+    SET(&par, CS);           // disable AD7701 to transmit serial data
+    RES(&par, CAL);          // CAL low
+    outport(ppida, par);     // output Port A
+
+    switch (mode)
+    {
+         case 0x00:
+             RES(&par, SC1); // CS1=0, CS2=0, self calibration
+             RES(&par, SC2);
+             outport(ppida, par);
+             SET(&par, CAL); // CAL high
+             outport(ppida, par);
+             for (i = 0; i < 4; i++)
+                 ;
+             RES(&par, CAL); // CAL low  after 4 CLK high
+             outport(ppida, par);
+             break;
+         case 0x01:
+             ad20_mux_n(-1, 1, 0); // Uni- or Bi- polarity must same as CH0
+                             // CH1 is zero Ain for Mode 1 calibration
+             SET(&par, SC1); // mode 1 system offset calibration
+             SET(&par, SC2);
+             outport(ppida, par);
+             SET(&par, CAL);      // CAL high
+             outport(ppida, par); // output Port A
+             for (i = 0; i < 4; i++)
+                 ;
+             RES(&par, CAL);      // CAL low  after 4 CLK high
+             outport(ppida, par);
+             while (ad20_rdy_n(-1))
+                 ;
+             ad20_mux_n(-1, 2, 0);// Uni- or Bi- polarity must same as CH0
+
+             // CH2 is full scale Ain for Mode 1 calibration
+             RES(&par, SC1);      // mode 1 system gain calibration
+             SET(&par, SC2);
+             outport(ppida, par);
+             SET(&par, CAL);      // CAL high
+             outport(ppida, par); // output Port A
+             for (i = 0; i < 4; i++)
+                 ;
+             RES(&par, CAL);      // CAL low after 4 CLK high
+             outport(ppida, par);
+             break;
+         case 0x02:
+             // Current channel is zero Ain for Mode 2 calibration
+             SET(&par, SC1);      // mode 2 system offset calibration
+             RES(&par, SC2);
+             outport(ppida, par);
+             SET(&par, CAL);      // CAL high
+             outport(ppida, par); // output Port A
+             for (i = 0; i < 4; i++)
+                 ;
+             RES(&par, CAL);      // CAL low  after 4 CLK high
+             outport(ppida, par);
+             break;
+         default:
+#ifndef ROM
+             printf("unknown calibration mode= %x \n", mode);
+#endif
+             if (!def)
+             set_def_na(save_node);
+                return (-1);
+    }
+    while (ad20_rdy_n(-1))
+        ;
+    if (!def)
+        set_def_na(save_node); // restore default node
+
+    return 0;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+ad20_rd_n                    <IOEXPAND.LIB>
+
+SYNTAX: long ad20_rd_n(int node, int def);
+
+KEY WORDS: LGEX, AD20 DATA
+
+DESCRIPTION:  Reads a 20 bit data from the AD7703 serial data port. Due to
+the 125 ms step response time of AD7703, a time delay should be guaranteed
+after a multiplexer switching. A/D data will be valid when DRDY is low for
+up to 4 KHz output data rate. The polarity and chan to read should be set
+previously with ad20_mux(..). For Unipolar Mode ( PA0=0), Ain ranges from
+0 to 2.5 volts. The LSB = 2.5V/1048576 = 2.384 uV. For Bipolar mode 
+(PA0 = 1), Ain ranges from -2.5V to 2.5V. The LSB = 5V/1048576 = 4.768 uV.
+Node 0-3 specifies the node address 0xCXXX to 0xFXXX, respectively. If node
+equals -1, the function uses the node saved in def_na. If def equals 1,
+the node is saved as default node in def_na. If def equals 0, the node is
+not saved.
+
+RETURN VALUE: 20 bit A/D data. For Unipolar mode, 0x00000 = AGND,
+0x7FFFF = 1.25V and 0xFFFFF = 2.5V. For Bipolar mode, 0x00000 = -2.5V,
+0x7FFFF = AGND and 0xFFFFF = 2.5V.  Returns -1 for invalid node.
+END DESCRIPTION **********************************************************/
+nodebug long ad20_rd_n(int node, int def)
+{
+    int    i, j, par, save_node, ppida;
+    long   ad_dat;
+    struct node_addr na;
+
+    if (node != -1)
+    {
+        if (get_na(node, &na)) // if not valid node number
+            return -1;
+    }
+    else
+        get_def_na(&na);
+
+    save_node = def_na.num;
+    def_na    = na;
+    ppida     = na.ppida;
+    while (ad20_rdy_n(-1))
+        ;
+    par = inport(ppida);
+    RES(&par, CS);           // enable AD7703 to transmit serial data
+    outport(ppida, par);     // output Port A
+    ad_dat = 0;
+    for (i = 0; i < 20; i++)
+    {
+        if (IBIT(na.rdttl, SDAT))
+        {
+            j = 19 - i;
+            SET(&ad_dat, j);
+        }
+
+        SET(&par, SCK);      // SCLK low to high
+        outport(ppida, par); // output Port A
+        RES(&par, SCK);      // SCLK high to low
+        outport(ppida, par); // output Port A
+    }
+    SET(&par, CS);           // disable AD7701 transmit serial data
+    outport(ppida, par);     // output Port A
+    if (!def)
+        set_def_na(save_node); // restore default node
+
+    return (ad_dat);
+}

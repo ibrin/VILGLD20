@@ -1,0 +1,693 @@
+// 81495, fix xmem2root and root2xem in case data sizes are multiples of 
+// 4096.
+/* START LIBRARY DESCRIPTION *********************************************
+XMEM.LIB
+	Copyright (c) 1994, Z-World.
+
+DESCRIPTION:
+	Xtended memory support functions
+
+SUPPORT LIB'S:
+END DESCRIPTION **********************************************************/
+
+/*** Beginheader xmadr,xmadr1 */
+
+unsigned long xmadr(void *adr);
+
+/*** Endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+xmadr                        <XMEM.LIB>
+
+SYNTAX: unsigned long xmadr(void *adr);
+
+KEYWORDS:
+
+DESCRIPTION:   Converts logical address "adr" to physical address according
+to the memory mapping registers.  Uses the BBR, CBR and CBAR to determine
+the physical address of any given logical address.
+
+RETURN VALUE:  Unsigned long integer indicating the physical address.
+END DESCRIPTION **********************************************************/
+#asm  fast
+; xmadr(char *adr)   returns long address for address in virtual space
+xmadr::
+	in0   d,(BBR)
+	in0   e,(CBR)  ; get pointers
+	in0   b,(CBAR) ;  get memory break
+xmadr1::
+	push  bc       ;  save CBAR
+	ld    a,b
+	and   0fh      ;  get where BBR starts being effective
+	sla   a        ;
+	sla   a
+	sla   a
+	sla   a
+	ld    b,a      ;  b gets the BBR start 256byte page number
+	ld    a,h
+	cp    b        ; see if less than bbr
+	pop   bc       ;  restore CBAR
+	jr nc,xmadr2   ; not less
+; in lowest segement, virtual is physical
+	ex de,hl
+	ld bc,0
+	ret
+xmadr2:
+	ld    a,b      ;  a = CBAR
+	and   0f0h     ;  where CBR start in 256byte page number
+	ld    a,h
+	cp    b  ; see if less than CBR
+	jr nc,xmadr3
+; use bbr
+	ld c,d   ; bbr
+	jr xmadr4
+xmadr3:
+	ld c,e   ;cbr
+xmadr4:
+	ld b,0
+	ex de,hl
+; de has address, c has cbr
+	xor   a
+	rr c
+	rra
+	rr c
+	rra
+	rr c
+	rra
+	rr c
+	rra
+	add   a,d
+	ld d,a
+	jr nc,xmadr2a
+	inc   c  ; carry
+xmadr2a:
+	ret
+#endasm
+
+/*** Beginheader xgetchar,xgetint, xgetlong,xgetfloat */
+
+char          xgetchar(unsigned long adr);
+int           xgetint(unsigned long adr);
+unsigned long xgetlong(unsigned long adr);
+float         xgetfloat(unsigned long adr);
+
+/*** Endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+xgetchar                     <XMEM.LIB>
+
+SYNTAX: char xgetchar(long adr);
+
+KEYWORDS:
+
+DESCRIPTION:   Get a character whose address is specified by physical address
+
+RETURN VALUE:  See description.
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+xgetint                      <XMEM.LIB>
+
+SYNTAX: int xgetint(unsigned long adr);
+
+KEYWORDS:
+
+DESCRIPTION:   Get an integer whose address is specified by physical address
+
+RETURN VALUE:  See description.
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+xgetlong                     <XMEM.LIB>
+
+SYNTAX: unsigned long xgetlong(unsigned long adr);
+
+KEYWORDS:
+
+DESCRIPTION:   Get a long int whose address is specified by physical address
+
+RETURN VALUE:  See description.
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+xgetfloat                    <XMEM.LIB>
+
+SYNTAX: float xgetfloat(unsigned long adr);
+
+KEYWORDS:
+
+DESCRIPTION:   Get a float whose address is specified by a physical address.
+
+RETURN VALUE:  See description.
+END DESCRIPTION **********************************************************/
+#asm fast
+; char xgetchar(long adr)
+xgetchar::
+; address in bc-de
+	call x_makadr  ; compue address in hl, set CBR
+	ld a,(hl)      ;get byte
+	ld l,a
+	ld h,0
+	ex af,af'
+	out0  (CBR),a  ;restore cbr
+	ret
+xgetint::
+	call  x_makadr
+	ld a,i         ; get pe interrupts on flag
+	jp pe,xgetint2
+	ld a,(hl)
+	inc   hl
+	ld h,(hl)
+	ld l,a
+	ex af,af'
+	out0  (CBR),a  ;restore CBR
+	ret
+; interrupts on path
+xgetint2:
+	di
+	ld a,(hl)
+	inc   hl
+	ld h,(hl)
+	ei
+	ld l,a
+	ex af,af'
+	out0  (CBR),a
+	ret
+
+xgetfloat::
+xgetlong::
+	call  x_makadr
+	ld a,i
+	push  af
+	di    ;save interrupts
+	ld e,(hl)
+	inc   hl
+	ld d,(hl)
+	inc   hl
+	ld c,(hl)
+	inc   hl
+	ld b,(hl)
+	pop   af
+	jp po,xgetlong2   ; jmp if interrupts were off
+	ei
+xgetlong2:
+	ex af,af'
+	out0  (CBR),a
+	ret
+#endasm
+
+/*** Beginheader xputchar, xputint, xputlong,xputfloat */
+
+void xputchar(unsigned long adr, char dat);
+void xputint(unsigned long adr, int dat);
+void xputlong(unsigned long adr, unsigned long dat);
+void xputfloat(unsigned long adr, float dat);
+
+/*** Endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+xputchar                     <XMEM.LIB>
+
+SYNTAX: void xputchar(long adr, char dat);
+
+KEYWORDS:
+
+DESCRIPTION:   Store a character at a physical address
+
+RETURN VALUE:  None.
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+xputint                      <XMEM.LIB>
+
+SYNTAX: void xputint(long adr, int dat);
+
+KEYWORDS:
+
+DESCRIPTION:   Store an integer at a physical address
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+xputlong                     <XMEM.LIB>
+
+SYNTAX: void xputlong(long adr, long dat);
+
+KEYWORDS:
+
+DESCRIPTION:   Store a long integer at a physical address
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+xputfloat                    <XMEM.LIB>
+
+SYNTAX: void xputfloat(unsigned long adr, float dat);
+
+KEYWORDS:
+
+DESCRIPTION:   Store a float at a physical address
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+#asm fast
+xputchar::
+	call  x_makadr
+	ld iy,6
+	add   iy,sp
+	ld a,(iy)
+	ld (hl),a
+	ex af,af'
+	out0  (CBR),a
+	ret
+
+xputint::
+; xputint (long adr, int dat)
+	call  x_makadr
+	ex de,hl
+	ld hl,6
+	add   hl,sp
+	ld bc,2  ;count
+	ld a,i
+	jp po,xputint2 ; if interrupts off
+	di
+	ldir
+	ei
+	ex af,af'
+	out0  (CBR),a
+	ret
+xputint2:
+	ldir
+	ex af,af'
+	out0  (CBR),a
+	ret
+
+;xputlong( long adr, long dat)
+
+xputfloat::
+xputlong::
+	call  x_makadr
+	ex de,hl
+	ld hl,6
+	add   hl,sp
+	ld bc,4  ;count
+	ld a,i
+	jp po,xputlong2   ;if ints off
+	di
+	ldir
+	ei
+	ex af,af'
+	out0  (CBR),a
+	ret
+xputlong2:
+	ldir
+	ex af,af'
+	out0  (CBR),a
+	ret
+#endasm
+
+/*** Beginheader xmem2root */
+
+void xmem2root(unsigned long int src, void *dest, unsigned len);
+
+/*** Endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+xmem2root                    <XMEM.LIB>
+
+SYNTAX: void xmem2root(unsigned long int src, void *dest, unsigned int len);
+
+KEYWORDS: memory
+
+DESCRIPTION:   Stores "len" characters from physical address "src" to
+logical address "dest".
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+#asm fast
+xmem2root::
+; int xmem2root(unsigned long int src, void *dest, unsigned int len);
+	call  x_makadr   ; get address in hl, set CBR
+	ld iy,6
+	add   iy,sp
+	ld e,(iy)
+	ld d,(iy+1)
+	ld c,(iy+2) ; count
+	ld b,(iy+3);
+	ld a,b
+	or c
+	jr z,xmem2root3   ; if count is zero do nothing
+xmem2root1:
+	ld a,b
+	and  a,0f0h       ;see if 4096 or more
+	jr z,xmem2root2
+	push  bc
+	ld bc,4096
+	ldir
+	pop   bc
+	ld a,b
+	sub   a,010h
+	ld b,a
+	in0   a,(CBR)
+	inc   a     ;add   a,2
+	out0  (CBR),a
+	ld a,h         ; source less 4k
+	sub   010h     ;less 4096
+	ld h,a
+	jr xmem2root1
+xmem2root2:
+	ld    a, c              ; 81495, make sure bc is not zero
+	or    b                 ; 81495
+	jr    z, xmem2root3     ; 81495, if bc == 0, skip last ldir
+	ldir
+xmem2root3:
+	ex af,af'
+	out0  (CBR),a
+	ret
+#endasm
+
+/*** Beginheader root2xmem, xstrlen */
+
+void root2xmem(void *src, unsigned long dest, unsigned len);
+unsigned int xstrlen(unsigned long int str);
+
+/*** Endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+root2xmem                    <XMEM.LIB>
+
+SYNTAX: void root2xmem(void *src, unsigned long dest, unsigned len);
+
+KEYWORDS:
+
+DESCRIPTION:   Stores "len" characters from logical address "src" to
+physical address "dest".
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+xstrlen                      <XMEM.LIB>
+
+SYNTAX: unsigned int xstrlen(unsigned long int str);
+
+KEYWORDS:
+
+DESCRIPTION:
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+#asm fast
+root2xmem::
+; int aroot2xmem(char *src, unsigned long int dest, unsigned int len);
+	pop   de    ;return
+	pop   hl    ; source
+	exx
+	pop   de    ; dest least
+	pop   bc    ; dest most
+	call  x_makadr   ; compute address in hl, CBR
+	exx
+	push  hl    ; source
+	exx
+	ex de,hl    ; dest to de
+	pop   hl    ; source
+	pop   bc    ; count
+	ld a,b
+	or c
+	jr z,root2xmem3   ; do nothing if count is zero
+root2xmem1:
+	ld a,b
+	and   0f0h        ; if more than 4k bytes
+	jr z,root2xmem2   ; continue if less
+	push  bc
+	ld bc,4096
+	ldir
+	pop   bc
+	ld a,b
+	sub   010h
+	ld b,a
+	in0   a,(CBR)
+	inc   a     ;add   a,2
+	out0  (CBR),a
+	ld a,d   ;dest
+	sub   a,010h
+	ld d,a
+	jr root2xmem1  ; go for another 4096 or less
+root2xmem2:
+	ld    a, c              ; 81495, make sure bc is not zero
+	or    b                 ; 81495
+	jr    z, root2xmem3     ; 81495, if bc == 0, skip last ldir
+	ldir
+root2xmem3:
+	exx
+	ld hl,-8
+	add   hl,sp
+	ld sp,hl       ; push 4 words to stack
+	ex af,af'
+	out0   (CBR),a
+	ex de,hl       ; get return address in hl
+	jp (hl)
+
+xstrlen::
+;unsigned int xstrlen(unsigned long int str);
+	call  x_makadr
+	ld e,0         ; number of 4096's
+xstrlen1:
+	ld bc,4096
+	xor   a
+	cpir           ; count until (hl) is zero
+	jr z,xstrlen2  ; if zero found
+	in0   a,(CBR)
+	inc   a        ;add   a,2
+	out0  (CBR),a
+	inc   e
+	ld a,h
+	sub   a,10h ;4096
+	ld h,a
+	jr xstrlen1 ; loop
+xstrlen2:
+	ld hl,4095
+	xor   a
+	sbc   hl,bc ; number of bits
+	sla   e
+	sla   e
+	sla   e
+	sla   e
+	ld a,h
+	add   a,e
+	ld h,a      ; count of bytes
+	ex  af,af'
+	out0    (CBR),a
+	ret
+#endasm
+
+/*** BeginHeader x_makadr,x_makadr1 */
+
+char *x_makadr(unsigned long dest);
+
+/*** Endheader */
+
+/* START _FUNCTION DESCRIPTION ********************************************
+x_makadr                     <XMEM.LIB>
+
+SYNTAX: char * x_makadr(unsigned long dest);
+
+KEYWORDS:
+
+DESCRIPTION:   Computes the logical address from physical address "dest".
+Also sets CBR to new page number and returns the logical address in HL.
+The old CBR is saved in alternate af (i.e., af').
+
+This function should *NEVER* be called from xmem functions.  It is also
+recommended that this function not called from C functions as it is easy
+to forget a C function may be placed in xmem automatically.
+
+RETURN VALUE:  Logical address that correspond to the physical address
+"dest".
+END DESCRIPTION **********************************************************/
+
+#asm fast
+; enter with bcde as long address, set CBR and return hl with virtul adr
+x_makadr::
+	in0   a,(CBR)
+	ex af,af'   ; save cbr
+	call  x_makadr1
+	out0  (CBR),a
+	ret
+x_makadr1::
+	ld l,e
+	ld a,d
+	and   0fh   ; keep lower 4 bits of upper byte
+	or 0e0h     ; upper 4 bits of upper byte
+	ld h,a   ; hl has address
+	ld a,c
+	rl d
+	rla
+	rl d
+	rla
+	rl d
+	rla
+	rl d
+	rla
+	sub a,0eh   ; A reg has new cbr
+	ret
+
+#endasm
+
+/*** beginHeader a32_24, a24_32 */
+
+unsigned long int a32_24(unsigned long int a);
+unsigned long int a24_32(unsigned long int a);
+unsigned int xstrlen(unsigned long int str);
+
+/*** endHeader */
+
+#define CBSTARTBYTE ((unsigned int)(inport(CBAR)&0xf0)<<8)
+#define BBSTARTBYTE ((unsigned int)(inport(CBAR)&0x0f)<<12)
+#define CBSTARTPAGE ((unsigned int)(inport(CBAR)&0xf0)>>4)
+#define BBSTARTPAGE ((unsigned int)(inport(CBAR)&0x0f))
+
+/* a32_24 converts a physical (32-bit) address to a segmented
+	(24-bit) address.  The 32-bit address is passed by value,
+	and the 24-bit address variable is passed by reference.  The
+	converted 24-bit address will be returned as well.  If there
+	is no variables to put into, the caller can pass a zero for
+	the variable */
+
+/* START FUNCTION DESCRIPTION ********************************************
+a32_24                       <XMEM.LIB>
+
+SYNTAX: unsigned long int a32_24(unsigned long int a);
+
+KEYWORDS: convert
+
+DESCRIPTION: Converts a physical (32-bit) address to a segmented (24-bit)
+address.  The 32-bit address is passed by value, and the 24-bit address
+variable is passed by value. If there are no variables to put into, the
+caller can pass a zero for the variable.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+#asm fast
+a32_24::
+	call  x_makadr1      ;  compute logical address in HL
+	ld    b,0
+	ld    c,a            ;  load the CBR of destination
+	ld    d,h
+	ld    e,l
+	ret
+#endasm
+
+/* a24_32 converts a segmented address (24-bit) into a 32-bit
+	physical address */
+
+/* START FUNCTION DESCRIPTION ********************************************
+a24_32                       <XMEM.LIB>
+
+SYNTAX: unsigned long int a24_32(unsigned long int a24);
+
+KEYWORDS: convert
+
+DESCRIPTION: Converts a segmented address (24-bit) into a 32-bit physical 
+address.  The segment (2nd byte of the segmented address) is only effective
+if the address is in xmem (i.e., if address >= 0xe000).  Otherwise,
+the segment is ignored.  Both the CBAR and BBR registers in the MMU are
+used to calculate the outcome.
+
+RETURN VALUE:  An unsigned long integer that is the physical equivalent
+address of the supplied extended logical address.
+END DESCRIPTION **********************************************************/
+#asm
+a24_32::
+	pop   de       ;  pop return address
+	pop   hl       ;  pop lo-word (address)
+	pop   bc       ;  pop hi-word
+	push  bc
+	push  hl
+	push  de       ;  repush the return address
+	in0   d,(BBR)  ;  get BBR
+	ld    e,c      ;  CBR
+	in0   b,(CBAR) ;  get memory break
+	jp    xmadr1   ;
+#endasm
+
+/*** BeginHeader blongjmp, bsetjmp */
+
+int bsetjmp();
+void blongjmp(int value);
+
+struct _bbrjmp {
+	char _BBR;
+	char _CBAR;
+	int _ADDR;
+	int _SP;
+} bbrjmpbuf;
+
+/*** EndHeader */
+
+xmem useix void blongjmp (int retval) {
+#asm xmemok
+	ld hl,6
+	push hl
+	ld hl, bbrjmpbuf
+	push hl
+	ld	bc,000fh
+	push	bc
+	ld de,0000h
+	push de
+	call xmem2root
+	pop	bc
+	pop	bc
+	pop	bc
+	pop	bc
+	ld	a,(bbrjmpbuf+_BBR)
+	ld	b,a
+	ld	a,(bbrjmpbuf+_CBAR)
+	ld	c,a
+	ld	l,(ix+retval)
+	ld	h,(ix+retval+1)
+	ld	ix,(bbrjmpbuf+_SP)
+	ld	iy,(bbrjmpbuf+_ADDR)
+	ld	sp,ix
+	out0	(BBR),b
+	out0	(CBAR),c
+	jp	(iy)
+#endasm
+}
+
+#asm
+bsetjmp::
+	pop	bc
+	ld		hl,0
+	add	hl,sp
+	ld		(bbrjmpbuf+_SP),hl
+	ld		hl,bbrjmpbuf+_ADDR
+	ld		(hl),c
+	inc	hl
+	ld		(hl),b
+	in0	d,(BBR)
+	ld		hl,bbrjmpbuf+_BBR
+	ld		(hl),d
+	in0	d,(CBAR)
+	ld		hl,bbrjmpbuf+_CBAR
+	ld		(hl),d
+	push	bc
+	ld		hl,6
+	push	hl
+	ld		bc,000fh
+	push	bc
+	ld		de,0000h
+	push	de
+	ld		hl,bbrjmpbuf
+	push	hl
+	call	root2xmem
+	pop	bc
+	pop	bc
+	pop	bc
+	pop	bc
+	ld		hl,0
+	ret
+#endasm
+

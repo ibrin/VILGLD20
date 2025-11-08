@@ -1,0 +1,2154 @@
+/*** BeginHeader */
+
+#ifndef __AASC_LIB
+#define __AASC_LIB
+
+#use circbuf.lib
+//#use aasc.lib
+
+#define DEV_Z0 1
+#define DEV_Z1 2
+#define DEV_UART 3
+#define DEV_ZNET 4
+#define DEV_STDIO 5
+#define DEV_SCC 6
+#define DEV_SIO 7
+#define DEV_SIOA 7
+#define DEV_DUMMY 8			//	dummy should always be the last
+#define MAX_DEV 9
+
+#define TX_MASK 1
+#define RX_MASK 2
+
+struct _ChanType {
+	void (*DevOpen)();		//	open the device	, actual parameters:
+									// (long Param, char CRTS, struct _Channel *pFreeChannel)
+	void (*DevClose)();		//	close the device, actual parameter (struct _Channel *pChan)
+	void (*TxSwitch)();		//	switch transmitter on or off, actual parameters:
+									//	(char OnOff, struct _Channel *pChan)
+	void (*RxSwitch)();		//	switch receiver on or off, actual parameters
+									//	(char OnOff, struct _Channel *pchan)
+	long (*DevGetError)();	//	returns long error code, actual parameter:
+									//	(struct _Channel *pChan)
+	void (*DevClrError)();	//	clears long error code, actual parameter:
+									//	(struct _Channel *pChan)
+};
+
+struct _Channel {
+	struct _CircBuffer
+		*InBuf,
+		*OutBuf;
+	int ChannelType;
+	struct _ChanType *pDevFunc;
+	long Params;
+//	struct _Channel
+//		*PipeInChannel,		//	also used as next free, changed to use nextChannel for
+									//	both the used and free chains
+//		*PipeOutChannel;		//	not used anymore
+	char CRTS;
+	struct _Channel *nextChannel;
+	struct _Channel *nextSameDevice;
+	int (*customTxSwitch)();	//	added for more flexible 485 control
+	long Error;
+	long FreeLong1;
+	long LastFreeLong2;
+	};
+
+typedef struct _Channel * CHANNEL;
+
+#ifndef MAX_CHAN
+#define MAX_CHAN 4
+#else
+#endif
+
+#define MAX_CIRCBUF MAX_CHAN*2
+
+struct _Channel Channels[MAX_CHAN];
+struct _CircBuffer CircBufs[MAX_CIRCBUF];
+struct _ChanType DevFunc[MAX_DEV];
+
+struct _Channel * aascNextFree, * pAllChannels;
+int aascI;
+
+/*** EndHeader */
+
+/*** BeginHeader aascClose */
+void aascClose(CHANNEL channel);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+aascClose                    <AASC.LIB>
+
+SYNTAX:			void aascClose(CHANNEL Channel);
+
+DESCRIPTION:	Closes the channel numbered "Channel". First, it calls the
+					device dependent routine to close the device. Then the
+					storage associated with this channel is reattached to the
+					free list.
+
+PARAMETER1:		channel to close
+
+RETURN VALUE:	None.
+END DESCRIPTION **********************************************************/
+nodebug
+void aascClose(CHANNEL Channel) {
+	struct _Channel **pTmp;
+	struct _Channel *nextUsed;
+	//	closes a channel
+
+	Channel->pDevFunc->DevClose(Channel);
+	nextUsed = Channel->nextChannel;				//	remember whos the next used channel
+	//	put now free block into free list	
+	Channel->nextChannel = aascNextFree;		//	make myself the first free channel
+	aascNextFree = Channel;
+
+	//	detach channel from list of all channels
+	pTmp = &pAllChannels;
+	while (*pTmp) {
+		if (*pTmp == Channel) {
+			//	found myself in the used chain
+			//	now detach myself
+			*pTmp = nextUsed;							// make my previous point to my next
+			break;										//	and we're done!
+			}
+		else {
+			pTmp = &((*pTmp)->nextChannel);		//	advance to the next used channel
+			}
+		}
+	}
+
+/*** BeginHeader aascSetReadBuf,aascSetWriteBuf */
+void aascSetReadBuf(CHANNEL Channel, void *Buffer,
+	unsigned int Size);
+void aascSetWriteBuf(CHANNEL Channel, void *Buffer,
+	unsigned int Size);
+/*** EndHeader */
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+aascSetReadBuf               <AASC.LIB>
+
+SYNTAX:			void aascSetReadBuf(CHANNEL channel,
+							void *Buffer, unsigned size);
+
+DESCRIPTION:	Designates a memory area pointed to by "Buffer" of "size"
+to be the receive buffer of channel "Channel".
+
+PARAMETER1: channel to read from, must be the result of an aascOpen
+PARAMETER2: address of buffer 
+PARAMETER3: size of read buffer
+
+RETURN VALUE:	None.
+END DESCRIPTION **********************************************************/
+nodebug speed useix
+void aascSetReadBuf(CHANNEL Channel, void *Buffer, unsigned int Size) {
+	circbufInit(Channel->InBuf,Buffer,Size);
+	}
+
+/* START FUNCTION DESCRIPTION ********************************************
+aascSetWriteBuf              <AASC.LIB>
+
+SYNTAX:			void aascSetWriteBuf(CHANNEL Channel,
+							void *Buffer, unsigned size);
+
+DESCRIPTION:	Designates a memory area pointed to by "Buffer" of "size"
+to be the transmit buffer of channel "Channel".
+
+PARAMETER1: channel to write to, must be the result of an aascOpen
+PARAMETER2: address of buffer 
+PARAMETER3: size of write buffer
+
+RETURN VALUE:	None.
+END DESCRIPTION **********************************************************/
+nodebug speed useix
+void aascSetWriteBuf(CHANNEL Channel, void *Buffer, unsigned int Size) {
+	circbufInit(Channel->OutBuf,Buffer,Size);
+	}
+
+
+/*** BeginHeader aascOpen */
+CHANNEL aascOpen(int Type, char CRTS, long Config,
+	void(*brqfnc)() );
+#makechain _aascInitDF
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+aascOpen                     <AASC.LIB>
+
+SYNTAX:	CHANNEL aascOpen(int Type, char CRTS, long Param,
+									void(*brqfnc)());
+
+DESCRIPTION:	Opens a channel of device type "Type", and initialize the
+device with parameter "Param". 
+
+PARAMETER1:
+Device type to open. Must be one of:
+DEV_Z0 		- z0 port
+DEV_UART 	- PLC
+DEV_ZNET 	- zNet
+DEV_STDIO 	- stdio window in Dynamic C
+DEV_SCC     - Z85C30 SCC in Asynchronous mode
+
+PARAMETER2: non-zero to use  C/RTS hardware flow  
+
+PARAMETER3:
+Combine the following flags to configure channel:
+ASCI_PARAM_8D 
+ASCI_PARAM_7D 
+ASCI_PARAM_EPARITY
+ASCI_PARAM_OPARITY
+ASCI_PARAM_NOPARITY
+ASCI_PARAM_1STOP
+ASCI_PARAM_2STOP
+ASCI_PARAM_MPBT
+ASCI_PARAM_MP
+ASCI_PARAM_CTSPS
+ASCI_PARAM_CRTS 
+ASCI_PARAM_PEO
+ASCI_PARAM_DR64
+ASCI_PARAM_1200		Basic quantum for baud rate. Multiply by
+							the factor (e.g., 8 for 9600 bps) and add to Param
+
+ASCI_PARAM_8N1			Specifies 8 data bits, 1 stop and no parity,
+							add to Param
+UART_CRTS 
+UART_NO_CRTS 
+
+
+UART_PARAM_1200		similar to ASCI_PARAM_1200
+UART_PARAM_8N1			similar to ASCI_PARAM_8N1
+ZNSLAVE					Multiply by the target slave number and add to Param.
+							Home slave number is set by writing to znID.  The master
+							station has slave number 0.
+ZN1200					similar to ASCI_PARAM_1200
+
+SCC_1STOP
+SCC_2STOP
+SCC_NOPARITY
+SCC_OPARITY
+SCC_EPARITY
+SCC_7DATA  
+SCC_8DATA     
+SCC_8N1       			Shortcut for 8 data bits, No parity, 1 Stop bit
+SCC_1200      			Baud base
+SCC_A         			Channel A indicator
+SCC_B         			Channel B indicator
+
+PARAMETER4:
+Pointer to a function to be called by the z0 interrrupt when a break request is
+detected.  Usually NULL.
+
+RETURN VALUE:	a 16-bit quantity of type CHANNEL for all further channel
+operations.	Returns NULL if no channels can be assigned.
+END DESCRIPTION **********************************************************/
+
+CHANNEL aascOpen(int Type, char CRTS, long Param,
+		void(*brqfnc)()) {
+	//	allocates a channel of the specified type
+	//	channel numbers are always greater than zero
+	auto struct _Channel *pFreeChannel;
+	
+#GLOBAL_INIT {
+	aascI = 0;
+	for (aascI = 0; aascI < MAX_CHAN-1; ++aascI) {
+		Channels[aascI].nextChannel = Channels + (aascI + 1);	//	use nextChannel as free list chain
+		}
+	Channels[aascI].nextChannel = NULL;
+	aascNextFree = Channels;
+	pAllChannels = NULL;
+	memset(DevFunc,0,sizeof(DevFunc));
+	_aascInitDF();
+	}
+	
+	//	common initialization
+	if (aascNextFree && (Type >= 0) && (Type < MAX_DEV) && (DevFunc[Type].DevOpen)) {
+		pFreeChannel = aascNextFree;
+		aascNextFree = pFreeChannel->nextChannel;
+		memset(pFreeChannel,0,sizeof(struct _Channel));
+		pFreeChannel->ChannelType = Type;
+		pFreeChannel->pDevFunc = &DevFunc[Type];
+		pFreeChannel->Params = Param;
+		pFreeChannel->CRTS = CRTS;
+		pFreeChannel->Error = 0;
+		aascI = pFreeChannel - Channels;
+		pFreeChannel->InBuf = &CircBufs[aascI*2];
+		pFreeChannel->OutBuf = &CircBufs[aascI*2+1];
+		pFreeChannel->pDevFunc->DevOpen(Param,CRTS,pFreeChannel,brqfnc,0);
+		pFreeChannel->nextChannel = pAllChannels;						//	 use nextChannel as used chain
+		pFreeChannel->customTxSwitch = NULL;
+		pAllChannels = pFreeChannel;
+		}
+	else	//	no free channels left
+		pFreeChannel = NULL;
+	return pFreeChannel;
+	
+	}
+
+/*** BeginHeader */
+
+void aascSetCustTxSw(struct _Channel *chan, int (*f)()) {
+	chan->customTxSwitch = f;
+}
+
+/*** EndHeader */
+
+/*** BeginHeader aascDLPReOpen */
+CHANNEL aascDLPReOpen(int Type, char CRTS, long Config);
+#makechain _aascInitDF_DLP
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION ********************************************
+aascDLPReOpen                     <AASC.LIB>
+
+SYNTAX:			CHANNEL aascDLPReOpen(int Type, char CRTS, long Param)
+
+DESCRIPTION:	Like aascOpen but used by a downloaded program (DLP)to reopen
+a channel that was already opened by the Download manager (DLM). It is
+necessary to use this instead of aascOpen if the two programs are going to
+share a channel. Opens a channel of device type "Type", and initialize the
+device with parameter "Param". 
+
+PARAMETER1:
+Device type to open. Must be one of:
+DEV_Z0 		- z0 port
+DEV_UART 	- PLC
+DEV_ZNET 	- zNet
+DEV_STDIO 	- stdio window in Dynamic C
+DEV_SCC     - scc chip
+
+PARAMETER2: non-zero to use  C/RTS hardware flow  
+
+PARAMETER3:
+Combine the following flags to configure channel:
+ASCI_PARAM_8D 
+ASCI_PARAM_7D 
+ASCI_PARAM_EPARITY
+ASCI_PARAM_OPARITY
+ASCI_PARAM_NOPARITY
+ASCI_PARAM_1STOP
+ASCI_PARAM_2STOP
+ASCI_PARAM_MPBT
+ASCI_PARAM_MP
+ASCI_PARAM_CTSPS
+ASCI_PARAM_CRTS 
+ASCI_PARAM_PEO
+ASCI_PARAM_DR64
+ASCI_PARAM_1200		Basic quantum for baud rate. Multiply by
+							the factor (e.g., 8 for 9600 bps) and add to Param
+
+ASCI_PARAM_8N1			Specifies 8 data bits, 1 stop and no parity,
+							add to Param
+UART_CRTS 
+UART_NO_CRTS 
+
+
+UART_PARAM_1200		similar to ASCI_PARAM_1200
+UART_PARAM_8N1			similar to ASCI_PARAM_8N1
+ZNSLAVE					Multiply by the target slave number and add to Param.
+							Home slave number is set by writing to znID.  The master
+							station has slave number 0.
+ZN1200					similar to ASCI_PARAM_1200
+
+SCC_1STOP
+SCC_2STOP
+SCC_NOPARITY
+SCC_OPARITY
+SCC_EPARITY
+SCC_7DATA  
+SCC_8DATA     
+SCC_8N1       			Shortcut for 8 data bits, No parity, 1 Stop bit
+SCC_1200      			Baud base
+SCC_A         			Channel A indicator
+SCC_B         			Channel B indicator
+
+RETURN VALUE:	pointer to a _Channel structure for all further channel
+operations.	Returns NULL if no channels can be assigned.
+END DESCRIPTION **********************************************************/
+
+CHANNEL aascDLPReOpen(int Type, char CRTS, long Param){
+	//	allocates a channel of the specified type
+	//	channel numbers are always greater than zero
+	auto struct _Channel *pFreeChannel;
+	static init; 
+	unsigned **ptr;
+#GLOBAL_INIT {
+	aascI = 0;
+	for (aascI = 0; aascI < MAX_CHAN-1; ++aascI) {
+		Channels[aascI].nextChannel = Channels + (aascI + 1);
+		}
+	Channels[aascI].nextChannel = NULL;
+	aascNextFree = Channels;
+	pAllChannels = NULL;
+	_aascInitDF_DLP();
+	}
+	//	common initialization
+	if (aascNextFree && (Type >= 0) && (Type < MAX_DEV) && (DevFunc[Type].DevOpen)) {
+		pFreeChannel = aascNextFree;
+		aascNextFree = pFreeChannel->nextChannel;
+		memset(pFreeChannel,0,sizeof(struct _Channel));
+		pFreeChannel->ChannelType = Type;
+		pFreeChannel->pDevFunc = &DevFunc[Type];
+		pFreeChannel->pDevFunc = &DevFunc[Type];
+		pFreeChannel->Params = Param;
+		pFreeChannel->CRTS = CRTS;
+		pFreeChannel->Error = 0;
+		aascI = pFreeChannel - Channels;
+		pFreeChannel->InBuf = &CircBufs[aascI*2];
+		pFreeChannel->OutBuf = &CircBufs[aascI*2+1];
+		pFreeChannel->pDevFunc->DevOpen(Param,CRTS,pFreeChannel,NULL,1);
+		pFreeChannel->nextChannel = pAllChannels;
+		pAllChannels = pFreeChannel;
+		}
+	else	//	no free channels left
+		pFreeChannel = NULL;
+	return pFreeChannel;
+}
+
+/*** BeginHeader aascFlush */
+
+void aascFlush(CHANNEL Channel);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+aascFlush                    <AASC.LIB>
+
+SYNTAX:			void aascFlush(CHANNEL Channel);
+
+DESCRIPTION:	Flushes the buffers associated with channel "Channel",
+loses all information if there are anything left in the buffers. If the
+channel is capable of C/RTS flow control, the programmer should determine
+whether to explicitly reenable the receive channel by calling
+aascRxSwitch. aascRxSwitch will explicitly disable RTS to allow the other
+side to transmit.
+
+PARAMETER1: channel to flush
+
+RETURN VALUE:	None.
+END DESCRIPTION **********************************************************/
+nodebug
+void aascFlush(CHANNEL Channel) {
+	circbufReset(Channel->OutBuf);
+	circbufReset(Channel->InBuf);
+	}
+
+/*** BeginHeader aascFlushRdBuf */
+
+void aascFlushRdBuf(CHANNEL Channel);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+aascFlushRdBuf               <AASC.LIB>
+
+SYNTAX:			void aascFlushRdBuf(CHANNEL Channel);
+
+DESCRIPTION:	Flushes the Read buffer associated with channel "Channel",
+loses all information if there are anything left in the buffer. If the
+channel is capable of C/RTS flow control, the programmer should determine
+whether to explicitly reenable the receive channel by calling
+aascRxSwitch. aascRxSwitch will explicitly disable RTS to allow the other
+side to transmit.
+
+PARAMETER1: channel to flush
+
+RETURN VALUE:	None.
+END DESCRIPTION **********************************************************/
+nodebug speed useix
+void aascFlushRdBuf(CHANNEL Channel) {
+	circbufReset(Channel->InBuf);
+	}
+
+/*** BeginHeader aascFlushWrBuf */
+
+void aascFlushWrBuf(CHANNEL Channel);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+aascFlushWrBuf               <AASC.LIB>
+
+SYNTAX:			void aascFlushWrBuf(CHANNEL Channel);
+
+DESCRIPTION:	Flushes the write buffer associated with channel "Channel",
+loses all information if there are anything left in the buffer.
+
+PARAMETER1: channel to flush
+
+RETURN VALUE:	None.
+END DESCRIPTION **********************************************************/
+nodebug speed useix
+void aascFlushWrBuf(CHANNEL Channel) {
+	circbufReset(Channel->OutBuf);
+	}
+
+/*** BeginHeader aascTxSwitch, aascRxSwitch */
+
+void aascTxSwitch(CHANNEL  Channel, char OnOff);
+void aascRxSwitch(CHANNEL  Channel, char OnOff);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+aascTxSwitch                   <AASC.LIB>
+
+SYNTAX:			void aascTxSwitch(CHANNEL Channel, char OnOff);
+
+DESCRIPTION:	Switching the transmit channel on or off. If a custom
+transmitter switching function is available, it is called as well. The
+custom switch is called before the actual one if the channel is to be
+turned on, otherwise, the custom switch is called after the actual
+channel is turned off.
+
+PARAMETER1: channel
+PARAMETER2: 0 - siwtch off, non-zero switch on
+
+RETURN VALUE:	None.
+END DESCRIPTION **********************************************************/
+nodebug void aascTxSwitch(CHANNEL  Channel, char OnOff) {
+	//	stops both receive and transmit
+	if (OnOff && Channel->customTxSwitch) {
+		//	if a custom transmitter is available, turn on before turning on
+		//	the actual port
+		Channel->customTxSwitch(OnOff);
+	}
+	Channel->pDevFunc->TxSwitch(OnOff, Channel);
+	if (!OnOff && Channel->customTxSwitch) {
+		//	if a custom transmitter is available, turn off after turning off
+		//	the actual port
+		Channel->customTxSwitch(OnOff);
+	}
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+aascRxSwitch                   <AASC.LIB>
+
+SYNTAX:			void aascRxSwitch(CHANNEL Channel, char OnOff);
+
+DESCRIPTION:	Switching the receive channel on or off.
+
+PARAMETER1: channel
+PARAMETER2: 0 - siwtch off, non-zero switch on
+
+RETURN VALUE:	None.
+END DESCRIPTION **********************************************************/
+nodebug void aascRxSwitch(CHANNEL  Channel, char OnOff) {
+	//	stops both receive and transmit
+	Channel->pDevFunc->RxSwitch(OnOff, Channel);
+	}
+
+/*** BeginHeader aascReadBlk */
+
+unsigned int aascReadBlk(
+	CHANNEL  Channel,
+	void *Dest,
+	unsigned Length,
+	char Flag);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+aascReadBlk                  <AASC.LIB>
+
+SYNTAX:			unsigned aascReadBlk(CHANNEL  Channel,
+						void *Dest, unsigned Length, char Flags);
+
+DESCRIPTION:	Read a block of "Length" many bytes from channel "Channel"
+to the memory pointed to by "Dest".  If "Flags" is non zero, either the
+entire "Length" bytes or none will be read. If flow-control is enabled,
+and that the receive buffer has more than 16 bytes left (after the read),
+the receiver will be enabled automatically.
+
+PARAMETER1: channel to read from
+PARAMETER2: address to read into
+PARAMETER3: number of bytes to read
+PARAMETER4: if non-zero either all "Length" bytes will be read or none will.
+
+RETURN VALUE:	The actual number of bytes read from the channel.
+END DESCRIPTION **********************************************************/
+nodebug speed useix
+useix nodebug speed unsigned int aascReadBlk(
+		CHANNEL  Channel,
+		void *Dest,
+		unsigned int Length,
+		char Flags) {
+	//	reading a block
+	//	read as much as possible
+	//	turn on receiver explicitly if not enough
+	//	in buffer
+	//	returns number bytes actually transferred
+
+	auto unsigned ActuallyRead;
+
+	ActuallyRead = circbufGet(Channel->InBuf,
+									  Dest,Length,Flags);
+	if (!Channel->CRTS || (Channel->InBuf->Free > 16)) {
+		//	try to turn on the device
+		aascRxSwitch(Channel, 1);
+		}
+		
+	return ActuallyRead;
+	}
+	
+/*** BeginHeader aascScanTerm */
+
+unsigned int aascScanTerm(CHANNEL  Channel, char term);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+aascScanTerm                 <AASC.LIB>
+
+SYNTAX:			unsigned aascScanTerm(CHANNEL Channel,
+						char Term),
+
+DESCRIPTION:	Scan the receive buffer of channel "Channel" for the
+terminating character "Term". Note that this function does not read any
+bytes from the receive buffer.  If flow-control is enabled,
+and that the receive buffer has more than 16 bytes left (after the read),
+the receiver will be enabled automatically.
+
+PARAMETER1: channel
+PARAMETER2: terminating character to scan for
+
+RETURN VALUE:	The packet size terminated by "Term".
+END DESCRIPTION **********************************************************/
+nodebug speed useix
+unsigned int aascScanTerm(CHANNEL  Channel,char Term) {
+	auto unsigned res;
+	//	reading a block
+	//	read as much as possible
+	//	turn on receiver explicitly if not enough
+	//	in buffer
+	//	returns number bytes actually transferred
+	res = circbufChkTerm(Channel->InBuf,Term);
+	if (!Channel->CRTS || (Channel->InBuf->Free > 16)) {
+		//	try to turn on the device
+		aascRxSwitch(Channel, 1);
+		}
+	return res;
+	}
+
+/*** BeginHeader aascReadChar */
+
+unsigned aascReadChar(CHANNEL  Channel, char *Dest);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+aascReadChar                 <AASC.LIB>
+
+SYNTAX:			unsigned aascReadChar(CHANNEL  Channel, char *Dest);
+
+DESCRIPTION:	Read a character from channel "Channel"
+to the memory pointed to by "Dest".  If flow-control is enabled,
+and that the receive buffer has more than 16 bytes left (after the read),
+the receiver will be enabled automatically.
+
+PARAMETER1: channel to read from
+PARAMETER2: address to read character into
+
+RETURN VALUE:	The actual number of bytes read from the channel.
+END DESCRIPTION **********************************************************/
+nodebug speed useix
+unsigned aascReadChar(CHANNEL Channel, char *Dest) {
+	auto unsigned ActuallyRead;
+
+	ActuallyRead = circbufGetByte(Channel->InBuf,
+									  Dest);
+	if (!Channel->CRTS || (Channel->InBuf->Free > 16)) {
+		//	try to turn on the device
+		aascRxSwitch(Channel, 1);
+		}
+		
+	return ActuallyRead;
+	}
+
+/*** BeginHeader aascWriteBlk */
+
+unsigned aascWriteBlk(CHANNEL  Channel, void *Src, unsigned Length, char Flags);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+aascWriteBlk                 <AASC.LIB>
+
+SYNTAX:			unsigned aascWriteBlk(CHANNEL  Channel,
+						void *Src, unsigned Length, char Flags);
+
+DESCRIPTION:	Write a block of "Length" many bytes to channel "Channel"
+from the memory pointed to by "Src".  If "Flags" is non zero, either the
+entire "Length" bytes or none will be written. After the bytes are written
+to the buffer, the transmitter is turned on automatically.
+
+PARAMETER1: channel to write to
+PARAMETER2: address to write from
+PARAMETER3: number of bytes to write
+PARAMETER4: if non-zero either all "Length" bytes will be
+written or none will.
+
+RETURN VALUE:	The actual number of bytes written to the channel.
+END DESCRIPTION **********************************************************/
+nodebug speed useix
+unsigned aascWriteBlk(
+		CHANNEL  Channel,
+		void *Src,
+		unsigned int Length,
+		char Flags) {
+	//	write as much as possible to buffer
+	//	turn on transmitter explicitly if filled
+	//	returns number of bytes actually transferred
+	auto unsigned ActuallyWritten;
+
+	if (Channel->customTxSwitch) Channel->customTxSwitch(1);
+	ActuallyWritten = circbufPut(Channel->OutBuf,
+									  Src,Length,Flags);
+	aascTxSwitch(Channel, 1);
+	return ActuallyWritten;
+	}
+
+/*** BeginHeader aascWriteChar */
+
+unsigned aascWriteChar(CHANNEL  Channel, char Src);
+
+/*** EndHeader */
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+aascWriteChar                <AASC.LIB>
+
+SYNTAX:			unsigned aascWriteChar(CHANNEL  Channel, char Src);
+
+DESCRIPTION:	Write a character "Src" to channel "Channel". After the
+character is transferred, the transmitter is enabled automatically.
+
+RETURN VALUE:	The actual number of bytes written to the channel.
+
+PARAMETER1: channel to write to
+PARAMETER2: character to write
+END DESCRIPTION **********************************************************/
+nodebug speed useix
+unsigned aascWriteChar(CHANNEL  Channel, char Src) {
+	auto unsigned ActuallyWritten;
+
+	if (Channel->customTxSwitch) Channel->customTxSwitch(1);
+	ActuallyWritten = circbufPutByte(Channel->OutBuf,
+									  Src);
+	aascTxSwitch(Channel, 1);
+	return ActuallyWritten;
+	}
+
+/*** BeginHeader aascReadBufLeft */
+	
+unsigned int aascReadBufLeft(CHANNEL  Channel);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+aascReadBufLeft              <AASC.LIB>
+
+SYNTAX:			unsigned aascReadBufLeft(CHANNEL  Channel);
+
+DESCRIPTION:	Computes the number of bytes left (to be read) in the
+receive buffer of channel "Channel".
+
+PARAMETER1: channel
+
+RETURN VALUE:	The number of bytes left.
+END DESCRIPTION **********************************************************/
+nodebug speed useix
+unsigned int aascReadBufLeft(CHANNEL  Channel) {
+	//	returns number of bytes left in read buffer
+	return Channel->InBuf->Used;
+	}
+
+
+/*** BeginHeader aascGetError */
+
+long aascGetError(CHANNEL  Channel);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+aascGetError             <AASC.LIB>
+
+SYNTAX:			long aascGetError(CHANNEL  Channel);
+
+DESCRIPTION:	get current error condition
+
+PARAMETER1: channel
+
+RETURN VALUE:	
+ASCI_PARAM_TIE 
+ASCI_PARAM_RIE 
+ASCI_PARAM_TE 
+ASCI_PARAM_RE 
+ASCI_PARAM_MPE 
+ASCI_PARAM_EFR 
+
+END DESCRIPTION **********************************************************/
+nodebug speed useix
+long aascGetError(CHANNEL  Channel) {
+	//	returns number of bytes left in write buffer
+	return Channel->pDevFunc->DevGetError(Channel);
+	}
+
+/*** BeginHeader aascClearError */
+
+void aascClearError(CHANNEL  Channel);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+aascClearError             <AASC.LIB>
+
+SYNTAX:			void aascClearError(CHANNEL  Channel);
+
+DESCRIPTION:	clear the error condition
+
+PARAMETER1: channel
+
+RETURN VALUE:	none
+END DESCRIPTION **********************************************************/
+nodebug useix
+void aascClearError(CHANNEL  Channel) {
+	Channel->pDevFunc->DevClrError(Channel);
+	}
+
+/*** BeginHeader aascWriteBufLeft */
+
+unsigned int aascWriteBufLeft(CHANNEL  Channel);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+aascWriteBufLeft             <AASC.LIB>
+
+SYNTAX:			unsigned aascWriteBufLeft(CHANNEL  Channel);
+
+DESCRIPTION:	Computes the number of bytes left (to be transmitted) in the
+Transmit buffer of channel "Channel".
+
+PARAMETER1: channel being written to
+
+RETURN VALUE:	The number of bytes left to be transmitted.
+END DESCRIPTION **********************************************************/
+nodebug speed useix
+unsigned int aascWriteBufLeft(CHANNEL  Channel) {
+	//	returns number of bytes left in write buffer
+	return Channel->OutBuf->Used;
+	}
+
+/*** BeginHeader aascWriteBufFree */
+	
+unsigned int aascWriteBufFree(CHANNEL  Channel);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+aascWriteBufFree             <AASC.LIB>
+
+SYNTAX:			unsigned aascWriteBufFree(CHANNEL  Channel);
+
+DESCRIPTION:	Computes the number of free bytes in the
+transmit buffer of channel "Channel".
+
+PARAMETER1: channel being written to
+
+RETURN VALUE:	The number of free bytes.
+END DESCRIPTION **********************************************************/
+nodebug speed useix
+unsigned int aascWriteBufFree(CHANNEL  Channel) {
+	//	returns number of bytes left in write buffer
+	return Channel->OutBuf->Free;
+	}
+
+/*** BeginHeader aascReadBufFree */
+
+unsigned aascReadBufFree(CHANNEL  Channel);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+aascReadBufFree              <AASC.LIB>
+
+SYNTAX:			unsigned aascReadBufFree(CHANNEL  Channel);
+
+DESCRIPTION:	Computes the number of bytes free in the
+receive buffer of channel "Channel".
+
+PARAMETER1: channel being read from
+
+RETURN VALUE:	The number of free bytes.
+END DESCRIPTION **********************************************************/
+nodebug speed useix
+unsigned  aascReadBufFree(CHANNEL  Channel){
+	return Channel->InBuf->Free;
+	}
+
+/*** BeginHeader aascPipe */
+
+void aascPipe(CHANNEL  Channel1, CHANNEL  Channel2);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+aascPipe                     <AASC.LIB>
+
+SYNTAX:			void aascPipe(
+						CHANNEL  Channel,
+						CHANNEL  Out,
+						CHANNEL  In);
+
+DESCRIPTION:	Makes a pipe by diverting the output of Channel to the
+input of Out, and diverting the input of Channel from In.
+
+PARAMETER1: channel being read from
+
+RETURN VALUE:	None.
+END DESCRIPTION **********************************************************/
+void aascPipe(
+		CHANNEL  Channel1,
+		CHANNEL  Channel2) {
+	//	Pipe a channel to/from other channels
+	Channel1->InBuf = Channel2->OutBuf;
+	Channel2->OutBuf = Channel1->InBuf;
+	}
+
+/*** BeginHeader aascPeek */
+
+unsigned aascPeek(CHANNEL  Channel, void *pMatchee, unsigned length);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+aascPeek                     <AASC.LIB>
+
+SYNTAX:  unsigned aascPeek(CHANNEL  Channel,
+				void *pMatchee,
+				unsigned size);
+
+DESCRIPTION:	Tries to match as much as possible of the stuff pointed to
+by "pMatchee" of up to size "size" (not null character terminated).
+
+PARAMETER1: channel being read from
+PARAMETER2: address of string to match
+PARAMETER3: number of bytes to attempt to match
+
+RETURN VALUE:	Number of bytes actually matched.
+END DESCRIPTION **********************************************************/
+nodebug speed useix
+unsigned aascPeek(CHANNEL  Channel, void *pMatchee, unsigned length) {
+	auto unsigned result;
+	
+	result = circbufPeekMatch(Channel->InBuf,pMatchee,length);
+	if ((Channel->InBuf->Free > 16) && (result < length)) aascRxSwitch(Channel, 1);
+	return result;
+	}
+
+
+/*** BeginHeader aascReadXModem */
+
+#define X_SOH 0x01
+#define X_NAK 0x15
+#define X_NUL 0x00
+#define X_EOT 0x04
+#define X_ACK 0x06
+#define X_CAN 0x18
+#define X_CRC 0x43
+#define X_STX 0x02
+#define XM_TOTALTMOUT 20000
+#define XM_CHARTMOUT 10000
+#define XM_STARTTMOUT 1500
+#define X_MAXERR 5
+#define X_SUBBLOCK 128
+#define X_RETRY 5
+#define X_RETRYSTART 40
+
+// keep these in synch with DIAG.LIB err codes
+#define XX_SUCCESS 		0x0001 
+#define XX_TIMEOUT 		0x0004 
+#define XX_COMMERR 		0x0200 
+#define XX_CANCEL 		0x0400 
+#define XX_SEQ 			0x0800 
+#define XX_CHKSUM 		0x1000 
+#define XX_NOSTART 		0x2000 
+#define XX_NOBEGPAK 		0x4000 
+#define XX_SYNC 			0x8000 
+
+char * aascXMFileEnd;
+char * aascXMPakStart;
+unsigned long aascXMemSrcAddr; 
+unsigned long aascXMemSrcEAddr; 
+int NotUsing1Pakbuf;
+
+struct _XMState {
+	char *Start, *End, *Current, *CurrentInBlk;
+	unsigned NumPakSent;
+	unsigned NumErrors;
+	CoData XMThread;
+	};
+		
+unsigned aascReadXModem(
+		CHANNEL Channel,
+		unsigned (* read_callback)(),
+		void (* read_callback_cfm)(),
+		char Initialize);
+	
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION ********************************************
+aascReadXModem                     <AASC.LIB>
+
+SYNTAX:
+void aascReadXModem(CHANNEL  Channel,
+	unsigned (* read_callback_loc)(),
+	void (*read_callback_cfm)(),
+	char Initialize);
+
+DESCRIPTION: Do XModem download. 
+Before calling to initialize call aascXMRdInitPhy() for pysical
+memory transfers or aascXMRdInitLog() for logical memory transfers,
+or use your own inititialization functions. Call once first with
+Initialize set to 1 to initialize, then call repeatedly in a loop
+or waitfor with Initialize set to 0 until return value is
+non-zero  
+
+PARAMETER1: channel being read from
+
+PARAMETER2: pointer to callback function that will be called by this
+function before each Xmodem packet is received to determine where in memory
+to transfer the packet to. Default functions aascRdCBackLocLg() and
+aascRdCBackLocPh() are provided for logical and physical memory transfers.
+See help on these functions for details.
+
+PARAMETER3: pointer to callback function that will be called by this
+function after each Xmodem packet is received to do further processing on
+the data. Default functions aascRdCBackCfmLg() and aascRdCBackCfmPh() are
+provided for logical and physical memory transfers. The first is an empty
+function, and the second does the transfer to physical memory. See help on
+these functions for details.
+
+PARAMETER4: Set to one and call once to initialize. Subsequent calls should
+have this parameter set to 0.
+
+RETURN VALUE:
+One of:
+
+XX_SUCCESS 		
+XX_TIMEOUT 		
+XX_COMMERR 		
+XX_CANCEL 		
+XX_SEQ 			
+XX_CHKSUM 		
+XX_NOSTART 		
+XX_NOBEGPAK 	
+XX_SYNC 			
+
+END DESCRIPTION **********************************************************/
+	
+nodebug root useix speed
+unsigned aascReadXModem(
+		CHANNEL Channel,
+		unsigned (* read_callback_loc)(),
+		void (* read_callback_cfm)(),
+		char Initialize){
+	static CoData XMState;
+	static CoData GEC;
+	static int ErrCode, ErrCnt;
+	static char * PakCurrent, * PakEnd;
+	static unsigned PakRemaining;
+	static unsigned PakSize;
+	static char PakNum;
+	static char CrcFlag;
+	static int OriErr;
+	static char TmpCh;
+	static int TmpChkSum;
+	static unsigned RetryCnt;
+	static char vSOH,vSTX,vEOT;
+	static char Ch2Wr;
+	static unsigned Cnt;
+	static char *pCurrent;
+	static unsigned BytesSent;
+	static int ChkSum;
+	
+	
+	static int GetOneChar();
+	static int XGetOneChar();
+	static int GetFilteredCh();
+	static int GetOnePak();
+	static int PutOneChar();
+	
+	//	reading from xmodem
+	if (Initialize){ CoBegin (&XMState);return XX_SUCCESS;}
+	costate XMState {
+		//	wait for NAK
+		ErrCode = 0;
+		ErrCnt = 0;
+		PakNum = 1;
+		vSOH = X_SOH;
+		vSTX = X_STX;
+		vEOT = X_EOT;
+		
+		RetryCnt = X_RETRYSTART;
+		aascFlush(Channel);
+		while (RetryCnt && (ErrCode != XX_SUCCESS)) {
+			Ch2Wr = X_CRC;
+			waitfor(PutOneChar());
+			waitfor(ErrCode = DelayMs(XM_STARTTMOUT) ? XX_TIMEOUT :
+									aascGetError(Channel) ? XX_COMMERR :
+									aascPeek(Channel,&vSOH,1) ? XX_SUCCESS :
+									aascPeek(Channel,&vSTX,1) ? XX_SUCCESS :
+									aascPeek(Channel,&vEOT,1) ? XX_SUCCESS :
+									0);
+			--RetryCnt;
+			}
+		if (!RetryCnt) ErrCode = XX_NOSTART;
+		switch (ErrCode) {
+			case XX_TIMEOUT:
+				ErrCode = XX_NOSTART;
+			case XX_CANCEL:
+				goto X2Can;
+			case XX_COMMERR:
+			default:
+				goto XExit;
+			case XX_SUCCESS:
+				break;
+			}
+
+		//	read file, build packet
+
+		PakSize = 0;
+		while (1) {
+			
+			//	send packet
+			TmpCh = 0;
+			ErrCode = 0;
+			CoBegin(&GEC);
+			waitfor(GetFilteredCh());
+			if (ErrCode == XX_SUCCESS) {
+				if (TmpCh == X_EOT) {
+					break;
+					}
+				else if (TmpCh == X_SOH || TmpCh == X_STX)
+					PakSize = PakRemaining = X_SUBBLOCK * ((TmpCh == X_SOH) ? 1 : 8);
+				else goto NoBegPak;
+				}
+			else {
+			 NoBegPak:
+				ErrCode = XX_NOBEGPAK;
+				goto HandleErr;
+				}
+
+			TmpCh = 0;
+			waitfor(XGetOneChar());
+			if (ErrCode != XX_SUCCESS) goto HandleErr;
+			else if (TmpCh != PakNum) {
+				ErrCode = XX_SEQ;
+				goto HandleErr;
+				}
+			TmpCh = 0;
+			waitfor(XGetOneChar());
+			if (ErrCode != XX_SUCCESS) goto HandleErr;
+			else if (TmpCh != ~PakNum) {
+				ErrCode = XX_SEQ;
+				goto HandleErr;
+				}
+
+			// use callback function to get address to put data
+			if( !(PakCurrent = (char *)read_callback_loc(PakSize, PakNum))){
+				ErrCode = XX_COMMERR;
+				goto XExit;
+			}
+			waitfor(ErrCode = GetOnePak() ? XX_SUCCESS :
+									aascGetError(Channel) ? XX_COMMERR :
+									DelayMs(XM_TOTALTMOUT) ? XX_TIMEOUT :
+									0);
+
+			if (ErrCode == XX_SUCCESS) {
+
+				// compute checksum in chunks of 128 
+				Cnt = PakSize;
+				pCurrent = PakCurrent-PakSize;
+				ChkSum = 0;
+				while (Cnt) {
+					ChkSum = getcrc(pCurrent,X_SUBBLOCK,ChkSum);
+					Cnt -= X_SUBBLOCK;
+					pCurrent += X_SUBBLOCK;
+					}
+					
+				// validate checksum
+				waitfor(XGetOneChar());
+				*((char*)&TmpChkSum+1) = TmpCh;
+				waitfor(XGetOneChar());
+				*(char*)&TmpChkSum = TmpCh;
+		 		Ch2Wr = (TmpChkSum == ChkSum) ? X_ACK : X_NAK;
+				if (TmpChkSum == ChkSum) {
+					read_callback_cfm(PakSize, PakNum, ErrCode==XX_SUCCESS);
+					}
+
+				// acknowledge packet receipt
+AckPacket: 
+				waitfor(PutOneChar());
+				if (Ch2Wr != X_ACK) {
+					ErrCode = XX_CHKSUM;
+					++ErrCnt;
+					}
+				}
+
+			// confirmation callback function 
+		HandleErr:
+			switch(ErrCode) {
+				default:
+				case XX_SEQ:
+				case XX_CHKSUM:
+				case XX_TIMEOUT:
+					if (++ErrCnt >= X_MAXERR) goto X2Can;
+					else break;
+				case XX_CANCEL:
+				case XX_NOBEGPAK:
+				case XX_NOSTART:
+					goto X2Can;
+				case XX_COMMERR:
+					goto XExit;
+				case XX_SUCCESS:
+					++PakNum;
+					break;
+				}
+			}		//	end while not end of file
+
+		if (!TmpCh == X_EOT) {
+			waitfor(ErrCode =	DelayMs(XM_CHARTMOUT) ? XX_TIMEOUT :
+									aascGetError(Channel) ? XX_COMMERR :
+									aascPeek(Channel,&vEOT,1) ? XX_SUCCESS : 0);
+			if (ErrCode != XX_SUCCESS)	goto X2Can;
+			else aascReadChar(Channel,&TmpCh);		//	flush EOT character
+			}
+		else {
+			Ch2Wr = X_ACK;
+			waitfor(PutOneChar());
+			ErrCode == XX_SUCCESS;
+			}
+
+		
+		//	exit protocol
+	 XExit:
+		abort;
+
+		//	send two X_CANs
+	 X2Can:
+	 	OriErr = ErrCode;
+	 	Ch2Wr = X_CAN;
+	 	waitfor(PutOneChar());
+	 	waitfor(PutOneChar());
+	 	ErrCode = OriErr;
+	 	goto XExit;
+
+	/***********************************
+	SubFunctions to simplify the routine
+	***********************************/
+	
+		subfunc GetOneChar: {		//	get a character
+	  		ErrCode = 	aascGetError(Channel) ? XX_COMMERR :
+							aascReadChar(Channel, &TmpCh) ? XX_SUCCESS : 0;
+			}
+			
+		subfunc GetFilteredCh: {	//	get a charater, filter from cancel
+			costate GEC {
+				while (!ErrCode) {
+					waitfor(ErrCode = DelayMs(XM_CHARTMOUT) ? XX_TIMEOUT :
+											GetOneChar());		//	get one char
+					if (ErrCode == XX_SUCCESS) {			//	successful?
+						if (TmpCh == X_CAN) {				//	filter cancel
+							waitfor(ErrCode = DelayMs(XM_CHARTMOUT) ? XX_TIMEOUT :
+													GetOneChar());			//	confirm it
+							if (ErrCode == XX_SUCCESS) {	//	get another ch
+								if (TmpCh == X_CAN) {		//	if is cancel
+									ErrCode = XX_CANCEL;		//	make it so
+									}
+								else {							//	otherwise
+									ErrCode = 0;				//	discount the 1st one
+									}
+								}
+							}
+						}
+					}		//	end of while
+				}	  		// end of costatement
+			ErrCode;												//	return ErrCode
+			}	  			// end of subfunc
+
+		subfunc GetOnePak: {
+			BytesSent = aascReadBlk(Channel, PakCurrent, PakRemaining, 0);
+			PakCurrent += BytesSent;
+			PakRemaining -= BytesSent;
+			!PakRemaining;
+			}
+
+		subfunc PutOneChar: {
+			if(ErrCode = aascWriteBufFree(Channel))
+				ErrCode = DelayMs(XM_CHARTMOUT) ? XX_TIMEOUT :
+						aascGetError(Channel) ? XX_COMMERR :
+						aascWriteChar(Channel,Ch2Wr) ? XX_SUCCESS : 0;
+			ErrCode;
+			}
+		subfunc XGetOneChar: {
+			ErrCode = DelayMs(XM_CHARTMOUT) ? XX_TIMEOUT :
+							GetOneChar();
+			}
+		}	//	end of big costatement
+		
+	return ErrCode;
+	}
+
+
+/*** BeginHeader aascWriteXModem */
+
+int aascWriteXModem(
+		CHANNEL Channel,
+		char Pak1K,
+		char Initialize,
+		unsigned (* write_callback)()
+);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+aascWriteXModem                     <AASC.LIB>
+
+SYNTAX:		void aascWriteXModem(
+					CHANNEL Channel,
+					char Pak1K,
+					char Initialize,
+					unsigned (* write_callback)()	);
+					
+DESCRIPTION: Before calling to initialize, call aascXMWrInitPhy() for
+physical memory transfers or aascXMWrInitLog() for logical memory transfers.
+Do XModem upload. Call once first with Initialize set to 1. to initialize,
+then call repeatedly in a loop or waitfor with Initialize set to zero until
+return value is non-zero 
+
+PARAMETER1: channel being read from
+
+PARAMETER2: 1 - use 1024 byte XModem packets, 0 - use 128 byte XModem packets
+
+PARAMETER3: Set to one and call once to initialize. Subsequent calls should
+have this parameter set to 0.
+
+PARAMETER4: pointer to callback function that will be called by this function 
+before each Xmodem packet is sent to do further processing on the data.
+Default functions aascWrCallBackLg() and aascWrCallBackPh() are provided for
+logical and physical memory transfers. See help on these functions for
+details.
+
+RETURN VALUE:
+One of:
+
+XX_SUCCESS 		
+XX_TIMEOUT 		
+XX_COMMERR 		
+XX_CANCEL 		
+XX_NOSTART 		
+XX_SYNC 			
+
+END DESCRIPTION **********************************************************/
+nodebug useix speed
+int aascWriteXModem(
+		CHANNEL Channel,
+		char Pak1K,
+		char Initialize,
+		unsigned (* write_callback)()
+		) {
+	static CoData XMState;
+	static CoData GEC;
+	static int ErrCode, ErrCnt;
+	static char /** PakStart, */* PakCurrent, * PakEnd/*, * FileEnd*/;
+	static unsigned PakRemaining;
+	static unsigned PakSize;
+	static char PakNum;
+	static char CrcFlag;
+	static int OriErr;
+	static char TmpCh;
+	static unsigned RetryCnt;
+	static BigPak;
+	static Ch2Wr;
+	auto unsigned Cnt;
+	auto char *pCurrent;
+	auto unsigned BytesSent;
+	auto int ChkSum;
+	
+	static int GetOneChar();
+	static int GetFilteredCh();
+	static int PutOnePak();
+	static int PutOneChar();
+	
+	//	writing to xmodem
+	if (Initialize) CoBegin (&XMState);
+	costate XMState {
+		//	wait for NAK
+//		PakStart = aascXMPakStart;
+//		FileEnd = aascXMFileEnd;
+		ErrCode = 0;
+		ErrCnt = 0;
+		PakNum = 1;
+		BigPak = Pak1K;
+		aascFlush(Channel);
+		PakSize = X_SUBBLOCK * (BigPak ? 8 : 1);
+		TmpCh = 0;
+		RetryCnt = X_RETRY;
+		while (RetryCnt &&
+					((ErrCode != XX_SUCCESS) ||
+						(TmpCh != X_NAK && TmpCh != X_CRC))) {
+			ErrCode = 0;
+			CoBegin(&GEC);
+			waitfor(GetFilteredCh());
+			--RetryCnt;
+			}
+		if (!RetryCnt) ErrCode = XX_NOSTART;
+		switch (ErrCode) {
+			case XX_TIMEOUT:
+			case XX_CANCEL:
+			case XX_NOSTART:
+				goto X2Can;
+			case XX_COMMERR:
+			default:
+				goto XExit;
+			case XX_SUCCESS:
+				CrcFlag = TmpCh == X_CRC;
+				break;
+			}
+
+		//	read file, build packet
+		while (1/*PakNum*PakSize <= aascXMFileEnd - aascXMPakStart*/) {
+//			PakCurrent = PakStart;
+			
+			//	send packet
+
+			PakCurrent = (char *)write_callback(PakSize, PakNum);
+				//	if this function returns NULL, it means there is nothing else to
+				//	transmit, time to exit the loop.
+			if (!PakCurrent) break;
+			
+			ErrCode = 0;
+			PakRemaining = PakSize;
+			
+			Ch2Wr = BigPak ? X_STX : X_SOH;
+			waitfor(PutOneChar());
+
+			Ch2Wr = PakNum;						
+			waitfor(PutOneChar());
+
+			Ch2Wr = ~PakNum;
+			waitfor(PutOneChar());
+			
+			waitfor(ErrCode = DelayMs(XM_TOTALTMOUT) ? XX_TIMEOUT :
+									aascGetError(Channel) ? XX_COMMERR :
+									PutOnePak() ? XX_SUCCESS : 0);
+
+			//	wait for response
+			if (ErrCode == XX_SUCCESS) {
+				//	compute check sum now
+				ChkSum = 0;
+				Cnt = PakSize;
+				pCurrent = PakCurrent-PakSize;
+				if (CrcFlag) {
+					while (Cnt) {
+						ChkSum = getcrc(pCurrent,X_SUBBLOCK,ChkSum);
+						Cnt -= X_SUBBLOCK;
+						pCurrent += X_SUBBLOCK;
+						}
+
+					Ch2Wr = *((char*)&ChkSum+1);
+					waitfor(PutOneChar());
+
+					Ch2Wr = (char)ChkSum;
+					waitfor(PutOneChar());
+					}
+				else {
+					while (Cnt--) {
+						ChkSum += *(pCurrent++);
+						}
+
+					Ch2Wr = (char)ChkSum;
+					waitfor(PutOneChar());
+					}
+
+				ErrCode = 0;
+				CoBegin(&GEC);
+				waitfor(GetFilteredCh());
+				}
+
+			switch(ErrCode) {
+				case XX_TIMEOUT:
+					if (++ErrCnt >= X_MAXERR) goto X2Can;
+					else break;
+				case XX_CANCEL:
+					goto X2Can;
+				case XX_COMMERR:
+				default:
+					goto XExit;
+				case XX_SUCCESS:
+					if (TmpCh == X_ACK) {
+						++PakNum;
+						}
+					else if (TmpCh == X_NAK) {
+						if (++ErrCnt >= X_MAXERR) goto X2Can;
+						}
+					else {
+						ErrCode = XX_SYNC;
+						goto X2Can;
+						}
+					break;
+				}
+			}	//	end while not end of file
+
+		
+		Ch2Wr = X_EOT;	
+		waitfor(PutOneChar());
+		//	wait for ACK
+		if (ErrCode == XX_SUCCESS) {
+			waitfor(	ErrCode =	DelayMs(XM_CHARTMOUT) ? XX_TIMEOUT :
+										(GetOneChar() != XX_SUCCESS) ? ErrCode :
+										(TmpCh == X_ACK) ? XX_SUCCESS : 0);
+			}
+
+		//	exit protocol
+	 XExit:
+		abort;
+
+		//	send two X_CANs
+	 X2Can:
+	 	OriErr = ErrCode;
+	 	Ch2Wr = X_CAN;
+	 	waitfor(PutOneChar());
+	 	waitfor(PutOneChar());
+	 	ErrCode = OriErr;
+	 	goto XExit;
+
+	/***********************************
+	SubFunctions to simplify the routine
+	***********************************/
+	
+		subfunc GetOneChar: {		//	get a character
+	  		ErrCode = 	aascGetError(Channel) ? XX_COMMERR :
+							aascReadChar(Channel, &TmpCh) ? XX_SUCCESS : 0;
+			}
+			
+		subfunc GetFilteredCh: {	//	get a character, filter from cancel
+			costate GEC {
+				while (!ErrCode) {
+					waitfor(ErrCode = DelayMs(XM_CHARTMOUT) ? XX_TIMEOUT :
+											GetOneChar());		//	get one char
+					if (ErrCode == XX_SUCCESS) {			//	successful?
+						if (TmpCh == X_CAN) {				//	filter cancel
+							waitfor(ErrCode = DelayMs(XM_CHARTMOUT) ? XX_TIMEOUT :
+													GetOneChar());			//	confirm it
+							if (ErrCode == XX_SUCCESS) {	//	get another ch
+								if (TmpCh == X_CAN) {		//	if is cancel
+									ErrCode = XX_CANCEL;		//	make it so
+									}
+								else {							//	otherwise
+									ErrCode = 0;				//	discount the 1st one
+									}
+								}
+							}
+						}
+					}	//	end of while
+				}	//	end of costatement
+			ErrCode;												//	return ErrCode
+			}		//	end of subfunc
+
+		subfunc PutOnePak: {
+			BytesSent = aascWriteBlk(Channel, PakCurrent, PakRemaining, 0);
+			PakCurrent += BytesSent;
+			PakRemaining -= BytesSent;
+			!PakRemaining;
+		}
+
+		subfunc PutOneChar: {
+			if(aascWriteBufFree(Channel)){
+				ErrCode = DelayMs(XM_CHARTMOUT) ? XX_TIMEOUT :
+							aascGetError(Channel) ? XX_COMMERR :
+							aascWriteChar(Channel,Ch2Wr) ? XX_SUCCESS : 0;
+				}
+			}
+		}	//	end of big costatement
+		
+	return ErrCode;
+	}
+
+/*** BeginHeader aascCloseSub */
+
+void aascCloseSub(CHANNEL Channel, CHANNEL *pAll);
+
+/*** EndHeader */
+
+useix void aascCloseSub(CHANNEL Channel, CHANNEL *pAll) {
+	CHANNEL *pTmp;
+
+#asm xmemok
+   ld a,i   ; iff to parity flag
+   di
+   push	af
+#endasm
+
+	pTmp = pAll;
+	while (*pTmp) {
+		if (*pTmp == Channel) {
+			*pTmp = Channel->nextSameDevice;
+			break;
+			}
+		else {
+			pTmp = &(Channel->nextSameDevice);
+			}
+		}
+
+#asm xmemok
+	pop	af
+	jp		po,_end
+	ei
+_end:
+#endasm
+	
+}
+
+/*** Beginheader aascXMRdInitLog */
+void aascXMRdInitLog(unsigned Where, unsigned Length);
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION ********************************************
+aascXMRdInitLog                     <AASC.LIB>
+
+SYNTAX:		void aascXMRdInitLog(unsigned Where, unsigned Length);
+
+DESCRIPTION: Initialization function for aascReadXModem PC to target
+logical address transfer. Initialize location and size of root memory to
+transfer to PC file. "Length" is the number of bytes to transfer. "Where"
+is the logical address to transfer to. This default function tells the default
+callback read function aascRdCBackLocLg to advance the buffer pointer by
+the packet size after receiving the packet.
+
+PARAMETER1: The root memory location destination
+PARAMETER2: The number of bytes to transfer
+
+RETURN VALUE:	n/a
+END DESCRIPTION **********************************************************/
+void aascXMRdInitLog(unsigned Where, unsigned Length){
+
+	aascXMFileEnd   = (char*)Where + Length;
+	aascXMPakStart  = (char*)Where ;
+	NotUsing1Pakbuf = 1;  // advance buffer pointer after each packet.
+}
+
+/*** Beginheader aascXMRdInitPhy */
+void aascXMRdInitPhy(unsigned Where, unsigned Length,unsigned long XmemSrcAddr);
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION ********************************************
+aascXMRdInitPhy                     <AASC.LIB>
+
+SYNTAX:		void aascXMRdInitPhy(unsigned Where,
+					unsigned Length,
+					unsigned long XmemSrcAddr);
+
+DESCRIPTION: Initialize location and size of xmem memory to transfer PC
+file to. "Length" is the number of bytes to transfer. "Where" is the
+root memory location used for transferring. "XmemSrcAddr" is the final
+xmem physical address. 
+
+PARAMETER1: The root memory location used for transferring
+PARAMETER2: The number of bytes to transfer
+PARAMETER3: The final physical memory destination
+
+RETURN VALUE:	n/a
+END DESCRIPTION **********************************************************/
+void aascXMRdInitPhy(unsigned Where, unsigned Length, unsigned long XmemSrcAddr){
+	aascXMFileEnd   = (char*)Where + Length;
+	aascXMPakStart  = (char*)Where;
+	aascXMemSrcAddr = XmemSrcAddr;
+	NotUsing1Pakbuf = 0; // tell aascReadXModem to advance buffer pointer after each
+								// packet.
+}
+
+/*** Beginheader aascXMWrInitLog */
+void aascXMWrInitLog(unsigned Where, unsigned Length);
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION ********************************************
+aascXMWrInitLog                     <AASC.LIB>
+
+SYNTAX:		void aascXMWrInitLog(unsigned Where, unsigned Length);
+
+DESCRIPTION: Initialize location and size of root memory to transfer to PC
+file. "Length" is the number of bytes to transfer. "Where" is the
+location to transfer from. 
+
+PARAMETER1: The root memory location used for transferring
+PARAMETER2: The number of bytes to transfer
+
+RETURN VALUE:	n/a
+END DESCRIPTION **********************************************************/
+void aascXMWrInitLog(unsigned Where, unsigned Length){
+
+	aascXMFileEnd  = (char*)(Where & 0x0000ffffUL) + Length;
+	aascXMPakStart = (char*)(Where & 0x0000ffffUL);
+	NotUsing1Pakbuf = 1;
+}
+
+/*** Beginheader aascXMWrInitPhy */
+void aascXMWrInitPhy(unsigned Where, unsigned Length,unsigned long XmemSrcAddr);
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION ********************************************
+aascXMWrInitPhy                     <AASC.LIB>
+
+SYNTAX:		void aascXMWrInitPhy(unsigned Where, unsigned Length,unsigned long XmemSrcAddr);
+
+DESCRIPTION: Initialize location and size of xmem memory to transfer to PC
+file. "Where" is the root memory location to use for transfer.
+"XmemSrcAddr" is the physical address to transfer from in xmem.
+"Length" is the number of bytes to transfer.						  
+
+PARAMETER1: The root memory location used for transferring
+PARAMETER2: The number of bytes to transfer
+PARAMETER3: The physical memory source of data to transfer
+
+RETURN VALUE:	n/a
+END DESCRIPTION **********************************************************/
+void aascXMWrInitPhy(unsigned Where, unsigned Length, unsigned long XmemSrcAddr){
+	aascXMFileEnd   = (char*)(Where & 0x0000ffffUL) + Length;
+	aascXMPakStart  = (char*)(Where & 0x0000ffffUL);
+	aascXMemSrcAddr = XmemSrcAddr;
+	NotUsing1Pakbuf = 0;
+}
+
+/*** Beginheader aascWrCallBackPh */
+unsigned  aascWrCallBackPh(unsigned PackSize, char PackNum);
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION ********************************************
+aascWrCallBackPh                     <AASC.LIB>
+
+SYNTAX:		unsigned aascWrCallBackPh(unsigned PackSize, char PackNum);
+
+KEYWORDS: 	xmodem, files
+
+DESCRIPTION: Default call back function for downloading blocks to PC from
+xmem. This is called by aascWriteXModem before sending a packet
+to the PC. The packet is copied from xmem to root then sent. Returns the
+address of the next root mem location to transfer data from.
+				 
+Always returns "aascXMPakStart" if NotUsing1Pakbuf is zero so that the
+same packet PackSize buffer can be used to transfer the entire PC file.
+Otherwise, it determines the address based from "PackSize" and "Packnum"
+and the root memory buffer should be as big as the xmem buffer and the
+file being transfered from the PC.			 	
+				 				 				 
+PARAMETER1: The pack size being used by Xmodem 128 or 1024
+PARAMETER2: The number of the current pack
+
+RETURN VALUE:The address of the next root mem location to transfer data from.
+or 0 if the requested packet number exceeds the file size.
+END DESCRIPTION **********************************************************/
+indirect unsigned aascWrCallBackPh(unsigned PackSize, char PackNum){
+	unsigned retval;
+	if(PackNum*PackSize <= aascXMFileEnd - aascXMPakStart){   
+		xmem2root(aascXMemSrcAddr+(PackNum-1)*PackSize,
+					 (void*)aascXMPakStart + (PackNum-1)*PackSize*NotUsing1Pakbuf,
+					 PackSize);
+		retval = (unsigned)aascXMPakStart + (PackNum-1)*PackSize*NotUsing1Pakbuf;
+		return retval;
+	}
+	else{
+		return 0;
+	}		
+}
+
+/*** Beginheader aascWrCallBackLg */
+unsigned  aascWrCallBackLg(unsigned PackSize, char PackNum);
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION ********************************************
+aascWrCallBackLg                     <AASC.LIB>
+
+SYNTAX:		unsigned aascWrCallBackLg(unsigned PackSize, char PackNum);
+
+DESCRIPTION: Default call back function for downloading blocks to PC from
+root. This is called by aascWriteXModem before sending a packet
+to the PC. Returns the address of the next root mem location to transfer
+data from.
+
+Determines the address based from "PackSize" and "Packnum".
+The root memory buffer should be as big as the xmem buffer and the
+file being transfered from the PC.			 	
+				 				 				 
+PARAMETER1: The pack size being used by Xmodem 128 or 1024
+PARAMETER2: The number of the current pack
+
+RETURN VALUE:	The address of the next root mem location to transfer data
+from or 0 if the requested packet number exceeds the file size.
+END DESCRIPTION **********************************************************/
+indirect unsigned aascWrCallBackLg(unsigned PackSize, char PackNum){
+
+	unsigned retval;
+	if(PackNum*PackSize <= aascXMFileEnd - aascXMPakStart){   
+		retval = (unsigned)aascXMPakStart +
+				(unsigned)((PackNum-1)*PackSize*NotUsing1Pakbuf);
+		return retval;
+	}
+	else{
+		return 0;
+	}		
+}
+
+/*** Beginheader aascRdCBackLocPh */
+unsigned  aascRdCBackLocPh(unsigned PackSize, char PackNum);
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION ********************************************
+aascRdCBackLocPh                     <AASC.LIB>
+
+SYNTAX:		unsigned aascRdCBackLocPh(unsigned PackSize, char PackNum);
+
+DESCRIPTION: Default location callback function for uploading blocks from PC
+to xmem. This is called by "aascReadXModem" before receiving a block. 
+Always returns "aascXMPakStart" if NotUsing1Pakbuf is zero so that the
+same packet PackSize buffer can be used to transfer the entire PC file.
+Otherwise, it determines the address based on "PackSize" and "Packnum"
+and the root memory buffer should be as big as the xmem buffer and the
+file being transfered from the PC.			 	
+				 				 				 
+PARAMETER1: The pack size being used by Xmodem 128 or 1024
+PARAMETER2: The number of the current pack
+
+RETURN VALUE:	root memory logical address where packet from PC will be
+placed before transfer to xmem.
+END DESCRIPTION **********************************************************/
+indirect unsigned aascRdCBackLocPh(unsigned PackSize, char PackNum){
+	unsigned retval;
+	if(PackNum*PackSize <= aascXMFileEnd - aascXMPakStart){   
+		retval = (unsigned)aascXMPakStart +	(PackNum-1)*PackSize*NotUsing1Pakbuf;
+		return retval;
+	}
+	else{
+		return 0;
+	}		
+}
+
+/*** Beginheader aascRdCBackLocLg */
+unsigned  aascRdCBackLocLg(unsigned PackSize, char PackNum);
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION ********************************************
+aascRdCBackLocLg                     <AASC.LIB>
+
+SYNTAX:		unsigned aascRdCBackLocLg(unsigned PackSize, char PackNum);
+
+DESCRIPTION: Default location callback function for uploading blocks from PC
+to root memory. This is called by "aascReadXModem" prior to receiving
+a packet from the PC. This function advances the pointer to the upload
+target memory by PackSize after each packet. Programmers may wish to
+load each packet to the same memory location and provide their own
+function which simply returns the constant address of that buffer.
+				 	 
+PARAMETER1: The pack size being used by Xmodem 128 or 1024
+PARAMETER2: The number of the current pack
+
+RETURN VALUE:	root memory logical address where packet from PC will be
+placed before transfer to xmem.
+END DESCRIPTION **********************************************************/
+indirect unsigned aascRdCBackLocLg(unsigned PackSize, char PackNum){
+
+	unsigned retval;
+	if(PackNum*PackSize <= aascXMFileEnd - aascXMPakStart){   
+		retval = (unsigned)aascXMPakStart +	(PackNum-1)*PackSize*NotUsing1Pakbuf;
+		return retval;
+	}
+	else{
+		return 0;
+	}		  
+}
+
+/*** Beginheader aascRdCBackCfmLg */
+void  aascRdCBackCfmLg(unsigned PackSize, char PackNum, unsigned status);
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION ********************************************
+aascRdCBackCfmLg                     <AASC.LIB>
+
+SYNTAX:		unsigned aascRdCBackCfmLg(unsigned PackSize, char PackNum,
+					unsigned status);
+
+DESCRIPTION: Dummy function called by "aascReadXModem" after packet is
+received. Can be replaced by user-defined function if processing needs to be
+done on packet.
+				  
+PARAMETER1: The pack size being used by Xmodem 128 or 1024
+PARAMETER2: The number of the current pack
+PARAMETER3: function returns without doing anything if this is 0.
+
+RETURN VALUE:	n/a
+END DESCRIPTION **********************************************************/
+indirect void aascRdCBackCfmLg(unsigned PackSize, char PackNum, unsigned status){
+	
+}
+
+/*** Beginheader aascRdCBackCfmPh */
+void  aascRdCBackCfmPh(unsigned PackSize, char PackNum, unsigned status);
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION ********************************************
+aascRdCBackCfmPh                     <AASC.LIB>
+
+SYNTAX:		unsigned aascRdCBackCfmPh(
+					unsigned PackSize,
+					char PackNum,
+					unsigned status);
+
+DESCRIPTION  Called by "aascReadXModem" after packet is received. Copies
+packet to xmem if packet was sucessfully received ("status" is non-zero).
+Location to copy to is determined by "aascXMemSrcAddr", the starting
+address of the xmem location as specified in "aascXMRdInitPhy", and
+"PackSize" and "PackNum" as calculated by "aascReadXModem". The function
+returns without doing anything if "status" is zero. 
+Can be replaced by user-defined function if additional processing 
+needs to be done on packet.
+				  
+PARAMETER1: The pack size being used by Xmodem 128 or 1024
+PARAMETER2: The number of the current pack
+PARAMETER3: function returns without doing anything if this is 0
+
+RETURN VALUE:	n/a
+END DESCRIPTION **********************************************************/
+indirect void aascRdCBackCfmPh(unsigned PackSize, char PackNum, unsigned status){
+
+	if(status)
+		root2xmem((void*)aascXMPakStart + (PackNum-1)*PackSize*NotUsing1Pakbuf,
+			 aascXMemSrcAddr+(PackNum-1)*PackSize, PackSize);
+}
+
+/*** BeginHeader aascSelectKey */
+
+int aascSelectKey(CHANNEL Chan, char *selection, int echo);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+aascSelectKey                     <AASC.LIB>
+
+SYNTAX:	int aascSelectKey(CHANNEL Chan, char *selection, int echo);
+
+DESCRIPTION:  Lets the user select a key from a list of selection, then
+return the enumerated number representing the selection.
+
+PARAMETER1: channel to read
+
+PARAMETER2: a string of selections (each character represents a choice
+the operator may choose).
+
+PARAMETER3: if this flag is non-zero, the selection is echoed. Otherwise,
+the selection is not echoed.
+
+RETURN VALUE:	0 - not done, 1 to length of string - selection made by
+the user (position of selected letter in the string, starting with 1).
+
+END DESCRIPTION **********************************************************/
+
+nodebug int aascSelectKey(CHANNEL Chan, char *selection, int echo) {
+	auto int retval;
+	auto char *p;
+	auto char ch;
+
+	retval = 0;
+	if (aascReadChar(Chan,&ch)) {
+		p = strchr(selection,ch);
+		if (p) {
+			if (echo) {
+				aascWriteChar(Chan,ch);
+				aascWriteBlk(Chan,"\n\r",2,1);
+			}
+		}
+		return p ? p-selection+1 : 0;
+	} else {
+		return 0;
+	}
+}
+
+/*** BeginHeader aascGets */
+
+int aascGets(CHANNEL chan, char *, int size, int echo);
+
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION ********************************************
+aascGets                     <AASC.LIB>
+
+SYNTAX:	int aascGets(CHANNEL Chan, char *s, int size, int echo)
+
+DESCRIPTION  Gets a string from an ASCII device.
+
+PARAMETER1: channel to read
+PARAMETER2: destination of string
+PARAMETER3: maximum size to read in
+PARAMETER4:If echo is positive, the characters entered are echoed back
+to the device. If echo is negative, an asterick is echoed back. If echo
+is zero, nothing is echoed.
+				  
+RETURN VALUE:	0 - not done, 1 - done
+END DESCRIPTION **********************************************************/
+nodebug int aascGets(CHANNEL Chan, char *s, int size, int echo) {
+	auto res;
+	char *p, c;
+
+	res = 0;
+	costate {
+		p = s;
+		while (1)
+		{
+			waitfor(aascReadChar(Chan,&c));
+			switch (c)
+			{
+				case '\b':
+					if (s != p)
+					{
+						if (echo)
+							waitfor(aascWriteBlk(Chan,"\b \b",3,1));
+						p--;
+					}
+					break;
+				case '\r':
+					*p = 0;
+					waitfor(aascWriteBlk(Chan,"\n\r",2,1));
+					c = 0;
+					break;
+				default:
+					if ((p-s)<size) {
+						*p++= c;
+						if (echo>0)
+							waitfor(aascWriteChar(Chan,c));
+						if (echo<0)
+							waitfor(aascWriteChar(Chan,'*'));
+					}
+					break;
+			}
+			if (! c)
+				break;
+		}
+		res = 1;
+	}
+	return res;
+}
+
+/*** BeginHeader aascGetDLMChan */
+unsigned long aascGetDLMChan();
+/*** EndHeader */
+root unsigned long aascGetDLMChan(){
+	unsigned long addr;
+	addr =((unsigned long)prog_param.RCB.aaa.a.addr)+
+			(((unsigned long)prog_param.RCB.aaa.a.base)<<12ul) - 0x40EUL ;
+	return addr;
+}
+
+/*** BeginHeader aascPrintf */
+
+void aascPrintf(CHANNEL chan, char *fmt, ...);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+aascPrintf
+
+SYNTAX:	void aascPrintf(CHANNEL Chan, char *fmt,...)
+
+DESCRIPTION  Prints a formatted string to channel "Chan".
+
+PARAMETER1: channel to send to
+PARAMETER2: the format of the string to be printed, arguments (if any)
+should follow this parameter
+				  
+RETURN VALUE:	None
+END DESCRIPTION **********************************************************/
+
+void aascPrintf(CHANNEL chan, char *fmt, ...) {
+	aascVPrintf(chan, fmt, &fmt+1);
+}
+
+/*** BeginHeader aascVPrintf */
+
+void aascVPrintf(CHANNEL chan, char *fmt, void *firstArg);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+aascVPrintf
+
+SYNTAX:	void aascVPrintf(CHANNEL Chan, char *fmt, void *firstArg)
+
+DESCRIPTION  Prints a formatted string to channel "Chan".
+
+PARAMETER1: channel to send to
+PARAMETER2: format string
+PARAMETER3: pointer to the first argument
+				  
+RETURN VALUE:	None
+END DESCRIPTION **********************************************************/
+
+int __aascputch(int c, void *extraArg) {
+	while (!aascWriteChar(*((CHANNEL *)extraArg),c)) hitwd();
+}
+
+void aascVPrintf(CHANNEL chan, char *fmt, void *firstArg) {
+	doprnt(__aascputch, fmt, firstArg, &chan);
+}
+
+/*** BeginHeader aascGetsWF */
+
+int aascGetsWF(CHANNEL chan, char *, int size, int offset, int echo);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+aascGetsWF
+
+SYNTAX:	int aascGetsWF(CHANNEL Chan, char *s, int size,
+	int offset, int echo)
+
+DESCRIPTION  Gets a string from an ASCII device.
+
+PARAMETER1: channel to read
+PARAMETER2: destination of string
+PARAMETER3: maximum size to read in
+PARAMETER4: offset to the last character received in the string
+PARAMETER5: If echo is positive, the characters entered are echoed back
+to the device. If echo is negative, an asterick is echoed back. If echo
+is zero, nothing is echoed.
+				  
+RETURN VALUE:	-1: done, natural number: offset to the last character read
+END DESCRIPTION **********************************************************/
+
+nodebug int aascGetsWF(
+		CHANNEL chan, char *s,
+		int size, int offset, int echo) {
+	auto char *p, c;
+
+	p = s+offset;
+	while (aascReadBufLeft(chan))	{
+		aascReadChar(chan,&c);
+		switch (c)
+		{
+			case '\b':
+				if (s != p)
+				{
+					if (echo)
+						while(!aascWriteBlk(chan,"\b \b",3,1));
+					p--;
+				}
+				break;
+			case '\r':
+				*p = 0;
+				if (echo) while(!aascWriteBlk(chan,"\n\r",2,1));
+				break;
+			default:
+				if ((p-s)<size) {
+					*p++= c;
+					if (echo)
+						while(!aascWriteChar(chan,(echo>0)?c:'*'));
+				}
+				break;
+		}
+		if (c == '\r') break;
+	}
+	return (c == '\r') ? -1 : (p - s);
+}
+
+/*** BeginHeader */
+
+#endif
+
+/*** EndHeader */

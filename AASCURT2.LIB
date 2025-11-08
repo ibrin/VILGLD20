@@ -1,0 +1,687 @@
+/*
+
+aascurt2.lib
+
+*/
+
+/*** BeginHeader uartInit,uartClose */
+
+#use aasc.lib
+
+#define USE_UART 1
+
+#define UART_MR1 0x02        // SCCA2=SCCA1=SCCA0=0,  LT180/OFF=1
+#define UART_MR2 0x02
+#define UART_SR  0x12        // SCCA2=SCCA1=0, SCCA0=1,  LT180/OFF=1
+#define UART_CSR 0x12
+#define UART_CR  0x06
+#define UART_RHR 0x16
+#define UART_THR 0x16
+#define UART_ACR 0x03
+#define UART_ISR 0x13
+#define UART_IMR 0x13
+#define UART_CTU 0x07
+#define UART_CTUR 0x07
+#define UART_CTL  0x17       //SCCA2=SCCA1=SCCA0=1,  LT180/OFF = 1
+#define UART_CTLR 0x17
+
+#define UART_CRTS '\B10100000'
+#define UART_NO_CRTS '\B10110000'
+
+#define UART_PARAM_CRTS 0x108000
+#define UART_PARAM_8N1 0x71300	//	char mode, no autoCTS
+#define UART_PARAM_8N2 0xf1300	//	char mode, no autoCTS
+#define UART_PARAM_1200 0x01000000
+
+void uartInit(long Param, char CRTS, struct _Channel * Channel, int reopen);
+void uartClose(struct _Channel *Channel);
+void uartTxSwitch(char OnOff, struct _Channel *Channel);
+void uartRxSwitch(char OnOff, struct _Channel *Channel);
+long uartGetError(struct _Channel *Channel);
+void uartClearError();
+void _uartInt();
+
+#define USE_UARTEXP        // define this to enable uart interrupt
+
+#asm
+uartdum: equ uartInit
+#endasm
+
+/*** EndHeader */
+
+static char uartCnt;
+static char MaxUart;
+struct _Channel *pAllUarts;
+
+/* START FUNCTION DESCRIPTION ********************************************
+uartInit                       <AASCUART.LIB>
+
+SYNTAX:			void uartInit(long Param, int Channel, int reopen);
+
+DESCRIPTION:	Initializes the z0 device.  The z0 device is the ASCI
+built-in on the Z180.  Param is a long integer specifying the initialization
+attributes of the device, and Channel is the assigned channel for the device.
+The device needs a logical channel to operate. reopen is a flag to specify
+whether this is a reopening of a channel by a downloaded program.
+
+RETURN VALUE:	None.
+
+END DESCRIPTION **********************************************************/
+
+int uartI;
+
+void uartInit(long Param, char CRTS, struct _Channel * Channel,int reopen) {
+	auto char addr2, mr1, mr2, baud;
+	
+#GLOBAL_INIT {
+	pAllUarts = NULL;
+	}
+
+	segchain _aascInitDF {
+		DevFunc[DEV_UART].DevOpen = uartInit;
+		DevFunc[DEV_UART].DevClose = uartClose;
+		DevFunc[DEV_UART].TxSwitch = uartTxSwitch;
+		DevFunc[DEV_UART].RxSwitch = uartRxSwitch;
+		DevFunc[DEV_UART].DevGetError = uartGetErr;
+		DevFunc[DEV_UART].DevClrError = uartClrErr;
+	}
+	segchain _aascInitDF_DLP {
+	  	xmem2root( aascGetDLMChan(),&DevFunc[DEV_UART],12);
+	}
+
+	Param |= (CRTS ? UART_PARAM_CRTS : 0);
+	addr2 = *((char*)&Param);
+	baud = *((char*)&Param+3);
+	mr1 = *((char*)&Param+1);
+	mr2 = *((char*)&Param+2);
+
+	Channel->nextSameDevice = pAllUarts;
+	pAllUarts = Channel;
+	Channel->Error = 0;
+	Channel->FreeLong1 = 0x40000 | (((addr2 & 0xf) << 3));
+	addr2 = (char)Channel->FreeLong1;
+	DI();
+	set24adr(Channel->FreeLong1);
+	write8data(Channel->FreeLong1,UART_CR);
+	write8data(Channel->FreeLong1|1,'\B00010000');
+	write8data(Channel->FreeLong1,UART_MR1);
+	write8data(Channel->FreeLong1|1,mr1);
+	write8data(Channel->FreeLong1,UART_MR1);
+	write8data(Channel->FreeLong1|1,mr2 | 7);
+	write8data(Channel->FreeLong1,UART_CSR);
+	write8data(Channel->FreeLong1|1,0xdd);
+	write8data(Channel->FreeLong1,UART_CR);
+	write8data(Channel->FreeLong1|1,'\B10101010');
+	write8data(Channel->FreeLong1,UART_ACR);
+	write8data(Channel->FreeLong1|1,'\B11101000');
+	write8data(Channel->FreeLong1,UART_IMR);
+	write8data(Channel->FreeLong1|1,0x5);
+	write8data(Channel->FreeLong1,UART_CTUR);
+	write8data(Channel->FreeLong1|1,0);
+	write8data(Channel->FreeLong1,UART_CTLR);
+	write8data(Channel->FreeLong1|1,96/baud);
+	write8data(Channel->FreeLong1,UART_CR);
+	write8data(Channel->FreeLong1|1,'\B01000000');
+	EI();
+//#if ROM==0
+	relocate_int1();        // relocate int1 vector during run time
+//#endif
+   ISET(ITC, 1);
+	}
+
+/* START FUNCTION DESCRIPTION ********************************************
+uartClose                      <AASCUART.LIB>
+
+SYNTAX:			void uartClose(struct _Channel *Channel)
+
+DESCRIPTION:	Closes down the Z0 device.
+
+RETURN VALUE:	None.
+		
+END DESCRIPTION **********************************************************/
+
+void uartClose(struct _Channel *Channel) {
+	aascCloseSub(Channel, &pAllUarts);	//	just detach from list of active
+													//	uart ports
+	}
+
+/* START FUNCTION DESCRIPTION ********************************************
+uartTxSwitch                   <AASCUART.LIB>
+
+SYNTAX:			void uartTxSwitch(char OnOff);
+
+DESCRIPTION:	Turns the transmitter on and off.  Also turns on and turn
+off the transmit interrupt on and off.
+
+RETURN VALUE:
+
+END DESCRIPTION **********************************************************/
+
+nodebug useix speed
+void uartTxSwitch(char OnOff, struct _Channel *Channel) {
+//	auto long adr;
+#asm xmemok
+c	Channel->FreeLong1;
+;		bcde now contains the address
+	ld		a,(ix+OnOff)
+	or		a
+	jr		z,TxOff
+	ld		b,00000100b
+	jr		TxEnd
+TxOff:
+	ld		b,00001000b
+TxEnd:
+	ld		a,i
+	push	af
+	di
+	;out0	(BUSADR0),c
+	;out0	(BUSADR1),d
+	;out0	(BUSADR2),e
+	push	bc
+	ld		a,c
+	ld		bc,BUSADR0
+	out	(c),a
+	ld		bc,BUSADR1
+	out	(c),d
+	ld		bc,BUSADR2
+	out	(c),e
+	
+	ld		a,UART_CR
+	;out0	(BUSWR),a
+	ld		bc,BUSWR
+	out	(c),a
+	inc	e
+	;out0	(BUSADR2),e
+	;out0	(BUSWR),b
+	ld		bc,BUSADR2
+	out	(c),e
+	pop	bc
+	push	bc
+	ld		a,b
+	ld		bc,BUSWR
+	out	(c),a
+	pop	bc
+	pop	af
+	jp		po,TxExit
+	ei
+TxExit:
+#endasm
+	}
+
+/* START FUNCTION DESCRIPTION ********************************************
+uartRxSwitch                   <AASCUART.LIB>
+
+SYNTAX:			void uartRxSwitch(char OnOff)
+
+DESCRIPTION:	Turns the receiver On and off.  Also turns on/off the
+receiver interrupt.  If C/RTS is specified when the device is opened,
+turning off the receiver also turns on CTS (therefore turning off the
+remote transmitter).
+
+RETURN VALUE:	None.
+
+END DESCRIPTION **********************************************************/
+
+nodebug useix speed
+void uartRxSwitch(char OnOff, struct _Channel *Channel) {
+#asm xmemok
+	ld		c,(ix+Channel)
+	ld		b,(ix+Channel+1)
+	ld		iy,0
+	add	iy,bc
+	ld		c,(iy+_Channel+FreeLong1+2)
+	ld		d,(iy+_Channel+FreeLong1+1)
+	ld		e,(iy+_Channel+FreeLong1)
+c	Channel->FreeLong1;
+;		bcde now contains the address
+	ld		a,(ix+OnOff)
+	or		a
+	jr		z,RxOff
+	ld		b,00000001b
+	ld		a,(iy+_Channel+CRTS)
+	or		a
+	jr		z,RxEnd
+	;		deal with CRTS
+	ld		a,i
+	push	af
+	di
+	;out0	(BUSADR0),c
+	;out0	(BUSADR1),d
+	;out0	(BUSADR2),e
+	push	bc
+	ld		a,c
+	ld		bc,BUSADR0
+	out	(c),a
+	ld		bc,BUSADR1
+	out	(c),d
+	ld		bc,BUSADR2
+	out	(c),e
+	
+	ld		a,UART_SR
+	;out0	(BUSWR),a
+	ld		bc,BUSWR
+	out	(c),a
+	inc	e
+	;out0	(BUSADR2),e
+	ld		bc,BUSADR2
+	out	(c),e
+	dec	e
+	;in0	h,(BUSRD1)
+	ld		bc,BUSRD1
+	in		h,(c)
+	pop	bc
+	pop	af
+	jp		po,RxChkFull
+	ei
+RxChkFull:
+	bit	1,h
+	jr		nz,RxEnd
+	bit	0,h
+	jr		nz,RxEnd
+	ld		a,10100000b
+	or		b
+	ld		b,a
+	jr		RxEnd
+RxOff:
+	ld		b,00000010b
+	ld		a,(iy+_Channel+CRTS)
+	or		a
+	jr		z,RxEnd
+	;		deal with CRTS
+	ld		a,10110000b
+	or		b
+	ld		b,a
+RxEnd:
+	ld		a,i
+	push	af
+	di
+	;out0	(BUSADR0),c
+	;out0	(BUSADR1),d
+	;out0	(BUSADR2),e
+	push	bc
+	ld		a,c
+	ld		bc,BUSADR0
+	out	(c),a
+	ld		bc,BUSADR1
+	out	(c),d
+	ld		bc,BUSADR2
+	out	(c),e
+	
+	ld		a,UART_CR
+	;out0	(BUSWR),a
+	ld		bc,BUSWR
+	out	(c),a
+	inc	e
+	;out0	(BUSADR2),e
+	ld		bc,BUSADR2
+	out	(c),e
+	dec	e
+	;out0	(BUSWR),b
+	pop	bc
+	push	bc
+	ld		a,b
+	ld		bc,BUSWR
+	out	(c),a
+	pop	bc
+	pop	af
+	jp		po,RxExit
+	ei
+RxExit:
+#endasm
+	}
+
+char _uartIntChar;
+	
+/* START FUNCTION DESCRIPTION ********************************************
+_uartInt                       <AASCUART.LIB>
+
+SYNTAX:			void _uartInt();
+
+DESCRIPTION:	This is the interrupt handler of the device.  Can handle
+57600bps with a 9MHz Z180.
+
+RETURN VALUE:	None.
+
+END DESCRIPTION **********************************************************/
+
+int iCount;
+
+#asm
+Duart_circ_int::
+_uartInt::
+	push	ix
+	push	iy
+	push	af
+	push	bc
+	push	de
+	push	hl				;	save registers to be used
+
+	ld		iy,(pAllUarts)
+
+uart1ch:
+	push	iy
+	pop	hl
+	ld		a,h
+	or		l
+	jp		z,uartEnd
+	
+	ld		e,(iy+_Channel+FreeLong1)
+	ld		d,(iy+_Channel+FreeLong1+1)
+	ld		c,(iy+_Channel+FreeLong1+2)
+
+	;out0	(BUSADR0), c        ;;;;;
+	;out0	(BUSADR1), d        ;;;;;      
+	;out0	(BUSADR2), e        ;;;;;
+	push	bc
+	ld		a,c
+	ld		bc,BUSADR0
+	out	(c),a
+	ld		bc,BUSADR1
+	out	(c),d
+	ld		bc,BUSADR2
+	out	(c),e
+		
+	;in0	a,(BUSRD0)        ; check for the AT bit
+	ld		bc,BUSRD0
+	in		a,(c)
+	pop	bc
+	and	00000010b
+	jp		z,uartNextBoard		; not this board
+
+	;		at this point, we know something happened with this board
+uartChkRx:
+	;out0	(BUSADR2),e
+	push	bc
+	ld		bc,BUSADR2
+	out	(c),e
+	ld		a,UART_SR
+	;out0	(BUSWR),a
+	ld		bc,BUSWR
+	out	(c),a
+
+	inc	e
+	;out0	(BUSADR2),e
+	ld		bc,BUSADR2
+	out	(c),e
+	dec	e
+	;in0	d,(BUSRD1)
+	ld		bc,BUSRD1
+	in		d,(c)
+	pop	bc
+
+	;		at this point, d contains the status of the UART
+
+	bit	0,d
+	jr		z,uartChkTx
+	;		okay, ready to receive a byte
+
+	push	de			;	save de
+	push	iy			;	save iy
+	
+	;out0	(BUSADR2),e	;	read from buffer
+	push	bc
+	ld		bc,BUSADR2
+	out	(c),e
+	
+	ld		a,UART_RHR
+	;out0	(BUSWR),a
+	ld		bc,BUSWR
+	out	(c),a
+
+	inc	e
+	;out0	(BUSADR2),e
+	ld		bc,BUSADR2
+	out	(c),e
+	dec	e
+	;in0	c,(BUSRD1)
+	ld		bc,BUSRD1
+	in		a,(c)
+	pop	bc
+	ld		c,a
+	;		data in register a
+
+	;		push arguments
+	ld		de,0
+	push	de			;	no disable interrupt
+	push	bc			;	data byte
+	push	iy
+	pop	hl
+	ld		de,_Channel+InBuf
+	add	hl,de
+	ld		a,(hl)
+	inc	hl
+	ld		h,(hl)
+	ld		l,a
+	push	hl
+	call	circbufPutByte
+	pop	ix		;	ix = address of buffer
+	pop	de
+	pop	de
+
+	pop	iy		;	pop saved registers
+	pop	de
+
+	ld		a,h
+	or		l
+	jr		nz,uartChkCTS	;	another byte in FIFO?
+	set	0,(iy+_Channel+Error+1)
+	jr		uartChkTx
+uartChkCTS:
+	ld		a,(iy+_Channel+CRTS)
+	or		a
+	jr		z,uartChkRx
+	ld		a,(ix+_CircBuffer+Free+1)
+	or		a
+	jr		nz,uartChkRx	;	for sure there's enough space
+	ld		a,(ix+_CircBuffer+Free)
+	cp		16
+	jr		nc,uartChkRx	;	enough space
+	;		turn on CTS now
+
+	;out0	(BUSADR2),e
+	push	bc
+	ld		bc,BUSADR2
+	out	(c),e
+	ld		a,UART_CR
+	;out0	(BUSWR),a
+	ld		bc,BUSWR
+	out	(c),a
+	inc	e
+	;out0	(BUSADR2),e
+	ld		bc,BUSADR2
+	out	(c),e
+	dec	e
+	ld		a,10110101b
+	;out0	(BUSWR),a
+	ld		bc,BUSWR
+	out	(c),a
+	pop	bc
+		
+uartChkTx:
+	bit	2,d
+	jr		z,uartChkTxEMT
+	;		handle transmit now
+
+	push	de
+	push	iy
+	
+	ld		de,0
+	push	de		;	do not handle interrupt On/Off
+	ld		hl,_uartIntChar
+	push	hl		;	hl has the address to transmit buffer
+	push	iy
+	pop	hl
+	ld		de,_Channel+OutBuf
+	add	hl,de
+	ld		a,(hl)
+	inc	hl
+	ld		h,(hl)
+	ld		l,a
+	push	hl
+	call	circbufGetByte
+	pop	de
+	pop	de
+	pop	de
+
+	pop	iy
+	pop	de
+
+	ld		a,h
+	or		l
+	jr		nz,uartTx
+	;		no more bytes to transmit
+
+	;out0	(BUSADR2),e
+	push	bc
+	ld		bc,BUSADR2
+	out	(c),e
+	ld		a,UART_CR
+	;out0	(BUSWR),a
+	ld		bc,BUSWR
+	out	(c),a
+	inc	e
+	;out0	(BUSADR2),e
+	ld		bc,BUSADR2
+	out	(c),e
+	dec	e
+	ld		a,00001000b
+	;out0	(BUSWR),a
+	ld		bc,BUSWR
+	out	(c),a
+	pop	bc
+	;		disable transmitter and silence further interrupt
+	jr		uartChkTxEMT
+	
+uartTx:
+	;out0	(BUSADR2),e
+	push	bc
+	ld		bc,BUSADR2
+	out	(c),e
+	ld		a,UART_THR
+	;out0	(BUSWR),a
+	ld		bc,BUSWR
+	out	(c),a
+	inc	e
+	;out0	(BUSADR2),e
+	ld		bc,BUSADR2
+	out	(c),e
+	dec e
+	ld		a,(_uartIntChar)
+	;out0	(BUSWR),a
+	ld		bc,BUSWR
+	out	(c),a
+	pop 	bc
+	
+uartChkTxEMT:
+	bit	3,d
+	jr		z,uartChkErr
+	;		handle transmit Q empty now
+
+uartChkErr:
+	;		handle error now	
+	ld		a,d
+	and	11110000b
+	or		(iy+_Channel+Error)
+	ld		(iy+_Channel+Error),a
+	jr		z,uartNoErr
+
+	;out0	(BUSADR2),e
+	push	bc
+	ld		bc,BUSADR2
+	out	(c),e
+	ld		a,UART_CR
+	;out0	(BUSWR),a
+	ld		bc,BUSWR
+	out	(c),a
+	inc	e
+	;out0	(BUSADR2),e
+	ld		bc,BUSADR2
+	out	(c),e
+	dec	e
+	ld		a,01000000b	;	clear error
+	;out0	(BUSWR),a
+	ld		bc,BUSWR
+	out	(c),a
+	pop	bc
+	jp		uartNextBoard
+	
+uartNoErr:
+
+uartNextBoard:
+	ld		c,(iy+_Channel+nextSameDevice)
+	ld		b,(iy+_Channel+nextSameDevice+1)
+	ld		iy,0
+	add	iy,bc
+	ld		a,b
+	or		c
+	jp		nz,uart1ch
+
+uartEnd:
+	
+	pop	hl
+	pop	de
+	pop	bc
+	pop	af
+	pop	iy
+	pop	ix
+	ret
+
+uart8Wr:
+	;out0 BUSADR2),e
+	push	bc
+	ld		bc,BUSADR2
+	out	(c),e
+	;out0	(BUSWR),h
+	ld		bc,BUSWR
+	out	(c),h
+	inc	e
+	;out0	(BUSADR2),e
+	ld		bc,BUSADR2
+	out	(c),e
+	dec	e
+	;out0	(BUSWR),l
+	ld		bc,BUSWR
+	out	(c),l
+	pop	bc
+	ret
+	
+uart8Rd:
+	;out0	(BUSADR2),e
+	push	bc
+	ld		bc,BUSADR2
+	out	(c),e
+	;out0	(BUSWR),h
+	ld		bc,BUSWR
+	out	(c),h
+	inc	e
+	;out0	(BUSADR2),e
+	ld		bc,BUSADR2
+	out	(c),e
+	dec	e
+	;in0	l,(BUSRD1)
+	ld		bc,BUSRD1
+	in		l,(c)
+	pop	bc
+	ret
+#endasm
+
+/*** BeginHeader uartGetErr */
+
+long uartGetErr(struct _Channel *pChan);
+
+/*** EndHeader */
+
+long uartGetErr(struct _Channel *pChan) {
+	return pChan->Error;
+}
+
+/*** BeginHeader uartClrErr */
+
+void uartClrErr(struct _Channel *pChan);
+
+/*** EndHeader */
+
+void uartClrErr(struct _Channel *pChan) {
+	pChan->Error = 0;
+}
+

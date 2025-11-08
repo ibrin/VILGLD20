@@ -1,0 +1,236 @@
+/**************************************************************************
+
+											LCD stuff
+
+**************************************************************************/
+
+/*** BeginHeader lcdRead, lcdWrite, lcdWait, lcdCtrl, lcdPutc */
+
+#ifndef __TL_LP31_LIB
+#define __TL_LP31_LIB
+
+#use eziolp31.lib
+
+char lcdRead();
+char lcdWrite();
+int lcdWait();
+int lcdPutc(char ch, void *instance);
+int lcdCtrl(char ch);
+						
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+lcdRead
+
+SYNTAX:	int lcdRead();
+
+KEYWORDS:	LCD driver
+
+DESCRIPTION:	Reads the status of the LCD.
+
+RETURN VALUE:	the status of the LCD. If the 7th bit is set, the LCD is
+					not free yet.
+
+END DESCRIPTION **********************************************************/
+
+#define LCD_RD_MASK 0x40
+#define LCD_E_MASK 0x8
+#define LCD_RS_MASK 0x80
+
+#define LCD_DRPORT 0x4020
+#define LCD_DWPORT 0x4040
+#define LCD_CPORT 0x4060
+
+#asm
+lcdRead::
+	ld		a,i
+	push	af
+	di
+	ld		l,1
+	ld		bc,0x40a4
+	out	(c),l				;	turn DIO to input
+	ld		a,(DOShadow+1)
+	or		LCD_RD_MASK
+	and	0xff & (~LCD_RS_MASK | LCD_E_MASK)
+	ld		bc,LCD_CPORT
+	out	(c),a
+	or		LCD_E_MASK
+	out	(c),a				;	set E
+	ld		bc,LCD_DRPORT
+	in		l,(c)
+	and	0xff & ~LCD_E_MASK
+	ld		bc,LCD_CPORT
+	out	(c),a
+	ld		(DOShadow+1),a
+	ld		h,0
+	pop	af
+	ret	po
+	ei
+	ret
+#endasm
+
+/* START FUNCTION DESCRIPTION ********************************************
+lcdWrite
+
+SYNTAX:	void lcdWrite(char ch);
+
+KEYWORDS:	LCD driver
+
+DESCRIPTION:	Writes one character to the LCD control register.
+
+PARAMETER1:		The bytes to write to the LCD control register.
+
+RETURN VALUE:	N/A.
+
+END DESCRIPTION **********************************************************/
+
+#asm
+lcdWrite::
+	ld		a,i
+	push	af
+	di
+	xor	a
+	ld		bc,0x40a4
+	out	(c),a				;	turn DIO to output
+	ld		bc,LCD_DWPORT
+	out	(c),l				;	set data on bus
+	ld		a,(DOShadow+1)
+	and	0xff & (~(LCD_E_MASK|LCD_RS_MASK|LCD_RD_MASK))		;	reset E and RD
+	ld		bc,LCD_CPORT
+	out	(c),a
+	or		LCD_E_MASK
+	out	(c),a				;	set E
+	and	0xff & ~LCD_E_MASK
+	ld		bc,LCD_CPORT
+	out	(c),a
+	ld		(DOShadow+1),a
+	pop	af
+	ret	po
+	ei
+	ret
+#endasm
+
+int lcdWait();
+
+/* START FUNCTION DESCRIPTION ********************************************
+lcdWait
+
+SYNTAX:	int lcdWait();
+
+KEYWORDS:	LCD driver
+
+DESCRIPTION:	Wait for LCD to be done. Times out if LCD is not responding.
+
+RETURN VALUE:	0 if all is fine (LCD is not free), -1 if LCD is always
+					busy (timed out).
+
+END DESCRIPTION **********************************************************/
+
+#asm
+lcdWait::
+	ld			a,(lcdDelay)
+	ld			b,a
+pollAgain:						;	each loop takes at least 60 states
+	push		bc					;	12
+	call		lcdRead			;	21
+	pop		bc					;	9
+	bit		7,l				;	7
+	jr			z,doneNow		;	6
+	djnz		pollAgain		;	8
+	ld			hl,-1
+	ret
+doneNow:
+	ld			hl,0
+	ret
+#endasm
+
+speed nodebug nouseix int lcdPutc(char ch, void *instance) {
+
+#asm xmemok
+	call		lcdWait
+	ld			hl,@SP+ch
+	add		hl,sp
+	ld			l,(hl)
+	ld		a,i
+	push	af
+	di
+	xor	a
+	ld		bc,0x40a4
+	out	(c),a				;	turn DIO to output
+	ld		bc,LCD_DWPORT
+	out	(c),l				;	set data on bus
+	ld		a,(DOShadow+1)
+	or		LCD_RS_MASK		;	set RS
+	and	~(LCD_RD_MASK|LCD_E_MASK)		;	reset E and RD
+	ld		bc,LCD_CPORT
+	out	(c),a
+	or		LCD_E_MASK
+	out	(c),a				;	set E
+	and	0xff & ~LCD_E_MASK
+	ld		bc,LCD_CPORT
+	out	(c),a
+	ld		(DOShadow+1),a
+	pop	af
+	ret	po
+	ei
+	ret
+#endasm
+
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+lcdCtrl
+
+SYNTAX:	int lcdCtrl(char ch);
+
+KEYWORDS:	LCD Driver
+
+DESCRIPTION:	Sends a character to the LCD control register. This
+					function waits for the LCD becomes free before sending
+					the control byte.
+
+PARAMETER1:	This is the character to send.
+
+RETURN VALUE:	0 if all is fine, -1 if the LCD is always busy (timed out).
+					Note that the character is sent even if the LCD times out.
+
+END DESCRIPTION **********************************************************/
+
+int lcdCtrl();
+
+#asm
+lcdCtrl::
+	push		hl
+	call		lcdWait
+	ex			(sp),hl
+	ld		a,i
+	push	af
+	di
+	xor	a
+	ld		bc,0x40a4
+	out	(c),a				;	turn DIO to output
+	ld		bc,LCD_DWPORT
+	out	(c),l				;	set data on bus
+	ld		a,(DOShadow+1)
+	and	0xff & (~(LCD_E_MASK|LCD_RD_MASK|LCD_RS_MASK))		;	reset E and RS
+	ld		bc,LCD_CPORT
+	out	(c),a
+	or		LCD_E_MASK
+	out	(c),a				;	set E
+	and	0xff & ~LCD_E_MASK
+	ld		bc,LCD_CPORT
+	out	(c),a
+	ld		(DOShadow+1),a
+	pop	af
+	jp		po,noEI
+	ei
+noEI:
+	pop		hl
+	ret
+#endasm
+
+/*** BeginHeader */
+
+#endif
+
+/*** EndHeader */

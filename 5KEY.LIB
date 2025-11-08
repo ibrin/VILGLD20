@@ -1,0 +1,2077 @@
+// 6-6-95, make library avialable to other board if they want it.
+// 6-6-95, change tmc.. to the more generic tm..
+// 9-11-94, disable interrupt before reading or writing the RTC within the
+// 5key system.
+
+/* START LIBRARY DESCRIPTION *********************************************
+5KEY.LIB
+    Copyright (c) 1994, Z-World.
+
+DESCRIPTION: Support for the 5key system on the Rugged Giant (formerly 
+the CPLC).  Standard LCD is 20x2. To run the 5Key system with a 16x2 LCD, 
+use "#define LCD16x2."
+
+SUPPORT LIB'S: sys.lib, cplc.lib, rtk.lib
+END DESCRIPTION **********************************************************/
+
+/*** BeginHeader */
+//#if ((BOARD_TYPE!=CPLC_BOARD) && (BOARD_TYPE!=L_STAR))
+//#error "Rugged Giant or Little Star only."
+//#endif
+/*** EndHeader */
+
+/*** BeginHeader */
+
+// #define LCD16x2
+#define MENU   1
+#define ITEM   2
+#define FIELD  3
+#define UP     4
+#define DOWN   5
+#define HELP   6
+#define F1KEY  7
+#define F2KEY  8
+#define F3KEY  9
+#define F4KEY  10
+#define DELETE 11
+#define ADD    12
+#define SHORT_BEEP  40
+#define LONG_BEEP   100
+#define _5key_Fdata 0        // float data
+#define _5key_Idata 1        // integer data
+#define _5key_Bdata 2        // integer data for boolean
+#define _5key_Tdata 3        // string data for time
+#define _5key_Ddata 4        // string data for date
+#define _5key_Max_Item  20   // limit to 20 item
+
+#define NO_HELP       (char **)0 // No help line available
+#define NO_FUNCTION   (int(*)())0 // No function requested
+#define MAX_HELP_LINE 10     // Max number of displayed help line.
+#define NO_ACTIVITY   1000   // If there's no key activity for
+                             // NO_ACTIVITY*25ms, 5key system will
+                             // go into a cyclic display mode.
+#define _5KEYITEM  struct _5key_item
+
+union u_data
+{
+    float *f_data;           // float data
+    int   *i_data;           // integer data
+    char  *b_data;           // boolean 1 or 0
+    char  *string_data;      // string data
+};
+
+_5KEYITEM
+{
+    char  *menu;             // menu string
+    char  *item;             // item string
+    char  data_mode;         // float, integer or string
+    union u_data ptr;        // pointer to specific data declaration
+    float max_data;          // maximum data limit
+    float min_data;          // minimum data limit
+    char  **my_help;         // pointer to pointer of help line
+    char  my_help_line;      // no. of help line
+    _5KEYITEM *next_menu;    // point to next menu in the list
+    _5KEYITEM *next_item;    // point to next item in the list
+    char  data_modify;
+                             // Lower Nibble:
+                             // if 1, data can be changed with 5key; else 0
+                             // Data is refresh by every delay count.
+                             // data can be updated somewhere else.
+                             // Upper Nibble (use only for time and date):
+                             // if 1, access the real time clock; else 0.
+    char delay;              // Number of delay ticks in suspend
+};
+
+// lcd_server() display modes:
+#define  CLRNONE  0          // do not clear lcd
+#define  CLRLIN1  1          // clear first line
+#define  CLRLIN2  2          // clear second line
+#define  CLRBOTH  3          // clear first and second line
+
+/*** EndHeader */
+
+/*** BeginHeader init_5key, check_5key */
+
+void init_5key(void);
+int  check_5key(char irfrsh, char delay);
+void service_help(char delay);
+void service_function(void);
+void service_display(char delay);
+void service_alarm(void);
+
+// This way variables are only defined when functions are used
+
+extern char *active_help[10]; // Max help is ten lines of text
+extern char help_line;       // Number of text line to show
+
+extern char temp_save[50];   // temp array for save area
+extern char menu_buf[21];    // temp array for printf to lcd
+
+extern int (*func1)();       // service function for F1
+extern int (*func2)();       // service function for F2
+extern int (*func3)();       // service function for F3
+extern int (*func4)();       // service function for F4
+
+extern int (*alarm_func1)(); // service function for ALARM1
+extern int (*alarm_func2)(); // service function for ALARM2
+extern int (*alarm_func3)(); // service function for ALARM3
+extern int (*alarm_func4)(); // service function for ALARM4
+
+extern char _ALARM1, _ALARM2, _ALARM3, _ALARM4; // Alarm variables
+                             // declared for access
+
+extern char *disp_message[10]; // up to ten display messages
+
+extern _5KEYITEM item[_5key_Max_Item];
+
+extern _5KEYITEM *pd_item[10];
+extern int  _5key_item_no;
+extern int  _5key_disp_no;
+extern char *on_off[];
+extern char *no_help[];
+
+/*** EndHeader */
+
+char *active_help[10];       // maximum help is ten lines of text
+char help_line;              // number of text line to show
+
+char temp_save[50];          // temp array for save area
+char menu_buf[21];           // temp array for printf to lcd
+
+int (*func1)();              // F1 service function
+int (*func2)();              // F2 service function
+int (*func3)();              // F3 service function
+int (*func4)();              // F4 service function
+
+int (*alarm_func1)();        // ALARM1 service function
+int (*alarm_func2)();        // ALARM2 service function
+int (*alarm_func3)();        // ALARM3 service function
+int (*alarm_func4)();        // ALARM4 service function
+
+char _ALARM1, _ALARM2, _ALARM3, _ALARM4; // Alarm variables
+
+char *disp_message[10];      // up to ten display message
+
+_5KEYITEM item[_5key_Max_Item];
+_5KEYITEM *pd_item[10];
+int  _5key_item_no;
+int  _5key_disp_no;
+char *on_off[] =
+     {
+         "OFF", "ON "
+     };
+char *no_help[] =
+     {
+         "no help message"
+     };
+
+/* START _FUNCTION DESCRIPTION *******************************************
+init_5key(void)              <5KEY.LIB>
+
+SYNTAX: void init_5key(void);
+
+KEYWORDS: CPLC, Rugged_Giant, 5Key, init
+
+DESCRIPTION: Initializes 5 key operation variables using GLOBAL_INIT
+directives.  Calling this function has NO EFFECT.  This function only
+has effect when _GLOBAL_INIT is called.  This function should not be
+called or used by the user.
+
+RETURN VALUE: None
+END DESCRIPTION **********************************************************/
+nodebug void init_5key(void)
+{
+    int i;
+
+#GLOBAL_INIT
+    {
+        _5key_item_no = 0;
+        _5key_disp_no = 0;
+        _ALARM1 = _ALARM2 = _ALARM3 = _ALARM4 = 0; // all alarms are off
+        func1 = NO_FUNCTION; // no service functions
+        func2 = NO_FUNCTION;
+        func3 = NO_FUNCTION;
+        func4 = NO_FUNCTION;
+        alarm_func1 = NO_FUNCTION;
+        alarm_func2 = NO_FUNCTION;
+        alarm_func3 = NO_FUNCTION;
+        alarm_func4 = NO_FUNCTION;
+        help_line = 0;
+        for (i = 0; i < 10; i++) 
+            disp_message[i] = NULL; // no display message
+    }
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+check_5key                   <5KEY.LIB>
+
+SYNTAX: int check_5key(char irfrsh, char delay);
+
+KEYWORDS: CPLC, Rugged_Giant, 5Key
+
+DESCRIPTION: Busy waits for 5Key keypad entry.  The function does not
+return until a key is pressed.  The function also suspends for "delay"
+duration while waiting for a key pressed.  During the wait, this
+function services alarm conditions (see service_alarm), and: 
+displays help string (see service_help); or calls function associated with
+function key (see service_function); or fetches input key value (using
+lc_kxget), depending on key pressed.  If irfrsh = 0, LCD display is
+refreshed (see service_display), else display refresh relies on calls to
+service_help() or service_function().  Note, if irfrsh = 1 and no key was
+pressed, a return value of -1 implies that a refresh was not performed.
+
+RETURN VALUE: Value of pressed key or -1, if no key is pressed but
+refresh was requested.
+END DESCRIPTION **********************************************************/
+nodebug int check_5key(char irfrsh, char delay)
+{
+    int k;
+
+    while (1)
+    {
+        if (_ALARM1 | _ALARM2 | _ALARM3 | _ALARM4)
+            service_alarm();
+
+        if (!irfrsh)          // Refresh not explicitly requested.
+            service_display(delay);  
+        service_help(delay);  // If help was requested, clears last char
+        service_function();   // Clears last char, if function key was hit 
+        suspend(delay);
+        k = lc_kxget(1);      
+        switch (k)
+        {
+            case -1:          // Input buf is empty
+                if (irfrsh)
+                    return k; // return -1, no key pressed, but lcd is
+                              // available.
+                              // refresh mode is on
+                break;        // no key, do nothing
+            // If other than function keys or HELP is pressed:
+            case ADD:
+            case DELETE:
+            case MENU:
+            case ITEM:
+            case FIELD:
+            case UP:
+            case DOWN:
+                up_beep(SHORT_BEEP);    
+                return (lc_kxget(0) );  // Return key value and clr buf.
+            default:
+                break;
+        }
+    }
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+service_help                 <5KEY.LIB>
+
+SYNTAX: void service_help(char delay);
+
+KEYWORDS: CPLC, Rugged_Giant, 5Key, help
+
+DESCRIPTION: Displays help messages.  Suspends for "delay" number of 
+ticks to give lower priority tasks chance to execute.  Returns when key
+press is detected or alarm condition is encountered.  When this function
+returns, the LCD screen is restored.
+
+RETURN VALUE: None
+END DESCRIPTION **********************************************************/
+nodebug void service_help(char delay)
+{
+    int  k;
+    char message_i;
+    char scan_help;
+
+    char refresh_help = 8;   // change refresh rate here
+
+    if ((k = lc_kxget(1)) == -1)
+        return;              // No key is pending
+
+    if (k != HELP)
+        return;              // Not help key
+
+    lc_kxget(0);             // Clear input buffer
+    up_beep(SHORT_BEEP);
+    lcd_savscrn(temp_save);
+    message_i = scan_help = 0;
+#ifdef LCD16x2
+    lcd_server(CLRBOTH, 0x01000000L,"                ");
+#else
+    lcd_server(CLRBOTH, 0x01000000L, "                    ");
+#endif
+    do
+    {
+        if (!help_line)
+            break;           // no help
+        lcd_server(CLRLIN1, 0L, active_help[message_i++]);
+        message_i = message_i % help_line;
+        while (++scan_help % refresh_help != 0)
+        {
+            if (((k = lc_kxget(1)) != -1) ||
+                (_ALARM1 | _ALARM2 | _ALARM3 | _ALARM4) )
+                break;       // break inner while loop
+
+                  
+            suspend(delay);
+        }
+    } while (k == -1 && message_i != 0); // Loop until key is pressed
+                                         // or alarm is encountered.
+    lcd_resscrn(temp_save);
+}
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+service_function(void)       <5KEY.LIB>
+
+SYNTAX: void service_function(void);
+
+KEYWORDS: CPLC, Rugged_Giant, 5Key
+
+DESCRIPTION: Services function keys F1,F2,F3 and F4.  Requested function 
+gains control of the lcd and keypad.
+
+RETURN VALUE: None
+END DESCRIPTION **********************************************************/
+nodebug void service_function(void)
+{
+    int k;
+
+    if ((k = lc_kxget(1)) == -1)
+        return;              // No key pressed
+    
+    if (k >= F1KEY && k <= F4KEY)
+    {
+        k = lc_kxget(0);     // Get key value and clear input buf
+        up_beep(SHORT_BEEP);
+        lcd_savscrn(temp_save);
+        switch (k)
+        {
+            case F1KEY:
+                if (func1 != NO_FUNCTION)
+                    func1();
+                break;
+            case F2KEY:
+                if (func2 != NO_FUNCTION)
+                    func2();
+                break;
+            case F3KEY:
+                if (func3 != NO_FUNCTION)
+                    func3();
+                break;
+            case F4KEY:
+                if (func4 != NO_FUNCTION)
+                    func4();
+                break;
+            default:
+                break;
+        }
+        lcd_resscrn(temp_save);
+    }
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+service_display              <5KEY.LIB>
+
+SYNTAX: void service_display(char delay);
+
+KEYWORDS: CPLC, Rugged_Giant, 5Key, display
+
+DESCRIPTION: 5key system background display.  Suspends for "delay" number 
+of ticks to give lower priority tasks chance to execute.  Returns when any 
+key is pressed or alarm condition is encountered.
+
+RETURN VALUE: None
+END DESCRIPTION **********************************************************/
+nodebug void service_display(char delay)
+{
+    char pbuf[21];
+    char dtime[21];
+    char i;
+    _5KEYITEM *temp;
+
+    if (up_lastkey() < NO_ACTIVITY)
+        return;              // NO_ACTIVITY * 25 ms
+
+    up_beep(SHORT_BEEP);
+    lcd_savscrn(temp_save);
+
+    // Display Prompt:
+#ifdef LCD16x2
+    lcd_server(CLRBOTH, 0L, "ANY KEY FOR MENU");
+#else
+    lcd_server(CLRBOTH, 0L, "HIT ANY KEY FOR MENU");
+#endif
+    while (1)
+    {
+        _5keygettime(dtime);
+        sprintf(pbuf, "time =  %s", dtime);
+        lcd_server(CLRLIN2, 0x01000000L, pbuf); // Display time
+        
+        if (wait_next_display(delay) == -1)
+            break;
+        _5keygetdate(dtime);
+        sprintf(pbuf, "date =  %s", dtime);
+        lcd_server(CLRLIN2, 0x01000000L, pbuf); // Display date
+        
+        if (wait_next_display(delay) == -1)
+            break;
+        i = 0;
+        do
+        {
+            if (disp_message[i] == NULL)
+                ;
+            else
+            {
+                sprintf(pbuf, "%s", disp_message[i]);
+                lcd_server(CLRLIN2, 0x01001100L, pbuf); // Display message
+                if (wait_next_display(delay) == -1)
+                    i = 100;   // forced break
+            }
+            i++;
+        } while (i < 10);
+
+        if (i > 100)
+            break;
+
+        for (i = 0; i < _5key_disp_no; i++)
+        {
+            temp = pd_item[i];
+            sprintf(pbuf, "%s ", temp->item);
+            lcd_server(CLRLIN2, 0x01001100L, pbuf);  // Display item label
+
+            // Display item's value:
+            switch (temp->data_mode)
+            {
+                case _5key_Fdata:
+                    sprintf(pbuf, "=%8.3f", *(temp->ptr.f_data) );
+                    break;
+                case _5key_Idata:
+                    sprintf(pbuf, "=%6d", *(temp->ptr.i_data) );
+                    break;
+                case _5key_Bdata:
+                    if ( *(temp->ptr.b_data) == 1)
+                        sprintf(pbuf, "=  ON");
+                    else
+                        sprintf(pbuf, "=  OFF");
+                    break;
+                case _5key_Tdata:
+                case _5key_Ddata:
+                    sprintf(pbuf, "  %s", temp->ptr.string_data);
+                    break;
+            }
+
+#ifdef LCD16x2
+            lcd_server(CLRNONE, 0x01070000L, pbuf);
+#else
+            lcd_server(CLRNONE, 0x010b0000L, pbuf);
+#endif
+
+            if (wait_next_display(delay) == -1)
+                break;
+        }
+        if (i != 0 && i != _5key_disp_no)
+            break;
+    }
+    lcd_resscrn(temp_save);
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+wait_next_display            <5KEY.LIB>
+
+SYNTAX: void wait_next_display(char delay);
+
+KEYWORDS: CPLC, Rugged_Giant, 5Key, wait
+
+DESCRIPTION: Suspend function used by the service_display(). Suspends for 
+at least "delay" ticks and returns after 8 x delay ticks or when keypad 
+input or alarm condition have been detected.
+
+RETURN VALUE: 1, if ok to display next message or item; -1, if alarm or
+keypad have been detected.
+END DESCRIPTION **********************************************************/
+nodebug int wait_next_display(char delay)
+{
+    char count;
+
+    count = 0;
+    do
+    {
+        suspend(delay);
+        if ((lc_kxget(1) != -1) || (_ALARM1 | _ALARM2 | _ALARM3 | _ALARM4))
+            return -1;
+    } while (++count < 8);   // refresh rate
+    return 1;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+service_alarm(void)          <5KEY.LIB>
+
+SYNTAX: void service_alarm(void);
+
+KEYWORDS: CPLC, Rugged_Giant, 5Key, alarm
+
+DESCRIPTION: Services alarm variables ALARM1, ALARM2, ALARM3 and ALARM4.
+Requested function gains control of the lcd and keypad.
+
+RETURN VALUE: None
+END DESCRIPTION **********************************************************/
+nodebug void service_alarm(void)
+{
+    lcd_savscrn(temp_save);
+    up_beep(LONG_BEEP);
+    if (_ALARM1)
+    {
+        _ALARM1 = 0;
+        if (alarm_func1 != NO_FUNCTION)
+            alarm_func1();
+    }
+    if (_ALARM2)
+    {
+        _ALARM2 = 0;
+        if (alarm_func2 != NO_FUNCTION)
+            alarm_func2();
+    }
+    if (_ALARM3)
+    {
+        _ALARM3 = 0;
+        if (alarm_func3 != NO_FUNCTION)
+            alarm_func3();
+    }
+    if (_ALARM4)
+    {
+        _ALARM4 = 0;
+        if (alarm_func4 != NO_FUNCTION)
+            alarm_func4();
+    }
+    up_beep(SHORT_BEEP);
+    lcd_resscrn(temp_save);
+}
+
+/*** BeginHeader _5keysettime, _5keysetdate, _5keygettime, _5keygetdate */
+
+void _5keysettime(char *stemp); // set real time clock
+void _5keysetdate(char *stemp); // set real time date
+void _5keygettime(char *stemp); // get real time clock
+void _5keygetdate(char *stemp); // get real time date
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+_5keysettime                 <5KEY.LIB>
+
+SYNTAX: void _5keysettime(char *stemp);
+
+KEYWORDS: CPLC, Rugged_Giant, 5Key, time
+
+DESCRIPTION: Sets Real Time Clock time, based on string pointed to by 
+"stemp."  String format is "hh:mm:ss".
+
+RETURN VALUE: None
+END DESCRIPTION **********************************************************/
+nodebug void _5keysettime(char *stemp)
+{
+    struct tm tim;
+    di();           // 9-11-94
+    tm_rd(&tim);     // 6-6-95
+    ei();           // 9-11-94
+    tim.tm_sec  = (stemp[6] -0x30) * 10 + (stemp[7] -0x30);
+    tim.tm_min  = (stemp[3] -0x30) * 10 + (stemp[4] -0x30);
+    tim.tm_hour = (stemp[0] -0x30) * 10 + (stemp[1] -0x30);
+    di();           // 9-11-94
+    tm_wr(&tim);     // 6-6-95
+    ei();           // 9-11-94
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+_5keysetdate                 <5KEY.LIB>
+
+SYNTAX: void _5keysetdate(char *stemp);
+
+KEYWORDS: CPLC, Rugged_Giant, 5Key, date
+
+DESCRIPTION: Sets Real Time Clock date, based on string pointed to by 
+"stemp."  String format is "mm-dd-yy".
+
+RETURN VALUE: None
+END DESCRIPTION **********************************************************/
+nodebug void _5keysetdate(char *stemp)
+{
+    struct tm tim;
+
+    di();           // 9-11-94
+    tm_rd(&tim);     // 6-6-95
+    ei();           // 9-11-94
+    tim.tm_year = (stemp[6] -0x30) * 10 + (stemp[7] -0x30);
+    tim.tm_mday = (stemp[3] -0x30) * 10 + (stemp[4] -0x30);
+    tim.tm_mon  = (stemp[0] -0x30) * 10 + (stemp[1] -0x30);
+    if (tim.tm_year < 80) {
+    	tim.tm_year += 100;
+    }
+    di();           // 9-11-94
+    tm_wr(&tim);     // 6-6-95
+    ei();           // 9-11-94
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+_5keygettime                 <5KEY.LIB>
+
+SYNTAX: void _5keygettime(char *stemp);
+
+KEYWORDS: CPLC, Rugged_Giant, 5Key, time
+
+DESCRIPTION: Gets Real Time Clock time and stores in stemp.
+String format is "hh:mm:ss".
+
+RETURN VALUE: None
+END DESCRIPTION **********************************************************/
+nodebug void _5keygettime(char *stemp)
+{
+    struct tm tim;
+
+    di();           // 9-11-94
+    tm_rd(&tim);     // 6-6-95
+    ei();           // 9-11-94
+    stemp[0] = tim.tm_hour / 10 + 0x30;
+    stemp[1] = tim.tm_hour - (stemp[0] -0x30) * 10 + 0x30;
+    stemp[2] = ':';
+    stemp[3] = tim.tm_min / 10 + 0x30;
+    stemp[4] = tim.tm_min - (stemp[3] -0x30) * 10 + 0x30;
+    stemp[5] = ':';
+    stemp[6] = tim.tm_sec / 10 + 0x30;
+    stemp[7] = tim.tm_sec - (stemp[6] -0x30) * 10 + 0x30;
+    stemp[8] = '\0';
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+_5keygetdate                 <5KEY.LIB>
+
+SYNTAX: void _5keygetdate(char *stemp);
+
+KEYWORDS: CPLC, Rugged_Giant, 5Key, date
+
+DESCRIPTION: Gets Real Time Clock date and stores it in string pointed to 
+by "stemp."  String format is "mm-dd-yy".
+
+RETURN VALUE: None
+END DESCRIPTION **********************************************************/
+nodebug void _5keygetdate(char *stemp)
+{
+    struct tm tim;
+
+    di();           // 9-11-94
+    tm_rd(&tim);     // 6-6-95
+    ei();           // 9-11-94
+    stemp[0] = tim.tm_mon / 10 + 0x30;
+    stemp[1] = tim.tm_mon - (stemp[0] -0x30) * 10 + 0x30;
+    stemp[2] = '-';
+    stemp[3] = tim.tm_mday / 10 + 0x30;
+    stemp[4] = tim.tm_mday - (stemp[3] -0x30) * 10 + 0x30;
+    stemp[5] = '-';
+    stemp[6] = (tim.tm_year / 10) % 10+ 0x30;
+    stemp[7] = (tim.tm_year % 10) + 0x30;
+    stemp[8] = '\0';
+}
+
+/*** BeginHeader lcd_server */
+
+void lcd_server(char imode, long position, char *lcd_msg);
+
+/*** Endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+lcd_server                   <5KEY.LIB>
+
+SYNTAX: void lcd_server(char imode, long position, char *lcd_msg);
+
+KEYWORDS: CPLC, Rugged_Giant, 5Key, display
+
+DESCRIPTION: Clears number of lines, specified by "imode," and displays
+message pointed to by lcd_msg at position, "position."  See cplc.lib for
+description of position fields.
+
+RETURN VALUE: None
+END DESCRIPTION **********************************************************/
+void lcd_server(char imode, long position, char *lcd_msg)
+{
+    int i;
+
+    switch (imode)
+    {
+        case CLRNONE:
+            break;
+        case CLRLIN1:
+            lcd_erase_line(0);
+            break;
+        case CLRLIN2:
+            lcd_erase_line(1);
+            break;
+        case CLRBOTH:
+            lcd_erase();
+            for (i = 0; i < 60; i++)
+                ;            // need delay
+        default:
+            break;
+    }
+    for (i = 0; i < 15; i++)
+        ;                    // need delay
+    lcd_printf(position, lcd_msg);
+}
+
+/*** BeginHeader _5key_float, _5key_integer, _5key_boolean, _5key_time,
+                 _5key_date */
+
+int _5key_float(char *label, float *fdata, float fmax, float fmin,
+        char *my_help[], char my_help_line, char modify, char delay);
+int _5key_integer(char *label, int *idata, int imax, int imin,
+        char *my_help[], char my_help_line, char modify, char delay);
+int _5key_boolean(char *label, char *bdata, char *my_help[],
+        char my_help_line, char modify, char delay);
+int _5key_time(char *label, char *timer, char *my_help[], char my_help_line,
+        char set_clock, char modify, char delay);
+int _5key_date(char *label, char *date, char *my_help[], char my_help_line,
+        char set_clock, char modify, char delay);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+_5key_float                  <5KEY.LIB>
+
+SYNTAX: int _5key_float(char *label, float *fdata, float fmax, float fmin,
+            char *my_help[], char my_help_line, char modify, char delay);
+
+KEYWORDS: CPLC, Rugged_Giant, 5Key, display, float
+
+DESCRIPTION: 5key display for float variables.  Format is limited to
+%8.3f.  "label" is address of string label.  "fdata" is address of
+float variable.  "fmax" is the upper limit for the variable range;
+"fmin" is the lower lim.  "my_help[]" is an array of string messages.
+my_help_line is 2x the actual number of help lines.
+"modify" is 1, if data are to be modified through the 5key system; else
+0, if data are just monitored.  "delay" is the 5key task suspend period
+in number of ticks.
+
+RETURN VALUE: Returns the 5key menu key pressed.
+END DESCRIPTION **********************************************************/
+nodebug int _5key_float(char *label, float *fdata, float fmax, float fmin,
+        char *my_help[], char my_help_line, char modify, char delay)
+{
+    char  xcursor;
+    float ftemp, change;
+    int   k;
+
+    if (my_help == NO_HELP ||
+       (help_line = my_help_line / sizeof(char *)) == 0)
+    {
+        help_line = 1;
+        active_help[0] = no_help[0];
+    }
+    else
+    {
+        if (help_line > MAX_HELP_LINE)
+            help_line = MAX_HELP_LINE;
+        for (k = 0; k < help_line; k++)
+            active_help[k] = my_help[k];
+    }
+
+    change = 10.00;
+    ftemp = *fdata;
+    sprintf(menu_buf, "%s ", label);
+    lcd_server(CLRLIN2, 0x01001100L, menu_buf);
+    sprintf(menu_buf, "=%8.3f", ftemp);
+
+#ifdef LCD16x2
+    xcursor = 10;
+    lcd_server(CLRNONE, 0x01071100L | xcursor,menu_buf);
+#else
+    xcursor = 14;
+    lcd_server(CLRNONE, 0x010b1100L | xcursor, menu_buf);
+#endif
+
+    k = check_5key(!modify, delay);
+    if (k == MENU || k == ITEM)
+        return k;
+    do
+    {
+        switch (k)
+        {
+            case UP:
+                if (modify)
+                    if ((ftemp = ftemp + change) > fmax)
+                        ftemp = fmax;
+                break;
+            case DOWN:
+                if (modify)
+                    if ((ftemp = ftemp - change) < fmin)
+                        ftemp = fmin;
+                break;
+            case FIELD:
+                if (modify)
+                {
+                    xcursor++;
+#ifdef LCD16x2
+                    if(xcursor == 12)
+                        xcursor= 13;
+                    else if(xcursor == 16)
+                        xcursor = 9 ;
+                    switch(xcursor)
+                    {
+                        case 9:
+                            change = 100.00;
+                            break;
+                        case 10:
+                            change = 10.00;
+                            break;
+                        case 11:
+                            change = 1.00;
+                            break;
+                        case 13:
+                            change = 0.1;
+                            break;
+                        case 14:
+                            change = 0.01;
+                            break;
+                        case 15:
+                            change = 0.001;
+                            break;
+                    }
+#else
+                    if (xcursor == 16)
+                        xcursor = 17;
+                    else if (xcursor == 20)
+                        xcursor = 13;
+                    switch (xcursor)
+                    {
+                        case 13:
+                            change = 100.00;
+                            break;
+                        case 14:
+                            change = 10.00;
+                            break;
+                        case 15:
+                            change = 1.00;
+                            break;
+                        case 17:
+                            change = 0.1;
+                            break;
+                        case 18:
+                            change = 0.01;
+                            break;
+                        case 19:
+                            change = 0.001;
+                            break;
+                    }
+#endif
+                }
+                break;
+            case ADD:        // ADD key
+            case DELETE:     // DELETE key
+                return k;
+            case MENU:
+            case ITEM:
+                if (*fdata != ftemp)
+                {
+                    *fdata = ftemp;
+                    up_beep(LONG_BEEP);
+                }
+                return k;
+                break;
+            default:
+                break;
+        }
+        if (k != -1 || (ftemp != *fdata && ! modify))
+        {
+            if (! modify)
+            {
+                ftemp = *fdata;
+            }
+
+            sprintf(menu_buf, "%s ", label);
+            lcd_server(CLRLIN2, 0x01001100L, menu_buf);
+            sprintf(menu_buf, "=%8.3f", ftemp);
+
+#ifdef LCD16x2
+            lcd_server(CLRNONE, 0x01071100L | xcursor,menu_buf);
+#else
+            lcd_server(CLRNONE, 0x010b1100L | xcursor, menu_buf);
+#endif
+        }
+        k = check_5key(! modify, delay);
+    } while (1);
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+_5key_integer                <5KEY.LIB>
+
+SYNTAX: int _5key_integer(char *label, int *idata, int imax, int imin,
+            char *my_help[], char my_help_line, char modify, char delay)
+
+KEYWORDS: CPLC, Rugged_Giant, 5Key, display, integer
+
+DESCRIPTION: 5key display for integer variables. Format is limited
+to %6d.  "label" is address of string label; "idata" is address of
+integer variable;  "imax" is variable's upper limit; "imin" is the
+lower lim.  "my_help[]" is an array of string messages.  "my_help_line"
+is 2x the actual number of help lines.  "modify" is 1, if data areto be
+modified through the 5key system; 0, if data are just monitored.
+"delay" is the 5key task suspend period in number of ticks.
+
+RETURN VALUE: Value of menu key pressed.
+END DESCRIPTION **********************************************************/
+nodebug int _5key_integer(char *label, int *idata, int imax, int imin,
+        char *my_help[], char my_help_line, char modify, char delay)
+{
+    char xcursor;
+    int  itemp, change;
+    int  k;
+
+    if (my_help == NO_HELP ||
+       (help_line = my_help_line / sizeof(char *)) == 0)
+    {
+        help_line = 1;
+        active_help[0] = no_help[0];
+    }
+    else
+    {
+        if (help_line > MAX_HELP_LINE)
+            help_line = MAX_HELP_LINE;
+        for (k = 0; k < help_line; k++)
+            active_help[k] = my_help[k];
+    }
+
+    change = 1;
+    itemp = *idata;
+    sprintf(menu_buf, "%s ", label);
+    lcd_server(CLRLIN2, 0x01001100L, menu_buf);
+    sprintf(menu_buf, "=%6d", itemp);
+#ifdef LCD16x2
+    xcursor = 13;
+    lcd_server(CLRNONE,0x01071100L | xcursor,menu_buf);
+#else
+    xcursor = 17;
+    lcd_server(CLRNONE, 0x010b1100L | xcursor, menu_buf);
+#endif
+    k = check_5key(!modify, delay);
+    if (k == MENU || k == ITEM)
+        return k;
+    do
+    {
+        switch (k)
+        {
+            case UP:
+                if (modify)
+                    if ((itemp = itemp + change) > imax)
+                        itemp = imax;
+                break;
+            case DOWN:
+                if (modify)
+                    if ((itemp = itemp - change) < imin)
+                        itemp = imin;
+                break;
+            case FIELD:
+                if (modify)
+                {
+                    xcursor++;
+#ifdef  LCD16x2
+                    if(xcursor==14)
+                        xcursor= 9;
+                    switch(xcursor)
+                    {
+                        case 9:
+                            change = 10000;
+                            break;
+                        case 10:
+                            change = 1000;
+                            break;
+                        case 11:
+                            change = 100;
+                            break;
+                        case 12:
+                            change = 10;
+                            break;
+                        case 13:
+                            change = 1;
+                            break;
+                    }
+#else
+                    if (xcursor == 18)
+                        xcursor = 13;
+                    switch (xcursor)
+                    {
+                        case 13:
+                            change = 10000;
+                            break;
+                        case 14:
+                            change = 1000;
+                            break;
+                        case 15:
+                            change = 100;
+                            break;
+                        case 16:
+                            change = 10;
+                            break;
+                        case 17:
+                            change = 1;
+                            break;
+                    }
+#endif
+                }
+                break;
+            case ADD:        // ADD key
+            case DELETE:     // DELETE key
+                return k;
+            case MENU:
+            case ITEM:
+                if (*idata != itemp)
+                {
+                    *idata = itemp;
+                    up_beep(LONG_BEEP);
+                }
+                return k;
+            default:
+                break;
+        }
+        if (k != -1 || (itemp != *idata && ! modify))
+        {
+            if (!modify)
+            {
+                itemp = *idata;
+            }
+            sprintf(menu_buf, "%s ", label);
+            lcd_server(CLRLIN2, 0x01001100L, menu_buf);
+            sprintf(menu_buf, "=%6d", itemp);
+#ifdef LCD16x2
+            lcd_server(CLRNONE, 0x01071100L | xcursor,menu_buf);
+#else
+            lcd_server(CLRNONE, 0x010b1100L | xcursor, menu_buf);
+#endif
+        }
+        k = check_5key(! modify, delay);
+    } while (1);
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+_5key_boolean                <5KEY.LIB>
+
+SYNTAX: int _5key_boolean(char *label, char *bdata, char *my_help[],
+            char my_help_line, char modify, char delay)
+
+KEYWORDS: CPLC, Rugged_Giant, 5Key, display, char
+
+DESCRIPTION: 5key display for a boolean (char) variables.
+"label" is address of string label; "bdata" is address of boolean
+variable;  "my_help[]" is array of string messages;  "my_help_line" is
+2x the actual number of help lines.  "modify" is 1, if data are to be
+modified through the 5key system; 0, if data are just monitored.
+"delay" is the 5key task suspend period in number of ticks.
+
+RETURN VALUE: Value of menu key pressed.
+END DESCRIPTION **********************************************************/
+nodebug int _5key_boolean(char *label, char *bdata, char *my_help[],
+        char my_help_line, char modify, char delay)
+{
+    char btemp;
+    int  k;
+        
+    if (my_help == NO_HELP ||
+       (help_line = my_help_line / sizeof(char *)) == 0)
+    {
+        help_line = 1;
+        active_help[0] = no_help[0];
+    }
+    else
+    {
+        if (help_line > MAX_HELP_LINE)
+            help_line = MAX_HELP_LINE;
+        for (k = 0; k < help_line; k++)
+            active_help[k] = my_help[k];
+    }
+
+    btemp = *bdata;
+    sprintf(menu_buf, "%s ", label);
+    lcd_server(CLRLIN2, 0x01001100L, menu_buf);
+    sprintf(menu_buf, "=  %s", on_off[btemp]);
+#ifdef LCD16x2
+     lcd_server(CLRNONE,0x0107110dL,menu_buf);
+#else
+     lcd_server(CLRNONE, 0x010b1111L, menu_buf);
+#endif
+    k = check_5key(! modify, delay);
+    if (k == MENU || k == ITEM)
+        return k;
+    do
+    {
+        switch (k)
+        {
+            case UP:
+                if (modify)
+                    btemp = 1; // turn it on
+                break;
+            case DOWN:
+                if (modify)
+                    btemp = 0; // turn it off
+                break;
+            case FIELD:
+                break;
+            case ADD:        // ADD key
+            case DELETE:     //  DELETE key
+                return k;
+            case MENU:
+            case ITEM:
+                if (*bdata != btemp)
+                {
+                    *bdata = btemp;
+                    up_beep(LONG_BEEP);
+                }
+                return k;
+                break;
+            default:
+                break;
+        }
+
+        if (k != -1 || (btemp != *bdata && ! modify))
+        {
+            if (!modify)
+            {
+                btemp = *bdata;
+            }
+            sprintf(menu_buf, "%s ", label);
+            lcd_server(CLRLIN2, 0x01001100L, menu_buf);
+            sprintf(menu_buf, "=  %s", on_off[btemp]);
+#ifdef LCD16x2
+            lcd_server(CLRNONE,0x0107110dL,menu_buf);
+#else
+            lcd_server(CLRNONE, 0x010b1111L, menu_buf);
+#endif
+        }
+        k = check_5key(! modify, delay);
+    } while (1);
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+_5key_time                   <5KEY.LIB>
+
+SYNTAX: int _5key_time(char *label, char *timer, char *my_help[],
+            char my_help_line, char set_clock, char modify, char delay)
+
+KEYWORDS: CPLC, Rugged_Giant, 5Key, display, time
+
+DESCRIPTION: 5key display for a time string variable. String format is
+"hh:mm:ss".  "label" is address of string label; timer is address of
+time string; "my_help[]" is an array of string messages; "my_help_line"
+is 2x the actual number of help lines.  
+"modify" values: Lower Nibble =
+1, if data are to be modified through the 5key system; 0, if data are
+just monitored. Upper Nibble = 1, if real time clock is accessed; else
+0. "delay" is the 5key task suspend period in number of ticks.
+If "set_clock" is non-zero, the change of time on the LCD screen is
+reflected in the real time clock.
+
+RETURN VALUE: Value of menu key pressed.
+END DESCRIPTION **********************************************************/
+nodebug int _5key_time(char *label, char *timer, char *my_help[],
+        char my_help_line, char set_clock, char modify, char delay)
+{
+    char pbuf2[10];
+    char old_pbuf[10];
+    char xcursor;
+    char ichange;
+    int  k;
+    int  sec, min, hour;
+
+    if (my_help == NO_HELP || 
+    (help_line = my_help_line / sizeof(char *)) == 0)
+    {
+        help_line = 1;
+        active_help[0] = no_help[0];
+    }
+    else
+    {
+        if (help_line > MAX_HELP_LINE) 
+            help_line = MAX_HELP_LINE;
+        for (k = 0; k < help_line; k++) 
+            active_help[k] = my_help[k];
+    }
+
+    sprintf(menu_buf, "%s   ", label);
+    lcd_server(CLRLIN2, 0x01001100L, menu_buf);
+
+    if (!modify) 
+        strcpy(old_pbuf, timer);
+    if (set_clock) 
+        _5keygettime(timer);
+    pbuf2[0] = timer[0];     // get the hour
+    pbuf2[1] = timer[1];
+    pbuf2[2] = '\0';
+    hour = atoi(pbuf2);
+    pbuf2[0] = timer[3];     // get the minutes
+    pbuf2[1] = timer[4];
+    pbuf2[2] = '\0';
+    min = atoi(pbuf2);
+    pbuf2[0] = timer[6];     // get the secs
+    pbuf2[1] = timer[7];
+    pbuf2[2] = '\0';
+    sec = atoi(pbuf2);
+    sprintf(pbuf2, "%2d:%2d:%2d", hour, min, sec);
+    if (pbuf2[0] == ' ') 
+        pbuf2[0] = '0'; // get a zero in for display
+    if (pbuf2[3] == ' ') 
+        pbuf2[3] = '0'; // get a zero in for display
+    if (pbuf2[6] == ' ') 
+        pbuf2[6] = '0'; // get a zero in for display
+                             // pbuf2 hold the last time read
+
+    ichange = 1;
+#ifdef LCD16x2
+     xcursor = 8;
+     lcd_server(CLRNONE,0x01071100L | xcursor,pbuf2);
+#else
+        xcursor = 12;
+        lcd_server(CLRNONE, 0x010b1100L | xcursor, pbuf2);
+#endif
+    k = check_5key(! modify, delay);
+    if (k == MENU || k == ITEM) 
+        return k;
+    do
+    {
+        switch (k)
+        {
+#ifdef LCD16x2
+            case UP:
+                if(modify)
+                {
+                    if(xcursor > 12)
+                    {
+                        sec = sec + ichange;
+                        if(sec>59) 
+                            sec = 59; // limit to 59 secs
+                    }
+                    else if(xcursor < 12 && xcursor > 9)
+                    {
+                        min = min + ichange;
+                        if(min>59) 
+                            min = 59;
+                    }
+                    else
+                    {
+                        hour = hour + ichange;
+                        if(hour > 23) 
+                            hour = 23;
+                    }
+                }
+                break;
+            case DOWN:
+                if(modify)
+                {
+                    if(xcursor > 12)
+                    {
+                        sec = sec - ichange;
+                        if(sec<0)
+                            sec = 0; // limit to 0 secs
+                    }
+                    else if(xcursor < 12 && xcursor > 9)
+                    {
+                        min = min - ichange;
+                        if(min<0) 
+                            min = 0;
+                    }
+                    else
+                    {
+                        hour = hour - ichange;
+                        if(hour < 0)
+                            hour = 0;
+                    }
+                }
+                break;
+            case FIELD:
+                if(modify)
+                {
+                    xcursor++;
+                    if(xcursor>14)
+                        xcursor = 8;
+                    if(xcursor==9)
+                        xcursor = 10;
+                    if(xcursor==12)
+                        xcursor = 13;
+                    if(xcursor==8 || xcursor==11 || xcursor==14)
+                        ichange = 1;
+                    else if(xcursor==10 || xcursor==13)
+                        ichange=10;
+                }
+                break;
+#else
+            case UP:
+                if (modify)
+                {
+                    if (xcursor > 16)
+                    {
+                        sec = sec + ichange;
+                        if (sec > 59)
+                            sec = 59; // limit to 59 secs
+                    }
+                    else if (xcursor < 16 && xcursor > 13)
+                    {
+                        min = min + ichange;
+                        if (min > 59)
+                            min = 59;
+                    }
+                    else
+                    {
+                        hour = hour + ichange;
+                        if (hour > 23)
+                            hour = 23;
+                    }
+                }
+                break;
+            case DOWN:
+                if (modify)
+                {
+                    if (xcursor > 16)
+                    {
+                        sec = sec - ichange;
+                        if (sec < 0) 
+                            sec = 0; // limit to 0 secs
+                    }
+                    else if (xcursor < 16 && xcursor > 13)
+                    {
+                        min = min - ichange;
+                        if (min < 0) 
+                            min = 0;
+                    }
+                    else
+                    {
+                        hour = hour - ichange;
+                        if (hour < 0) 
+                            hour = 0;
+                    }
+                }
+                break;
+            case FIELD:
+                if (modify)
+                {
+                    xcursor++;
+                    if (xcursor > 18)
+                        xcursor = 12;
+                    if (xcursor == 13)
+                        xcursor = 14;
+                    if (xcursor == 16)
+                        xcursor = 17;
+                    if (xcursor == 12 || xcursor == 15 || xcursor == 18)
+                        ichange = 1;
+                    else if (xcursor == 14 || xcursor == 17)
+                        ichange = 10;
+                }
+                break;
+#endif
+            case ADD:        // ADD key
+            case DELETE:     // DELETE key
+                return k;
+            case MENU:
+            case ITEM:
+                if (set_clock && modify)
+                {
+                    sprintf(timer, "%2d:%2d:%2d", hour, min, sec);
+                    if (timer[0] == ' ') 
+                        timer[0] = '0'; // get a zero in
+                    if (timer[3] == ' ') 
+                        timer[3] = '0'; // get a zero in
+                    if (timer[6] == ' ') 
+                        timer[6] = '0'; // get a zero in
+                    if (strcmp(pbuf2, timer) != 0)
+                    {
+                        _5keysettime(timer);
+                        up_beep(LONG_BEEP);
+                    }
+                }
+                return k;
+            default: 
+                break;
+        }
+        if (k != -1 || (! modify && strcmp(old_pbuf, timer) != 0) ||
+            ( (k == -1) && set_clock) )         // 9-11-94
+        {
+            sprintf(menu_buf, "%s   ", label);
+            lcd_server(CLRLIN2, 0x01001100L, menu_buf);
+            if (!modify)
+            {
+                if(set_clock)                   // 9-11-94
+                    _5keygettime(timer);        // 9-11-94
+                else                            // 9-11-94
+                    strcpy(old_pbuf, timer);
+            }
+            else 
+                sprintf(timer, "%2d:%2d:%2d", hour, min, sec);
+            if (timer[0] == ' ') 
+                timer[0] = '0'; // get a zero in for display
+            if (timer[3] == ' ') 
+                timer[3] = '0'; // get a zero in for display
+            if (timer[6] == ' ') 
+                timer[6] = '0'; // get a zero in for display
+#ifdef LCD16x2
+            lcd_server(CLRNONE,0x01071100L | xcursor,timer);
+#else
+            lcd_server(CLRNONE, 0x010b1100L | xcursor, timer);
+#endif
+        }
+        k = check_5key(!modify, delay);
+    } while (1);
+}
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+_5key_date                   <5KEY.LIB>
+
+SYNTAX: int _5key_date(char *label, char *date, char *my_help[],
+            char my_help_line, char set_clock char modify, char delay)
+
+KEYWORDS: CPLC, Rugged_Giant, 5Key, display, date
+
+DESCRIPTION: 5key display for date string variables. String format is 
+"mm-dd-yy"; "label" is address of string label; "date" is address of 
+date string; "my_help[]" is an array of string messages.  "my_help_line" 
+is 2x the actual number of help lines.  "modify" values: Lower Nibble =
+1, if data are to be modified through the 5key system; 0, if data are
+just monitored. Upper Nibble = 1, if real time clock is accessed; else
+0. "delay" is the 5key task suspend period in number of ticks. If
+"set_clock" is non-zero, the routine changes the date of the real-time
+clock.
+
+RETURN VALUE: Returns the 5key menu key pressed.
+END DESCRIPTION **********************************************************/
+nodebug int _5key_date(char *label, char *date, char *my_help[],
+        char my_help_line, char set_clock, char modify, char delay)
+{
+    char pbuf2[10];
+    char old_pbuf[10];
+    char xcursor, ichange;
+    int  k;
+    int  month, day, year;
+    unsigned char ileap, daymax;
+
+    if (my_help == NO_HELP || 
+    (help_line = my_help_line / sizeof(char *)) == 0)
+    {
+        help_line = 1;
+        active_help[0] = no_help[0];
+    }
+    else
+    {
+        if (help_line > MAX_HELP_LINE) 
+            help_line = MAX_HELP_LINE;
+        for (k = 0; k < help_line; k++) 
+            active_help[k] = my_help[k];
+    }
+
+    sprintf(menu_buf, "%s   ", label);
+    lcd_server(CLRLIN2, 0x01001100L, menu_buf);
+
+    if (!modify) 
+        strcpy(old_pbuf, date);
+    if (set_clock) 
+        _5keygetdate(date);
+    pbuf2[0] = date[0];      // get the month
+    pbuf2[1] = date[1];
+    pbuf2[2] = '\0';
+    month    = atoi(pbuf2);
+    pbuf2[0] = date[3];      // get the day
+    pbuf2[1] = date[4];
+    pbuf2[2] = '\0';
+    day      = atoi(pbuf2);
+    pbuf2[0] = date[6];
+    pbuf2[1] = date[7];
+    pbuf2[2] = '\0';
+    year = atoi(pbuf2);
+    if (year < 80) year += 100;
+    sprintf(pbuf2, "%2d-%2d-%2d", month, day, year % 100);
+    if (pbuf2[0] == ' ') 
+        pbuf2[0] = '0'; // get a zero in for display
+    if (pbuf2[3] == ' ') 
+        pbuf2[3] = '0'; // get a zero in for display
+    if (pbuf2[6] == ' ') 
+        pbuf2[6] = '0'; // get a zero in for display
+                        // pbuf2 has the old date
+    ichange = 1;
+#ifdef LCD16x2
+    xcursor = 8;
+    lcd_server(CLRNONE,0x01071100L | xcursor,pbuf2);
+#else
+    xcursor = 12;
+    lcd_server(CLRNONE, 0x010b1100L | xcursor, pbuf2);
+#endif
+    k = check_5key(! modify, delay);
+    if (k == MENU || k == ITEM) 
+        return k;
+
+    if ((year % 4) == 0) 
+        ileap = 1;           // leap year
+    else 
+        ileap = 0;
+    if (month == 2) 
+        daymax = 28 + ileap;
+    else if (month == 4 || month == 6 || month == 9 || month == 11) 
+        daymax = 30;
+    else 
+        daymax = 31;
+
+    do
+    {
+        switch (k)
+        {
+#ifdef LCD16x2
+            case UP:
+                if(modify)
+                {
+                    if(xcursor > 12)
+                    {
+                        year= year + ichange;
+                        if(year > 179)
+                            year -= 100 ;
+                    }
+                    else if(xcursor < 12 && xcursor > 9)
+                    {
+                        day = day + ichange;
+                        if(day>daymax)
+                            day = daymax;
+                    }
+                    else
+                    {
+                        month = month + ichange;
+                        if(month>12)
+                            month = 12;
+                    }
+                }
+                break;
+            case DOWN:
+                if(modify)
+                {
+                    if(xcursor > 12)
+                    {
+                        year = year - ichange;
+                        if(year < 80)
+                            year += 100;
+                    }
+                    else if(xcursor < 12 && xcursor > 9)
+                    {
+                        day = day-ichange;
+                        if(day<1)
+                            day=1;
+                    }
+                    else
+                    {
+                        month = month - ichange;
+                        if(month<1)
+                            month=1;
+                    }
+                }
+                break;
+            case FIELD:
+                if(modify)
+                {
+                    xcursor++;
+                    if(xcursor>14)
+                        xcursor = 8;
+                    else if(xcursor==9)
+                        xcursor = 10;
+                    else if(xcursor==12)
+                        xcursor = 13;
+                    if(xcursor==14 || xcursor==11 || xcursor==8)
+                        ichange = 1;
+                    else 
+                        ichange = 10;
+
+                    if((year % 4)==0)
+                        ileap = 1; // leap year
+                    else 
+                        ileap = 0;
+                    if(month==2) 
+                        daymax = 28 + ileap;
+                    else if(month==4 || month==6 || month==9 || month==11)
+                        daymax=30;
+                    else 
+                        daymax = 31;
+                }
+                break;
+#else
+            case UP:
+                    if (modify)
+                    {
+                        if (xcursor > 16)
+                        {
+                            year = year + ichange;
+                            if (year > 179) 
+                                year -= 100;
+                        }
+                        else if (xcursor < 16 && xcursor > 13)
+                        {
+                            day = day + ichange;
+                            if (day > daymax) 
+                                day = daymax;
+                        }
+                        else
+                        {
+                            month = month + ichange;
+                            if (month > 12) 
+                                month = 12;
+                        }
+                    }
+                    break;
+                case DOWN:
+                    if (modify)
+                    {
+                        if (xcursor > 16)
+                        {
+                            year = year - ichange;
+                            if (year < 80) 
+                                year += 100;
+                        }
+                        else if (xcursor < 16 && xcursor > 13)
+                        {
+                            day = day - ichange;
+                            if (day < 1) 
+                                day = 1;
+                        }
+                        else
+                        {
+                            month = month - ichange;
+                            if (month < 1) 
+                                month = 1;
+                        }
+                    }
+                    break;
+                case FIELD:
+                    if (modify)
+                    {
+                        xcursor++;
+                        if (xcursor > 18) 
+                            xcursor = 12;
+                        else if (xcursor == 13) 
+                            xcursor = 14;
+                        else if (xcursor == 16) 
+                            xcursor = 17;
+
+                        if (xcursor == 18 || xcursor == 15 || xcursor == 12) 
+                            ichange = 1;
+                        else 
+                            ichange = 10;
+
+                        if ((year % 4) == 0) 
+                            ileap = 1; // leap year
+                        else 
+                            ileap = 0;
+
+                        if (month == 2) 
+                            daymax = 28 + ileap;
+                        else if (month == 4 || month == 6 || 
+                                 month == 9 || month == 11)
+                            daymax = 30;
+                        else 
+                            daymax = 31;
+                    }
+                    break;
+#endif
+            case ADD:        // ADD key
+            case DELETE:     // DELETE key
+                return k;
+            case MENU:
+            case ITEM:
+                if (set_clock && modify)
+                {
+                    sprintf(date, "%2d-%2d-%2d", month, day, year % 100);
+                    if (date[0] == ' ') 
+                        date[0] = '0'; // get a zero in
+                    if (date[3] == ' ') 
+                        date[3] = '0'; // get a zero in
+                    if (date[6] == ' ') 
+                        date[6] = '0'; // get a zero in
+                    if (strcmp(pbuf2, date) != 0)
+                    {
+                        _5keysetdate(date);
+                        up_beep(LONG_BEEP);
+                    }
+                }
+                return k;
+            default: 
+                break;
+        }
+
+        if (k != -1 || (!modify && strcmp(old_pbuf, date) != 0) ||
+            ( (k==-1) && set_clock ) )
+        {
+            sprintf(menu_buf, "%s   ", label);
+            lcd_server(CLRLIN2, 0x01001100L, menu_buf);
+            if (!modify)
+            {
+                if(set_clock)               // 9-11-94
+                    _5keygetdate(date);     // 9-11-94
+                else
+                    strcpy(old_pbuf, date); // 9-11-94
+            }
+            else 
+                sprintf(date, "%2d-%2d-%2d", month, day, year % 100);
+            
+            if (date[0] == ' ') 
+                date[0] = '0'; // get a zero in for display
+            if (date[3] == ' ') 
+                date[3] = '0'; // get a zero in for display
+            if (date[6] == ' ') 
+                date[6] = '0'; // get a zero in for display
+#ifdef LCD16x2
+            lcd_server(CLRNONE,0x01071100L | xcursor,date);
+#else
+            lcd_server(CLRNONE, 0x010b1100L | xcursor, date);
+#endif
+        }
+        k = check_5key(!modify, delay);
+    } while (1);
+
+}
+
+/*** BeginHeader _5key_menu, _5key_setmenu, _5key_init_item */
+
+int  _5key_setmenu(char *d_menu, char *d_item, char data_mode, 
+     void *data_ptr, float max_data, float min_data, char *my_help[], 
+     char help_line, char data_modify, char delay, char idisp);
+void _5key_init_item(_5KEYITEM * this_item, char *d_menu, char *d_item,
+     char data_mode, void *data_ptr, float max_data, float min_data,
+     char *my_help[], char help_line, _5KEYITEM *next_menu,
+     _5KEYITEM *next_item, char data_modify, char delay);
+int  _5key_server(_5KEYITEM *t_item);
+void _5key_menu(void);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+_5key_setmenu                <5KEY.LIB>
+
+SYNTAX: int _5key_setmenu(char *d_menu, char *d_item, char data_mode, 
+        void *data_ptr, float max_data, float min_data, char *my_help[], 
+        char help_line, char data_modify, char delay, char idisp);
+
+KEYWORDS: CPLC, Rugged_Giant, 5Key, item
+
+DESCRIPTION: Creates a 5key menu item and ties it to the 5key linked list 
+of items.  Items with the same menu label are grouped together. d_menu 
+points to a menu label.  d_item points to an item label.  data_mode is 0 
+for floats; 1 for int's; 2 for booleans (char's); 3 for time strings; and 
+4 for date strings.  The following macros can also be used: _5key_Fdata, 
+_5key_Idata, _5key_Bdata, _5key_Tdata, and _5key_Ddata.  data_ptr points 
+to the data.  max_data and min_data are the permitted upper and lower 
+limits for data.  my_help[] is a list of help strings.  help_line is twice 
+the actual number of help strings. data_modify is 1, if data are to be 
+modified through the 5key system; else 0, data are just to be monitored.
+"delay" is the number of suspend ticks for temporarily releasing the 5key 
+task.  "idisp" is 1, if data are to be displayed periodically when there 
+are no keypad and lcd activities; else 0.
+
+RETURN VALUE: 1, if a 5key item has been succesfully created and tied to 
+the linked list items;  -1, if there's no space available to create 
+the 5key item.  If neccessary, redefine the _5key_Max_Item to create more 
+item space.
+END DESCRIPTION **********************************************************/
+nodebug int _5key_setmenu(char  *d_menu, 
+                          char  *d_item, 
+                          char  data_mode,
+                          void  *data_ptr, 
+                          float max_data, 
+                          float min_data,
+                          char  *my_help[], 
+                          char  help_line, 
+                          char  data_modify,
+                          char  delay, 
+                          char  idisp)
+{
+    _5KEYITEM *top_menu;
+    _5KEYITEM *top_item;
+    _5KEYITEM *temp_item;
+
+    if (_5key_item_no == 0)
+    {
+        _5key_init_item(&item[0], d_menu, d_item, data_mode, data_ptr, 
+        max_data, min_data, my_help, help_line, &item[0], &item[0], 
+        data_modify, delay );
+
+        if (idisp) 
+            pd_item[_5key_disp_no++] = &item[0];
+
+        _5key_item_no++;
+        return 1;
+    }
+    temp_item = item;        // point to start of array
+    top_menu = item;         //
+    do
+    {
+        if (strcmp(temp_item->menu, d_menu) == 0)
+        {
+            top_item = temp_item;            // find the item location
+            top_menu = temp_item->next_menu; // all items under the same
+                                             // menu have the same next_menu
+            do
+            {
+                if (temp_item->next_item == top_item)
+                {
+                    if (_5key_item_no == _5key_Max_Item) 
+                        return -1;
+                    temp_item->next_item = &item[_5key_item_no];
+
+                    _5key_init_item(&item[_5key_item_no], d_menu, d_item, 
+                    data_mode, data_ptr, max_data, min_data, my_help, 
+                    help_line, top_menu, top_item, data_modify, delay);
+
+                    if (idisp && _5key_disp_no < 10)
+                        pd_item[_5key_disp_no++] = &item[_5key_item_no];
+                    _5key_item_no++;
+
+                    return 1;
+                }
+                else
+                {
+                    temp_item = temp_item->next_item;
+                }
+            } while (1);
+        }
+        else if (temp_item->next_menu != top_menu)
+        {
+            temp_item = temp_item->next_menu;
+        }
+        else
+        {
+            top_item = temp_item;
+            if (_5key_item_no == _5key_Max_Item) 
+                return -1;
+
+            _5key_init_item(&item[_5key_item_no], d_menu, d_item, data_mode,
+            data_ptr, max_data, min_data, my_help, help_line, top_menu,
+            &item[_5key_item_no], data_modify, delay);
+
+            if (idisp && _5key_disp_no < 10)
+                pd_item[_5key_disp_no++] = &item[_5key_item_no];
+
+            while (temp_item->next_item != top_item)
+            {
+                temp_item->next_menu = &item[_5key_item_no];
+                temp_item = temp_item->next_item;
+            }
+            temp_item->next_menu = &item[_5key_item_no];
+            _5key_item_no++;
+            return 1;
+        }
+    } while (1);
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+_5key_init_item              <5KEY.LIB>
+
+SYNTAX: int _5key_init_item(_5KEYITEM *thisitem, char *d_menu, char *d_item,
+        char data_mode, void *data_ptr, float max_data, float min_data,
+        char *my_help[], char help_line, _5KEYITEM *next_menu,
+        _5KEYITEM *next_item, char data_modify,char delay);
+
+KEYWORDS: CPLC, Rugged_Giant, 5Key, item
+
+DESCRIPTION: Called by _5key_setmenu to create a 5key item.  "thisitem"  
+points to a 5key item structure for the 5key link list.  "d_menu" points
+to a menu label.  "d_item" points to an item label.  "data_mode" is 0 for 
+floats; 1 for int's; 2 for boolean (char's); 3 for time strings; 4 for date 
+strings.  The following macros can also be used: _5key_Fdata, _5key_Idata, 
+_5key_Bdata, _5key_Tdata and _5key_Ddata.  "data_ptr" points to the data.  
+"max_data" is the upper limit and "min_data" the lower lim for the data.  
+"my_help[]" is a list of help strings.  "help_line" is twice the actual 
+number of help strings.  "data_modify" is 1, if data is to be modified 
+through the 5key system; else 0, if data are just monitored.  "delay" is 
+the 5key task suspend period "idisp" is 1, if data are to be displayed 
+periodically when there are no keypad and lcd activities; else 0.
+"next_menu" and "next_item" point to the next menu and item respectively.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void _5key_init_item(
+                             _5KEYITEM *this_item, 
+                             char  *d_menu, 
+                             char  *d_item, 
+                             char  data_mode, 
+                             void  *data_ptr, 
+                             float max_data, 
+                             float min_data, 
+                             char  *my_help[], 
+                             char  help_line, 
+                             _5KEYITEM *next_menu, 
+                             _5KEYITEM *next_item, 
+                             char  data_modify, 
+                             char  delay )
+{
+    this_item->menu = d_menu;
+    this_item->item = d_item;
+    this_item->data_mode = data_mode;
+
+    if (data_mode == _5key_Tdata || data_mode == _5key_Ddata)
+        this_item->ptr.string_data = data_ptr;
+    else if (data_mode == _5key_Fdata) 
+        this_item->ptr.f_data = (float*)data_ptr;
+    else if (data_mode == _5key_Idata) 
+        this_item->ptr.i_data = (int*)data_ptr;
+    else if (data_mode == _5key_Bdata) 
+        this_item->ptr.b_data = data_ptr;
+
+    this_item->max_data  = max_data;
+    this_item->min_data  = min_data;
+    this_item->next_menu = next_menu;
+    this_item->next_item = next_item;
+    this_item->my_help   = my_help;
+    this_item->my_help_line = help_line;
+    this_item->data_modify  = data_modify;
+    this_item->delay = delay;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+_5key_server                 <5KEY.LIB>
+
+SYNTAX: int _5key_server(_5KEYITEM *t_item);
+
+KEYWORDS: CPLC, Rugged_Giant, 5Key, display, item
+
+DESCRIPTION: Service a 5key item for display to the LCD and actions.
+
+RETURN VALUE: Returns any of the 5key menu key pressed.
+END DESCRIPTION **********************************************************/
+nodebug int _5key_server(_5KEYITEM *t_item)
+{
+    int ireturn;
+
+    lcd_server(CLRBOTH, 0L, t_item->menu);
+    switch (t_item->data_mode)
+    {
+        case _5key_Bdata:
+            ireturn = _5key_boolean(t_item->item, t_item->ptr.b_data,
+            t_item->my_help, t_item->my_help_line, t_item->data_modify,
+            t_item->delay );
+            break;
+        case _5key_Tdata:
+            ireturn = _5key_time(t_item->item, t_item->ptr.string_data,
+            t_item->my_help, t_item->my_help_line,
+            (t_item->data_modify) & 0xf0,
+            (t_item->data_modify) & 0x0f, t_item->delay );
+            break;
+        case _5key_Ddata:
+            ireturn = _5key_date(t_item->item, t_item->ptr.string_data,
+            t_item->my_help, t_item->my_help_line,
+            (t_item->data_modify) & 0xf0,
+            (t_item->data_modify) & 0x0f, t_item->delay );
+            break;
+        case _5key_Fdata:
+            ireturn = _5key_float(t_item->item, t_item->ptr.f_data,
+            t_item->max_data, t_item->min_data, t_item->my_help,
+            t_item->my_help_line, t_item->data_modify, t_item->delay );
+            break;
+        case _5key_Idata:
+            ireturn = _5key_integer(t_item->item, t_item->ptr.i_data,
+            (int)t_item->max_data, (int) t_item->min_data, t_item->my_help,
+            t_item->my_help_line, t_item->data_modify, t_item->delay );
+    }
+    return ireturn;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+_5key_menu                   <5KEY.LIB>
+
+SYNTAX: void _5key_menu(void)
+
+KEYWORDS: CPLC, Rugged_Giant, 5Key, task
+
+DESCRIPTION: Runs the 5key system using the link list created with 
+_5key_setmenu().  Has to be run as a separate real time kernel task.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void _5key_menu(void)
+{
+    _5KEYITEM *this_item;
+    int  k;
+
+    this_item = &item[0];
+    while (1)
+    {
+        k = _5key_server(this_item);
+        if (k == MENU) 
+            this_item = this_item->next_menu;
+        else if (k == ITEM) 
+            this_item = this_item->next_item;
+    }
+}
+
+/*** Beginheader _5key_setmsg, _5key_setalarm, _5key_setfunc */
+
+void _5key_setfunc(int (*function1)(), int (*function2)(),
+     int (*function3)(), int (*function4)() );
+void _5key_setalarm(int (*function1) (), int (*function2)(),
+     int (*function3)(), int (*function4)() );
+int  _5key_setmsg(char message_no, char *the_message);
+
+/*** Endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+_5key_setfunc                <5KEY.LIB>
+
+SYNTAX: void _5key_setfunc(int(*function1)(), int(*function2)(),
+             int(*function3)(), int(*function4)() );
+
+KEYWORDS: CPLC, Rugged_Giant, 5Key
+
+DESCRIPTION: Assigns service functions to function keys F1 - F4.
+Pass NO_FUNCTION if no service function is desired.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void _5key_setfunc(int (*function1)(), int (*function2)(),
+             int (*function3)(), int (*function4)())
+{
+    func1 = function1;
+    func2 = function2;
+    func3 = function3;
+    func4 = function4;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+_5key_setalarm               <5KEY.LIB>
+
+SYNTAX: void _5key_setalarm(int(*function1)(), int(*function2)(), 
+             int(*function3)(), int(*function4)() );
+
+KEYWORDS: CPLC, Rugged_Giant, 5Key, alarm
+
+DESCRIPTION: Assigns service functions to the special software alarm 
+variables ALARM1 - ALARM4.  The 5 key system will service the respective 
+function when the corresponding alarm variable is set to 1.  Pass 
+NO_FUNCTION, if no service function desired.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void _5key_setalarm(int (*function1)(), int (*function2)(),
+             int (*function3)(), int (*function4)())
+{
+    alarm_func1 = function1;
+    alarm_func2 = function2;
+    alarm_func3 = function3;
+    alarm_func4 = function4;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+_5key_setmsg                 <5KEY.LIB>
+
+SYNTAX: int _5key_setmsg(char message_no, char *the_message);
+
+KEYWORDS: CPLC, Rugged_Giant, 5Key
+
+DESCRIPTION: Assigns a message string at as many as 10 locations of the 
+message bulletin.  Message locations are specified by the "message_no" 
+(0 to 9).  "the_message" points to a message string.
+
+RETURN VALUE: 1, if a message is succesfully incorporated into the 
+bulletin;  -1, if message_no is greater than 9.
+END DESCRIPTION **********************************************************/
+nodebug int _5key_setmsg(char message_no, char *the_message)
+{
+    if (message_no > 9)
+        return -1;          // can only have message 0-9
+    disp_message[message_no] = the_message;
+    return 1;
+}
+

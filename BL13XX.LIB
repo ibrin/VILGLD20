@@ -1,0 +1,802 @@
+
+/********************************************************************
+  
+      PRO_ASYN.LIB
+                                               
+      Protocol Switch SCC driver library
+
+   There is no hardware reset designed for Protocol Switch.
+      
+   Always use software reset SCC at the very beginning of a user program.
+   
+   SCC generates interrupt to SmartBlock INT1. Before using SCC in a 
+   interrupt driven operation. You must enable INT1 from the CPU ITC 
+   register:
+   
+            outport(ITC,0x02|inport(ITC));
+   
+   There is no interrupt acknowledge hardware designed for Protocol Switch.
+   Interrupt operation is using Interrupt Without Acknowledge mode
+   In the INT1 service routine, RR2 should always be read from channel b to 
+   get the vector.
+   
+   The vector is not latched so that the next read could produce a
+   different vector if another interrupt occurs. Interrupt routine 
+   must decode the IP and clear the condition. When a IP is cleared, 
+   RR2 can be read again.  This allows interrupt routine to clear all IPs 
+   within one interrupt to the CPU.
+
+***********************************************************************/   
+
+/*** BeginHeader */
+#if BOARD_TYPE!=SMARTBLOCK
+#error "SmartBlock only."
+#endif
+/*** EndHeader */
+
+
+/*** BeginHeader ***/
+
+/* global defines for I/O ports and vectors */
+
+/* SCC */
+#define SCCCB  0xA0        /* SCC port B control register */
+#define SCCCA  0xA1        /* SCC port A control register */
+#define SCCDB  0xA2        /* SCC port B data register */
+#define SCCDA  0xA3        /* SCC port A data register */
+
+#define EN12   0xB0        /* Enable transmitter SCC Port A */
+#define EN34   0xC0        /* Enable transmitter SCC Port B */
+
+/* LED address */
+#define LD1 0xD0           /* LD1 */
+
+/* PIO */
+#define PIOA_1_VEC 0x12    /* PIO vectors */
+#define PIOB_1_VEC 0x14
+#define PIOA_2_VEC 0x32  
+#define PIOB_2_VEC 0x34
+
+#define PIODA_1 0x80       /* PIO addresses */
+#define PIODB_1 0x81
+#define PIOCA_1 0x82
+#define PIOCB_1 0x83
+#define PIODA_2 0x90
+#define PIODB_2 0x91
+#define PIOCA_2 0x92
+#define PIOCB_2 0x93
+
+/* Shadow registers */
+
+char scc0_wreg0;        /* state of SCC0 registers   */
+char scc0_wreg1;
+char scc0_wreg2;
+char scc0_wreg3;
+char scc0_wreg4;
+char scc0_wreg5;
+char scc0_wreg6;
+char scc0_wreg7;
+char scc0_wreg8;
+char scc0_wreg9;
+char scc0_wreg10;
+char scc0_wreg11;
+char scc0_wreg12;
+char scc0_wreg13;
+char scc0_wreg14;
+char scc0_wreg15;
+
+char scc1_wreg0;        /* state of SCC1 registers   */
+char scc1_wreg1;
+char scc1_wreg2;
+char scc1_wreg3;
+char scc1_wreg4;
+char scc1_wreg5;
+char scc1_wreg6;
+char scc1_wreg7;
+char scc1_wreg8;
+char scc1_wreg9;
+char scc1_wreg10;
+char scc1_wreg11;
+char scc1_wreg12;
+char scc1_wreg13;
+char scc1_wreg14;
+char scc1_wreg15;
+
+/*** EndHeader ***/
+
+
+/*** BeginHeader scc_rst */
+
+int scc_rst (char c);
+
+/*** EndHeader */
+
+/*    scc_rst(char ch)                                               */
+/*       Reset SCC by software                                       */
+/*       There is no hardware reset on SCC of IAB212 Protocol Switch */
+/*       ch = 0      SCC CHA                                         */
+/*       ch = 1      SCC CHB                                         */
+/*       ch = 2      CHA+CHB                                         */    
+/*    return 1    errors in setting ch                               */
+
+nodebug int scc_rst (char c)
+{
+   if (c == 0)
+   {
+      outport (SCCCA, 0x09); /* write reg. WR9  */
+      outport (SCCCA, 0x80); /* reset ch a  */
+      return (0);
+   }
+   else if (c == 1)
+   {
+      outport (SCCCA, 0x09); /* write reg. WR9  */
+      outport (SCCCA, 0x40); /* reset ch b  */
+      return (0);
+   }
+   else if (c == 2)
+   {
+      outport (SCCCA, 0x09); /* write reg. WR9  */
+      outport (SCCCA, 0xC0); /* reset ch a and ch b  */
+      return(0);
+   }
+   else
+      return(1);
+}
+
+
+/*** BeginHeader asyn_init_scc0 */
+
+int asyn_init_scc0 (char mode, char baud);      /* initialize */
+
+/*** EndHeader */
+
+/*
+    Async Initialization Driver for SCC serial port 
+
+   *buf is a pointer to buffer for sending or receiving chars
+
+   *count is a pointer to count of characters, counted to zero
+    as characters are received/sent. Operation over when reaches zero.
+
+   baud - baud rate expressed in units of 1200 baud. (8 == 9600 baud )
+
+   mode - a bit code which determines:
+
+      bit 0 -  0- 1 stop bit
+               1- 2 stop bits
+      bit 1 -  0- no parity
+               1- parity on
+      bit 2 -  0- 7 bit data
+               1- 8 bit data
+      bit 3 -  0- even parity
+               1- odd parity
+
+      bit 4, bit 5      clock rate
+         0     0           1x mode     clock rate = data rate
+         1     0           16x mode    clock rate = 16 times data rate
+         0     1           32x mode    clock rate = 32 times data rate
+         1     1           64x mode    clock rate = 64 times data rate
+
+      bit 6 -  0- use system clock
+               1- use xtal 7.3728 MHz ? note: baud rate will be ?
+   Note: baud rate calculation will be based on CLOCKSPEED=?
+
+      bit 7 -  0- no auto enable, /CTS and /DCD are merely inputs (RR0)
+               1- auto enable, /CTS is transmit enable
+                               /DCD is receive enable
+
+   SCC registers can be programed as following: 
+      1 = set to one,      0 = reset to zero
+      x = user defined     s = same as previously programed
+        
+   Part1. Modes and Constants
+      wr9   11000000    hardware reset
+      wr0   000000xx    select shift mode(8030 only)
+      wr4   xxxxxxxx    Tx/Rx con, Async or Sync mode
+      wr1   0xx00x00    select W/REQ 
+      wr2   xxxxxxxx    Int. Vector
+      wr3   xxxxxxx0    Rx control
+      wr5   xxxx0xxx    Tx control
+      wr6   xxxxxxxx    Program sync character
+      wr7   xxxxxxxx    Program sync character
+      wr9   000x0xxx    Int. control
+      wr10  xxxxxxxx    miscellaneous control
+      wr11  xxxxxxxx    clock control
+      wr12  xxxxxxxx    timer constant lower byte
+      wr13  xxxxxxxx    timer constant high byte
+      wr14  xxxxxxx0    miscellaneous control
+      wr14  xxxsssss    commands
+
+   Part2. Enables
+      wr14  000ssss1    Baud rate enable
+      wr3   sssssss1    Rx enable
+      wr5   ssss1sss    Tx enable
+      wr0   10000000    reset Tx CRG
+      wr1   xss00s00    DMA enable
+
+   Part3. Interrupt Status
+      wr15  xxxxxxxx    enable External/Status
+      wr0   00010000    reset external status
+      wr0   00010000    reset external status twice
+      wr1   sssxxsxx    enable Rx, Tx and Ext/Status
+      wr9   00ssxsss    enable Master Int. Enable, software int. ack.
+
+*/
+
+nodebug int asyn_init_scc0 (char mode, char baud)
+{
+   extern int CLOCKSPEED;  /* 7680 for 18.432 MHz crystal   */
+   int pclk, timec, clkrate;
+
+   pclk = CLOCKSPEED;     /* system clock or RTxc in unit of 1200  */
+/*    CLKRATE is x1, x16, x32, x64 as selected in Write reg.4 bit6+bit7 */
+   clkrate = 1;
+
+   if (BIT (&mode, 4) && !BIT (&mode, 5))
+      clkrate = 16;
+
+   if (!BIT (&mode, 4) && BIT (&mode, 5))
+      clkrate = 32;
+
+   if (BIT (&mode, 4) && BIT (&mode, 5))
+      clkrate = 64;
+
+/*    time constant = pclk / 2(baud) * (clkrate) - 2         */
+   timec = (pclk / (2 * baud * clkrate)) - 2;    /*  set baud rate time constant  */
+
+   scc_rst(0);
+
+   scc0_wreg4 = 0x04;
+
+   if (BIT (&mode, 0))
+      SET (&scc0_wreg4, 3); /* stop bits */
+
+   if (BIT (&mode, 1))
+      SET (&scc0_wreg4, 0); /* parity enable */
+
+   if (BIT (&mode, 3))
+      SET (&scc0_wreg4, 1); /* parity even/odd */
+
+   if (BIT (&mode, 4))
+      SET (&scc0_wreg4, 6); /* x1 x16 x32 or x64 */
+
+   if (BIT (&mode, 5))
+      SET (&scc0_wreg4, 7);
+
+   scc0_wreg1 = 0x40;     /* no dma operation */
+   scc0_wreg2 = 0x00;     /* INT. vector ? */
+   scc0_wreg3 = 0x40;     /* Rx 7 bits, no Auto */
+   
+   if (BIT (&mode, 2))
+      SET (&scc0_wreg3, 7);   /* Rx 8 bits */
+   
+   if (BIT (&mode, 7))
+      SET (&scc0_wreg3, 5);   /* auto enable transmit by /CTS */
+                              /* auto enable receive by /DCD   */
+                           
+   scc0_wreg5 = 0x20;         /* Tx 7 bits, disabled */
+   if (BIT (&mode, 2))
+      SET(&scc0_wreg5,6);     /* Tx 8 bits */
+      
+   scc0_wreg9 = 0x03;         /* VIS V1-V3, MIE disable */
+   scc0_wreg10 = 0x00;        /* NRZ */
+   scc0_wreg11 = 0x56;        /* no xtal, Tx,Rx,RTxC = BRG  */
+   
+   if (BIT (&mode, 6))
+      SET (&scc0_wreg11, 7);  /* xtal */
+
+   scc0_wreg12 = timec;       /* timer low byte=028 for 9600 */
+   scc0_wreg13 = timec >> 8;  /* timer high byte */
+   scc0_wreg14 = 0x03;        /* No DPLL, BRG in=PCLK, BRG on, /DTR */
+
+   if (BIT (&mode, 6))
+      RES (&scc0_wreg14, 1);  /* BRG in=xtal */
+
+   scc0_wreg15 = 0x00;        /* no Ext int. */
+
+/* write registers   */
+   outport (SCCCA, 0x09);        /* write reg. WR9  */
+   outport (SCCCA, scc0_wreg9);  /* reset ch a, No INT.  */
+   outport (SCCCA, 0x01);        /*  write reg. WR1  */
+   outport (SCCCA, scc0_wreg1);
+   outport (SCCCA, 0x04);        /* write reg. WR4  */
+   outport (SCCCA, scc0_wreg4);
+   outport (SCCCA, 0x03);        /* write reg. WR3  */
+   outport (SCCCA, scc0_wreg3);
+   outport (SCCCA, 0x05);        /* write reg. WR5  */
+   outport (SCCCA, scc0_wreg5);
+   outport (SCCCA, 0x0a);        /* write reg. WR10  */
+   outport (SCCCA, scc0_wreg10);
+   outport (SCCCA, 0x0b);        /* write reg. WR11  */
+   outport (SCCCA, scc0_wreg11);
+   outport (SCCCA, 0x0c);        /* write reg. WR12  */
+   outport (SCCCA, scc0_wreg12);
+   outport (SCCCA, 0x0d);        /* write reg. WR13  */
+   outport (SCCCA, scc0_wreg13);
+   outport (SCCCA, 0x0e);        /* write reg. WR14  */
+   outport (SCCCA, scc0_wreg14);
+   outport (SCCCA, 0x0f);        /* write reg. WR15  */
+   outport (SCCCA, scc0_wreg15);
+}
+
+
+/*** BeginHeader asyn_init_scc1 */
+
+int asyn_init_scc1 (char mode, char baud);      /* initialize */
+
+/*** EndHeader */
+
+/* Specifications of Mode and Baud same as asyn_init_scc0 (mode, baud) */
+
+nodebug int asyn_init_scc1(char mode, char baud)
+{
+   extern int CLOCKSPEED;  /* 7680 for 18.432 MHz crystal   */
+   int pclk, timec, clkrate;                             
+
+   pclk = CLOCKSPEED;     /* system clock or RTxc in unit of 1200  */
+/*    CLKRATE is x1, x16, x32, x64 as selected in Write reg.4 bit6+bit7 */
+   clkrate = 1;
+
+   if (BIT (&mode, 4) && !BIT (&mode, 5))
+      clkrate = 16;
+      
+   if (!BIT (&mode, 4) && BIT (&mode, 5))
+      clkrate = 32;
+      
+   if (BIT (&mode, 4) && BIT (&mode, 5))
+      clkrate = 64;
+
+/*    time constant = pclk/2(baud)*(clkrate) - 2         */
+
+   timec = (pclk / (2 * baud * clkrate)) - 2;    /*  set baud rate time constant   */
+   scc_rst (0);
+ 
+   scc1_wreg4 = 0x04;
+   if (BIT (&mode, 0))
+      SET (&scc1_wreg4, 3);   /* stop bits */
+      
+   if (BIT (&mode, 1))
+      SET (&scc1_wreg4, 0);   /* parity enable */
+
+   if (BIT (&mode, 3))
+      SET (&scc1_wreg4, 1);   /* parity even/odd */
+
+   if (BIT (&mode, 4))
+      SET (&scc1_wreg4, 6);   /* x1 x16 x32 or x64 */
+
+   if (BIT (&mode, 5))
+      SET (&scc1_wreg4, 7);
+
+   scc1_wreg1 = 0x40;         /* no dma function */
+   scc1_wreg2 = 0x00;         /* INT. vec
+   tor ? */
+   scc1_wreg3 = 0x40;         /* Rx, no Auto */
+
+   if (BIT (&mode, 2))
+      SET (&scc1_wreg3, 7);   /* Rx 8 bits */
+
+   if (BIT (&mode, 7))
+      SET (&scc1_wreg3, 5);   /* auto enable transmit by /CTS */
+                              /* auto enable receive by /DCD   */
+
+   scc1_wreg5 = 0x20;         /* Tx disabled */
+   if (BIT (&mode, 2))
+      SET (&scc1_wreg5, 6);   /* Tx 8 bits */
+
+   scc1_wreg9 = 0x03;         /* VIS V1-V3, MIE disable */
+   scc1_wreg10 = 0x00;        /* NRZ */
+   scc1_wreg11 = 0x56;        /* no xtal, Tx,Rx,RTxC = BRG  */
+   if (BIT (&mode, 6))
+      SET (&scc1_wreg11, 7);  /* xtal */
+
+   scc1_wreg12 = timec;       /* timer low byte=028 for 9600 */
+   scc1_wreg13 = timec >> 8;  /* timer high byte */
+   scc1_wreg14 = 0x03;        /* No DPLL, BRG in=PCLK, BRG on, /DTR */
+
+   if (BIT (&mode, 6))
+      RES (&scc1_wreg14, 1);  /* BRG in=xtal */
+   scc1_wreg15 = 0x00;        /* no Ext int. */
+
+/* write registers   */
+   outport (SCCCB, 0x09);        /* write reg. WR9  */
+   outport (SCCCB, scc1_wreg9);  /* reset ch a, No INT.  */
+   outport (SCCCB, 0x01);        /* write reg. WR1  */
+   outport (SCCCB, scc1_wreg1);
+   outport (SCCCB, 0x04);        /* write reg. WR4  */
+   outport (SCCCB, scc1_wreg4);
+   outport (SCCCB, 0x03);        /* write reg. WR3  */
+   outport (SCCCB, scc1_wreg3);
+   outport (SCCCB, 0x05);        /* write reg. WR5  */
+   outport (SCCCB, scc1_wreg5);
+   outport (SCCCB, 0x0a);        /* write reg. WR10  */
+   outport (SCCCB, scc1_wreg10);
+   outport (SCCCB, 0x0b);        /* write reg. WR11  */
+   outport (SCCCB, scc1_wreg11);
+   outport (SCCCB, 0x0c);        /* write reg. WR12  */
+   outport (SCCCB, scc1_wreg12);
+   outport (SCCCB, 0x0d);        /* write reg. WR13  */
+   outport (SCCCB, scc1_wreg13);
+   outport (SCCCB, 0x0e);        /* write reg. WR14  */
+   outport (SCCCB, scc1_wreg14);
+   outport (SCCCB, 0x0f);        /* write reg. WR15  */
+   outport (SCCCB, scc1_wreg15);
+}
+
+
+/*** BeginHeader asyn_send_scc0, asyn_rec_scc0, asyn_kill_scc0, asyn_send_scc1, asyn_rec_scc1, asyn_kill_scc1 */
+
+int asyn_send_scc0 (char *buf, char * count);   /* interrupt send */
+int asyn_rec_scc0 (char *buf, char *count);    /* interrupt receive */
+int asyn_kill_scc0();                          /* abort all */
+
+int asyn_send_scc1 (char *buf, char * count);   /* interrupt send */
+int asyn_rec_scc1 (char *buf, char *count);    /* interrupt receive */
+int asyn_kill_scc1 ();                          /* abort all */
+
+/*** EndHeader */
+
+char *scc0_send_count;    
+char *scc0_send_buf;
+char *scc0_rec_count;
+char *scc0_rec_buf;
+
+char *scc1_send_count;
+char *scc1_send_buf;
+char *scc1_rec_count;
+char *scc1_rec_buf;
+
+nodebug int asyn_send_scc0 (char *buf, char *count)
+{
+   static char var;
+   
+   scc0_send_buf = buf;
+   scc0_send_count = count;
+
+   intoff (&var);                   /* disable interrupts if on */
+
+   SET (&scc0_wreg1, 1);            /* int on Tx */
+   scc0_wreg5 = scc0_wreg5 | 0x88;  /* Tx enable */
+   SET (&scc0_wreg9, 3);            /* Master int. enable   */
+
+   outport (SCCCA, 0x05);           /* write reg. WR5  */
+   outport (SCCCA, scc0_wreg5);
+   outport (SCCCA, 0xe8);           /* write reg. WR0, reset Tx  */
+   outport (SCCCA, 0x90);       /* write reg. WR0, reset Tx CRC, EXT int.  */
+   outport (SCCCA, 0x90);           /* write reg. WR0  */
+   outport (SCCCA, 0x01);           /* write reg. WR1  */
+   outport (SCCCA, scc0_wreg1);
+   outport (SCCCA, 0x09);           /* write reg. WR9  */
+   outport (SCCCA, scc0_wreg9);
+
+   doint ();                          /* give interrupts a chance */
+
+   /* send the first character */
+   outport (SCCDA, *scc0_send_buf++); /* send next character */
+   --*scc0_send_count;                /* dec count of characters */
+   inton (&var);                      /* restore interrupt state */
+}
+
+nodebug int asyn_rec_scc0 (char *buf, char *count)
+{
+   static char var;
+   
+   scc0_rec_buf = buf;
+   scc0_rec_count = count;
+   
+   intoff(&var);                    /* disable interrupts if on */
+   
+   SET (&scc0_wreg1, 4);            /* int. on all Rx */
+   SET (&scc0_wreg3, 0);            /* Rx enable */
+   SET (&scc0_wreg9, 3);            /* Master int. enable   */
+   
+   outport (SCCCA, 0x03);           /* write reg. WR3  */
+   outport (SCCCA, scc0_wreg3);
+   outport (SCCCA, 0x70);           /* write reg. WR0, reset Rx, error  */
+   outport (SCCCA, 0x10);           /* write reg. WR0, reset EXT int.  */
+   outport (SCCCA, 0x10);           /* write reg. WR0  */
+   outport (SCCCA, 0x01);           /* write reg. WR1  */
+   outport (SCCCA, scc0_wreg1);
+   outport (SCCCA, 0x09);           /* write reg. WR9  */
+   outport (SCCCA, scc0_wreg9);
+   inton (&var);
+}
+
+/* disable SCC port 0 */
+
+nodebug int asyn_kill_scc0()
+{
+   scc_rst (0);                     /* reset channel  */
+}
+
+nodebug int asyn_send_scc1 (char *buf, char *count)
+{
+   static char var;
+   
+   scc1_send_buf = buf;
+   scc1_send_count = count;
+
+   intoff (&var);                   /* disable interrupts if on */
+
+   SET (&scc1_wreg1, 1);            /* int on Tx */
+   scc1_wreg5 = scc1_wreg5 | 0x88;  /* Tx enable */
+   SET (&scc1_wreg9, 3);            /* Master int. enable   */
+
+   outport (SCCCB, 0x05);           /* write reg. WR5  */
+   outport (SCCCB, scc1_wreg5);
+   outport (SCCCB, 0xe8);           /* write reg. WR0, reset Tx  */
+   outport (SCCCB, 0x90);        /* write reg. WR0, reset Tx CRC, EXT int.  */
+   outport (SCCCB, 0x90);           /* write reg. WR0  */
+   outport (SCCCB, 0x01);           /* write reg. WR1  */
+   outport (SCCCB, scc1_wreg1);
+   outport (SCCCB, 0x09);           /* write reg. WR9  */
+   outport (SCCCB, scc1_wreg9);
+   doint ();                        /* give interrupts a chance */
+
+   /* send the first character */
+   outport (SCCDB, *scc1_send_buf++); /* send next character */
+   --*scc1_send_count;              /* dec count of characters */
+   inton (&var);                    /* restore interrupt state */
+}
+
+nodebug int asyn_rec_scc1( char *buf, char *count)
+{
+   static char var;
+
+   scc1_rec_buf = buf;
+   scc1_rec_count = count;
+
+   intoff(&var);                 /* disable interrupts if on */
+
+   SET (&scc1_wreg1, 4);         /* int. on all Rx */
+   SET (&scc1_wreg3, 0);         /* Rx enable */
+   SET (&scc1_wreg9, 3);         /* Master int. enable   */
+
+   outport (SCCCB, 0x03);        /* write reg. WR3  */
+   outport (SCCCB, scc1_wreg3);
+   outport (SCCCB, 0x70);        /* write reg. WR0, reset Rx, error  */
+   outport (SCCCB, 0x10);        /* write reg. WR0, reset EXT int.  */
+   outport (SCCCB, 0x10);        /* write reg. WR0  */
+   outport (SCCCB, 0x01);        /* write reg. WR1  */
+   outport (SCCCB, scc1_wreg1);
+   outport (SCCCB, 0x09);        /* write reg. WR9  */
+   outport (SCCCB, scc1_wreg9);
+
+   inton (&var);
+}
+
+/* disable SCC port 1 */
+
+nodebug int asyn_kill_scc1()
+{
+   scc_rst (1);       /* reset channel  */
+}
+
+#INT_VEC INT1_VEC sccint
+
+nodebug interrupt ret sccint()
+{
+   int noip, vec;
+
+   noip = 1;
+
+   while (noip)
+   {
+      outport (SCCCB, 0x02); /* read CHB rr2 modified int. vector */
+      vec = inport (SCCCB);     
+      
+      /* reset IUS, always last operation in an interrupt service routing */ 
+      /* allow use internal daisy chain and lower priority int.  */
+
+      vec = vec & 0x0e;
+      /* vec=0x06 V3, V2, V1=011, if no interrupt pending   */
+
+      switch (vec)
+      {
+         case 0x0c:
+            charx();
+            break;
+
+         case 0x08:
+            chatx();
+            break;
+
+         case 0x0a:
+            chaex();
+            break;
+
+         case 0x00:
+            chbtx();
+            break;
+
+         case 0x04:
+            chbrx();
+            break;
+
+         case 0x02:
+            chbex();
+            break;
+
+         case 0x06:
+            noip = 0;
+            break;
+
+         case 0x0e:
+            special();
+            break;
+
+         default:
+            noip = 0;
+      }
+   }
+   return;
+}
+
+/* interrupt service routines */
+
+nodebug int chatx()
+{
+   if (! *scc0_send_count)
+   {
+      scc0_wreg5 = scc0_wreg5 & 0x70;    /* Tx disable */
+      RES (&scc0_wreg1, 1);              /* Tx int. disable */
+      outport (SCCCA, 0x01);             /* write reg. WR1  */
+      outport (SCCCA, scc0_wreg1);
+      outport (SCCCA, 0x05);             /* write reg. WR5  */
+      outport (SCCCA, scc0_wreg5);
+      outport (SCCCA, 0xe8);             /* reset Tx */
+   }
+   else
+   {
+      outport (SCCDA, *scc0_send_buf++);  /* send next character */
+                                          /* clear TX INT Pending */
+      --*scc0_send_count;                 /* dec count of characters */
+   }
+
+   /* reset highest IUS, allow lower-priority INTs */
+   outport(SCCCA,0x38);
+}
+
+nodebug int chaex()
+{
+   outport (SCCCA, 0x10);     /* reset ext/status interrupts */   
+}
+
+nodebug int charx()
+{
+   *scc0_rec_buf++ = inport (SCCDA); /* input character */
+   
+   if (! --*scc0_rec_count)          /* count down, if done disable */
+   {
+      RES (&scc0_wreg3, 0);  /* Rx disable */
+      RES (&scc0_wreg1, 3);  /* Rx int. disable */
+      RES (&scc0_wreg1, 4);  /* Rx int. disable */
+
+      outport (SCCCA, 0x01); /* write reg. WR1  */
+      outport (SCCCA, scc0_wreg1);
+      outport (SCCCA, 0x03); /* write reg. WR3  */
+      outport (SCCCA, scc0_wreg3);
+      outport (SCCCA, 0x70); /* reset error, Rx CRC */
+   }
+   
+   /* reset highest IUS, allow lower-priority INTs */
+   outport(SCCCA, 0x38);
+}
+
+nodebug int chbtx()
+{
+   if (! *scc1_send_count)
+   {
+      scc1_wreg5 = scc1_wreg5 & 0x70; /* Tx disable */
+      RES (&scc1_wreg1, 1); /* Tx int. disable */
+      outport (SCCCB, 0x01); /* write reg. WR1  */
+      outport (SCCCB, scc1_wreg1);
+      outport (SCCCB, 0x05); /* write reg. WR5  */
+      outport (SCCCB, scc1_wreg5);
+      outport (SCCCB, 0xe8); /* reset Tx */
+   }
+   else
+   {
+      outport (SCCDB, *scc1_send_buf++); /* send next character */
+      --*scc1_send_count;                /* dec count of characters */
+   }
+
+   /* reset highest IUS, allow lower-priority INTs */
+   outport(SCCCB,0x38);
+}
+
+nodebug int chbex()
+{
+   outport (SCCCB, 0x10);     /* reset ext/status interrupts */   
+}
+
+nodebug int chbrx()
+{
+   *scc1_rec_buf++ = inport (SCCDB); /* input character */
+   
+   if(! --*scc1_rec_count)  /* count down, if done disable */
+   {
+      RES (&scc1_wreg3, 0); /* Rx disable */
+      RES (&scc1_wreg1, 3); /* Rx int. disable */
+      RES (&scc1_wreg1, 4); /* Rx int. disable */
+
+      outport (SCCCB, 0x01); /* write reg. WR1  */
+      outport (SCCCB, scc1_wreg1);
+      outport (SCCCB, 0x03); /* write reg. WR3  */
+      outport (SCCCB, scc1_wreg3);
+      outport (SCCCB, 0x70); /* reset error, Rx CRC */
+   }
+
+   /* reset highest IUS, allow lower-priority INTs */
+   outport(SCCCB,0x38);
+}
+
+nodebug int special()
+{
+
+/* find out Special Receive Condition  */
+
+/*
+   int rr1a, rr1b;
+   
+   outport (SCCCA, 0x01);
+   rr1a = inport (SCCCA);     
+
+   if (BIT (&rr1a, 5)) 
+      rxoverruna ();
+   
+   if (BIT (&rr1a, 6)) 
+      crcframea ();
+
+   outport (SCCCB, 0x01); 
+   rr1b = inport (SCCCB);     
+   
+   if (BIT (&rr1b, 5)) 
+      rxoverrunb();
+   
+   if (BIT (&rr1b, 6)) 
+      crcframeb();
+*/
+            
+   outport (SCCCA, 0x30); /* reset error */
+   outport (SCCCA, 0x70); /* reset RxCRC and error */
+   outport (SCCCA, 0x38); 
+}
+
+nodebug rxoverruna()
+{
+   outport (SCCCA, 0x30); /* reset error */
+}
+
+nodebug rxoverrunb()
+{
+   outport (SCCCB, 0x30); /* reset error */
+}
+
+nodebug crcframea()
+{
+   outport (SCCCA, 0x70); /* reset RxCRC and error */
+}
+
+nodebug crcframeb()
+{
+   outport (SCCCB, 0x70); /* reset RxCRC and error */
+}
+
+/*** BeginHeader _sysZIfPwrFail */
+
+/*** EndHeader */
+
+#define SIOBC 0x4b
+
+#asm
+_sysZIfPwrFail::
+			in0   a,(SIOBC)   ; make sure pointer is to register zero
+			ld a,10h
+			out0  (SIOBC),a   ; reset ext status for DCD test
+			in0   a,(SIOBC)   ; status
+			bit   3,a      ;test DCD
+			ret
+#endasm
+
+
+/*************************************************End of PRO_ASYN.LIB ****/

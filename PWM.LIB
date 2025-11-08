@@ -1,0 +1,550 @@
+/* START LIBRARY DESCRIPTION *********************************************
+PWM.LIB
+	Copyright (c) 1995, Z-World.
+
+DESCRIPTION: Pulse width modulation driver.
+
+SUPPORT LIB'S:
+END DESCRIPTION **********************************************************/
+
+
+/*** BeginHeader init_pwm, pwm ***/
+
+void init_pwm();
+void pwm(int portmask, float duty, int pulse_state);
+
+/*** EndHeader ***/
+
+
+// Use PIO port B, timer 0
+#define PWM_TMDRL			TMDR0L
+#define PWM_TMDRH			TMDR0H
+#define PWM_RLDRL			RLDR0L
+#define PWM_RLDRH			RLDR0H
+
+#define PWM_PERIOD		6000					// ~20ms
+#define PWM_SEGMENT		(PWM_PERIOD/4)
+#define PWM_MIN_WIDTH	30						// ~100us
+
+
+struct {
+	unsigned mask;
+	unsigned reload;							// 2 sequences, 4 pulses each
+} pulse_entry[16];							// 2 interrupts per pulse
+
+void *pentry;									// current entry
+void *pfirst;									// first entry in sequence
+
+
+#INT_VEC PRT0_VEC pulse_int
+
+#asm nodebug
+#if PWM_PORT<256
+in_a:
+	in0	a,(PWM_PORT)
+	ret
+out_a:
+	out0	(PWM_PORT),a
+	ret
+#else
+in_a:
+	push	bc
+	ld		bc,PWM_PORT
+	in		a,(c)
+	pop	bc
+	ret
+out_a:
+	push	bc
+	ld		bc,PWM_PORT
+	out	(c),a
+	pop	bc
+	ret
+#endif 
+
+pulse_int::
+	push	af
+	push	hl
+	in0	a,(TCR)						; clear interrupt
+	in0	a,(PWM_TMDRL)
+;	in0	a,(PWM_PORT)				; read current port value
+	call	in_a
+	ld		hl,(pentry)					; process next pulse entry
+	jp		(hl)
+
+
+; *** sequence a ***
+
+pinta0::
+c	pulse_entry[0].mask;				// load to hl
+	and	l								;/ bit-clear mask
+	or		h								;/ bit-set mask
+;	out0	(PWM_PORT),a				;/ update port
+	call	out_a
+c	pulse_entry[0].reload;			// load to hl
+	out0	(PWM_RLDRL),l				;/ load next reload value
+	out0	(PWM_RLDRH),h				;/  affects interrupt after next
+
+	ld		hl,pinta1					;/ advance to next entry
+	ld		(pentry),hl
+	pop	hl								;/ return
+	pop	af
+	ei
+	reti							; total 203 states = 33us @ 6.144MHz
+
+pinta1::
+c	pulse_entry[1].mask;				// load to hl
+	and	l
+	or		h
+;	out0	(PWM_PORT),a				;/ update port
+	call	out_a
+c	pulse_entry[1].reload;			// load to hl
+	out0	(PWM_RLDRL),l
+	out0	(PWM_RLDRH),h
+
+	ld		hl,pinta2
+	ld		(pentry),hl
+	pop	hl
+	pop	af
+	ei
+	reti
+
+pinta2::
+c	pulse_entry[2].mask;				// load to hl
+	and	l
+	or		h
+;	out0	(PWM_PORT),a				;/ update port
+	call	out_a
+c	pulse_entry[2].reload;			// load to hl
+	out0	(PWM_RLDRL),l
+	out0	(PWM_RLDRH),h
+
+	ld		hl,pinta3
+	ld		(pentry),hl
+	pop	hl
+	pop	af
+	ei
+	reti
+
+pinta3::
+c	pulse_entry[3].mask;				// load to hl
+	and	l
+	or		h
+;	out0	(PWM_PORT),a				;/ update port
+	call	out_a
+c	pulse_entry[3].reload;			// load to hl
+	out0	(PWM_RLDRL),l
+	out0	(PWM_RLDRH),h
+
+	ld		hl,pinta4
+	ld		(pentry),hl
+	pop	hl
+	pop	af
+	ei
+	reti
+
+pinta4::
+c	pulse_entry[4].mask;				// load to hl
+	and	l
+	or		h
+;	out0	(PWM_PORT),a				;/ update port
+	call	out_a
+c	pulse_entry[4].reload;			// load to hl
+	out0	(PWM_RLDRL),l
+	out0	(PWM_RLDRH),h
+
+	ld		hl,pinta5
+	ld		(pentry),hl
+	pop	hl
+	pop	af
+	ei
+	reti
+
+pinta5::
+c	pulse_entry[5].mask;				// load to hl
+	and	l
+	or		h
+;	out0	(PWM_PORT),a				;/ update port
+	call	out_a
+c	pulse_entry[5].reload;			// load to hl
+	out0	(PWM_RLDRL),l
+	out0	(PWM_RLDRH),h
+
+	ld		hl,pinta6
+	ld		(pentry),hl
+	pop	hl
+	pop	af
+	ei
+	reti
+
+pinta6::
+c	pulse_entry[6].mask;				// load to hl
+	and	l
+	or		h
+;	out0	(PWM_PORT),a				;/ update port
+	call	out_a
+c	pulse_entry[6].reload;			// load to hl
+	out0	(PWM_RLDRL),l
+	out0	(PWM_RLDRH),h
+
+	ld		hl,pinta7
+	ld		(pentry),hl
+	pop	hl
+	pop	af
+	ei
+	reti
+
+pinta7::
+c	pulse_entry[7].mask;				// load to hl
+	and	l
+	or		h
+;	out0	(PWM_PORT),a				;/ update port
+	call	out_a
+c	pulse_entry[7].reload;			// load to hl
+	out0	(PWM_RLDRL),l
+	out0	(PWM_RLDRH),h
+
+	ld		hl,(pfirst)					;/ 6 extra states
+	ld		(pentry),hl
+	pop	hl
+	pop	af
+	ei
+	reti
+
+
+; *** sequence b ***
+
+pintb0::
+c	pulse_entry[8].mask;				// load to hl
+	and	l								;/ bit-clear mask
+	or		h								;/ bit-set mask
+;	out0	(PWM_PORT),a				;/ update port
+	call	out_a
+c	pulse_entry[8].reload;			// load to hl
+	out0	(PWM_RLDRL),l				;/ load next reload value
+	out0	(PWM_RLDRH),h				;/  affects interrupt after next
+
+	ld		hl,pintb1					;/ advance to next entry
+	ld		(pentry),hl
+	pop	hl								;/ return
+	pop	af
+	ei
+	reti							; total 203 states = 33us @ 6.144MHz
+
+pintb1::
+c	pulse_entry[9].mask;				// load to hl
+	and	l
+	or		h
+;	out0	(PWM_PORT),a				;/ update port
+	call	out_a
+c	pulse_entry[9].reload;			// load to hl
+	out0	(PWM_RLDRL),l
+	out0	(PWM_RLDRH),h
+
+	ld		hl,pintb2
+	ld		(pentry),hl
+	pop	hl
+	pop	af
+	ei
+	reti
+
+pintb2::
+c	pulse_entry[10].mask;			// load to hl
+	and	l
+	or		h
+;	out0	(PWM_PORT),a				;/ update port
+	call	out_a
+c	pulse_entry[10].reload;			// load to hl
+	out0	(PWM_RLDRL),l
+	out0	(PWM_RLDRH),h
+
+	ld		hl,pintb3
+	ld		(pentry),hl
+	pop	hl
+	pop	af
+	ei
+	reti
+
+pintb3::
+c	pulse_entry[11].mask;			// load to hl
+	and	l
+	or		h
+;	out0	(PWM_PORT),a				;/ update port
+	call	out_a
+c	pulse_entry[11].reload;			// load to hl
+	out0	(PWM_RLDRL),l
+	out0	(PWM_RLDRH),h
+
+	ld		hl,pintb4
+	ld		(pentry),hl
+	pop	hl
+	pop	af
+	ei
+	reti
+
+pintb4::
+c	pulse_entry[12].mask;			// load to hl
+	and	l
+	or		h
+;	out0	(PWM_PORT),a				;/ update port
+	call	out_a
+c	pulse_entry[12].reload;			// load to hl
+	out0	(PWM_RLDRL),l
+	out0	(PWM_RLDRH),h
+
+	ld		hl,pintb5
+	ld		(pentry),hl
+	pop	hl
+	pop	af
+	ei
+	reti
+
+pintb5::
+c	pulse_entry[13].mask;			// load to hl
+	and	l
+	or		h
+;	out0	(PWM_PORT),a				;/ update port
+	call	out_a
+c	pulse_entry[13].reload;			// load to hl
+	out0	(PWM_RLDRL),l
+	out0	(PWM_RLDRH),h
+
+	ld		hl,pintb6
+	ld		(pentry),hl
+	pop	hl
+	pop	af
+	ei
+	reti
+
+pintb6::
+c	pulse_entry[14].mask;			// load to hl
+	and	l
+	or		h
+;	out0	(PWM_PORT),a				;/ update port
+	call	out_a
+c	pulse_entry[14].reload;			// load to hl
+	out0	(PWM_RLDRL),l
+	out0	(PWM_RLDRH),h
+
+	ld		hl,pintb7
+	ld		(pentry),hl
+	pop	hl
+	pop	af
+	ei
+	reti
+
+pintb7::
+c	pulse_entry[15].mask;			// load to hl
+	and	l
+	or		h
+;	out0	(PWM_PORT),a				;/ update port
+	call	out_a
+c	pulse_entry[15].reload;			// load to hl
+	out0	(PWM_RLDRL),l
+	out0	(PWM_RLDRH),h
+
+	ld		hl,(pfirst)					;/ 6 extra states
+	ld		(pentry),hl
+	pop	hl
+	pop	af
+	ei
+	reti
+
+#endasm
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+init_pwm                     <PWM.LIB>
+
+SYNTAX: void init_pwm();
+
+KEYWORDS:
+
+DESCRIPTION: Initializes pulse width modulation driver using timer 0.
+Call this function before calling pwm.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+
+void init_pwm() {
+	int i;
+
+	for (i = 0; i < sizeof(pulse_entry)/sizeof(pulse_entry[0]); i++) {
+		pulse_entry[i].mask = 0xFF;
+		pulse_entry[i].reload = PWM_SEGMENT / 2;
+	}
+	pentry = pfirst = pinta0;
+
+	DI();
+	outport(TCR, inport(TCR) & 0xEE);		// disable TIMER0 interrupt
+	EI();
+	outport(PWM_TMDRL, (PWM_SEGMENT / 2) & 0xFF);
+	outport(PWM_TMDRH, (PWM_SEGMENT / 2) >> 8);
+	outport(PWM_RLDRL, (PWM_SEGMENT / 2) & 0xFF);
+	outport(PWM_RLDRH, (PWM_SEGMENT / 2) >> 8);
+	DI();
+	outport(TCR, inport(TCR) | 0x11);		// re-enable TIMER0
+	EI();
+}
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+pwm                          <PWM.LIB>
+
+SYNTAX: void pwm(int portmask, float duty, int pulse_state);
+
+KEYWORDS:
+
+DESCRIPTION: Sets pulse width for output on PIO pins specified in
+portmask. Specify duty-cycle from 0 - 100%, with 0.5% granularity.
+pulse_state determines if active low (0) or active high (1).
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+
+void pwm(int portmask, float duty, int pulse_state) {
+	unsigned w;
+	unsigned on_ticks, off_ticks, extra;
+	unsigned port, bmask;
+	int bit_entry, prev_entry, start_entry, end_entry;
+	int i, base;
+
+#if BOARD_TYPE == MicroG
+	resPIOCB(portmask >> 8);		// Set desired pins to outputs
+#endif
+
+	// Integer multiply by 30 to give constant granularity over
+	// entire range.
+	w = (int) (duty * 2.0 + 0.5) * 30;
+
+	// Special cases: 0% and 100%
+	if (w < PWM_MIN_WIDTH || w > PWM_PERIOD - PWM_MIN_WIDTH) {
+//		printf("w is %d, %d, %d",w,PWM_MIN_WIDTH,PWM_PERIOD-PWM_MIN_WIDTH);
+
+		// Clear any masks - we can do this on the active sequence
+		base = pfirst == pinta0 ? 0 : 8;
+		for (i = 0; i < 8; i++) {
+			pulse_entry[base + i].mask &= ~portmask | 0xFF;
+			pulse_entry[base + i].mask |= (portmask >> 8) & 0xFF;
+		}
+
+		// Force the appropriate state
+#if MicroG == BOARD_TYPE
+		if (w < PWM_MIN_WIDTH) {			// 0%
+			if (pulse_state)					// Active high?
+				resPIODB(portmask >> 8);	//  Yes - make low
+			else
+				setPIODB(portmask >> 8);	//  No - make high
+		}
+		else {									// 100%
+			if (pulse_state)					// Active high?
+				setPIODB(portmask >> 8);	//  Yes - make high
+			else
+				resPIODB(portmask >> 8);	//  No - make low
+		}
+#endif
+
+		// All done
+		return;
+	}
+
+	// If a previous change is still pending, add new changes to
+	// same sequence. Otherwise copy the current sequence and
+	// then make changes.
+	if (pfirst == pinta0) {			// Should be on first sequence?
+		DI();
+		if (pentry > pinta7) {		// But not?
+			pfirst = pintb0;			// Hold off sequence change
+			EI();
+			base = 0;					// Work on first
+		}
+		else {							// On first sequence
+			EI();
+			for (i = 0; i < 8; i++)	// Copy to second
+				pulse_entry[i + 8] = pulse_entry[i];
+			base = 8;					// Work on copy
+		}
+	}
+	else {								// Should be on second sequence?
+		DI();
+		if (pentry < pintb0) {		// But not?
+			pfirst = pinta0;			// Hold off sequence change
+			EI();
+			base = 8;					// Work on second
+		}
+		else {							// On second sequence
+			EI();
+			for (i = 0; i < 8; i++)	// Copy to first
+				pulse_entry[i] = pulse_entry[i + 8];
+			base = 0;					// Work on copy
+		}
+	}
+
+	// Clear any previous mask settings for specified outputs
+	for (i = 0; i < 8; i++) {
+		pulse_entry[base + i].mask &= ~portmask | 0xFF;
+		pulse_entry[base + i].mask |= (portmask >> 8) & 0xFF;
+	}
+
+	// Calculate required on & off times in ticks
+	extra = w / PWM_SEGMENT;
+	on_ticks = w % PWM_SEGMENT;
+	off_ticks = PWM_SEGMENT - on_ticks;
+
+	// Affect high 4 bits of port only
+	port = PB4;
+	for (i = 0; i < 4; i++) {
+//		printf("%x,%x\n",portmask,port);
+		if (portmask & port) {
+
+			// Start with entry corresponding to desired bit and find
+			// surrounding entries to update.
+			bit_entry = i * 2;
+			prev_entry = (bit_entry - 1 + 8) % 8;
+			start_entry = (bit_entry - extra * 2 + 8) % 8;
+			end_entry = bit_entry + 1;
+
+			bmask = port | ((port >> 8) & 0xFF);
+
+			if (!on_ticks) {
+				on_ticks = PWM_SEGMENT / 2;
+				off_ticks = PWM_SEGMENT - on_ticks;
+				end_entry = bit_entry;
+			}
+
+			// Set new timing
+//			printf("%d->%x, %d->%x\n",base+prev_entry,on_ticks,
+//				base+bit_entry,off_ticks);
+			pulse_entry[base + prev_entry].reload = on_ticks;
+			pulse_entry[base + bit_entry].reload = off_ticks;
+
+//			printf("%d:%x, %d:%x\n",base+start_entry,bmask,base+end_entry,~bmask);
+			// Set pulse on & off masks
+			if (pulse_state) {
+				pulse_entry[base + start_entry].mask |= bmask;
+				pulse_entry[base + end_entry].mask &= ~bmask;
+			}
+			else {
+				pulse_entry[base + start_entry].mask &= ~bmask;
+				pulse_entry[base + end_entry].mask |= bmask;
+			}
+		}
+		port <<= 1;
+	}
+
+	// Now switch the interrupt sequence to use the new values
+	if (base) {
+		DI();
+		pfirst = pintb0;
+		EI();
+	}
+	else {
+		DI();
+		pfirst = pinta0;
+		EI();
+	}
+}
+
+
+// ************************************************************************
+// End of PWM.LIB
+// ************************************************************************

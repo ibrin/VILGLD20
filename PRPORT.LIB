@@ -1,0 +1,1250 @@
+/* START LIBRARY DESCRIPTION *********************************************
+PRPORT.LIB
+    Copyright (c) 1994, Z-World.
+
+DESCRIPTION: Printer port library. This library provides routines for
+communicating between the PIO parallel ports and IBM PC style printer or
+the printer port on computer. The prsend... functions communicate with a PC
+style printer. The plink... functions communicate with the printer port on
+a computer by making the PIO port 0 appear to be a printer. clink_init
+initializes PIO port 0 for high speed communications with a PC.
+
+SUPPORT LIB'S:
+END DESCRIPTION **********************************************************/
+
+
+/*** BeginHeader prsend0, prsend0_init */
+
+int prsend0(char dat);       // send a character to the printer on port 1
+int prsend0_init(void);      // initialize port zero for printer output
+
+/*** EndHeader   */
+
+#ifndef PIODA_1              // if not already defined, define PIOxx_1
+
+#ifdef USELG
+#define PIODA_1 PIODA
+#define PIOCA_1 PIOCA
+#define PIODB_1 PIODB
+#define PIOCB_1 PIOCB
+#define PIOB_1_VEC PIOB_VEC
+#else
+#ifdef USETG
+#define PIODA_1 PIODA
+#define PIOCA_1 PIOCA
+#define PIODB_1 PIODB
+#define PIOCB_1 PIOCB
+#define PIOB_1_VEC PIOB_VEC
+#else
+#define PIODA_1 0x80         // definitions protocol switch port 0
+#define PIOCA_1 0x82
+#define PIODB_1 0x81
+#define PIOCB_1 0x83
+#define PIOB_1_VEC 0x14      // vector for PIO channel B
+#endif                       // match with ifdef USETG .. else
+#endif                       // match with ifdef USELG .. else
+#endif                       // match with ifndef PIODA_1
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+prsend0                      <PRPORT.LIB>
+
+SYNTAX: int prsend0(char dat);
+
+KEY WORDS: output, printer
+
+DESCRIPTION: Sends the character, dat, to the printer on PIO port 0.
+
+RETURN VALUE: 0 if the character was sent successfully; 1 if the printer is
+offline; 2 if the printer is out of paper.
+END DESCRIPTION **********************************************************/
+int prsend0(char dat)
+{
+    static int  jt;          // integer local variable
+    static char er;
+
+    for (jt = 0; jt < 500; jt++)
+    {
+        er = inport(PIODB_1);// get status register
+        if ((er & '\x90') == '\x80') 
+            goto prready;
+    }
+                             // error exit
+    if (BIT(&er, 5))
+        return 2;            // paper out
+    else
+        return 1;            // offline
+
+                             // now out the character
+prready:
+    outport(PIODA_1, dat);   // put character on the data lines
+    outport(PIODB_1, 4);     // strobe low
+                          // now wait for busy or ack or wait for timeout
+    for (jt = 0; jt < 20; jt++)
+    {
+        if ((inport(PIODB_1) ^ 2) & 0x82)
+            break;           // quit now on busy or ack
+    }
+    outport(PIODB_1, 5);     // strobe back high
+    return 0;                // finally return after timeout
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+prsend0_init                 <PRPORT.LIB>
+
+SYNTAX: int prsend0_init(void);
+
+KEY WORDS: init, printer
+
+DESCRIPTION: Initializes PIO port 0 for sending data to an IBM PC style
+printer.
+
+RETURN VALUE: Undefined.
+END DESCRIPTION **********************************************************/
+int prsend0_init(void)
+{
+    static unsigned int j;
+    static char x1[] =
+            {
+                0x7          // disable interrupts
+                , 0x7        // again for synchronization
+                , 0x17       // disable pending interrupts bit 4
+                , 0x0        // dummy mask
+                , 0xcf, 0x00
+            };               // all output port A
+    static char x2[] =
+            {
+                7            // disable interrupts
+                , 7          // again, synchronize
+                , 0x57       // disable pending ints
+                , 0xfe       // mask bit 0, interrupt on low
+                , 0xcf, 0xf2
+            };               // output bits are zero
+                             // set up port A as the Data port
+    outportn(PIOCA_1, x1, sizeof(x1));
+                             // port B is the control port
+    outport(PIODB_1, 0x5);   // set handshaking lines
+    outportn(PIOCB_1, x2, sizeof(x2));
+    piolatch();
+
+    /* printer bits:
+       bit 7 -error A low signals printer error condition
+       bit 6 slct A plus signals that the printer is selected
+       bit 5 +PE A plus indicates out of paper
+       bit 4 +busy A plus indicates the printer is busy
+       bit 3 -slctin  printer indicates it is selected
+       bit 2 -int drive a negative pulse to reset printer
+       bit 1 -ack A negative plus is acknowledgement
+       bit 0 -strobe a negative pulse indicates char ready  */
+
+    outport(PIODB_1, 0xd);   // enable selectin, printer reset
+    for (j = 0; j < 10; j++)
+        ;                    // 50 us
+    outport(PIODB_1, 0x5);   // disable printer reset
+                             // now ready for printer communication
+}
+
+
+/*** BeginHeader prsend1, prsend1_init */
+
+int prsend1(char dat);       // send a char to the printer on port 1
+int prsend1_init(void);      // initialize port zero for printer output
+
+/*** Endheader   */
+
+#define PIODA_2 0x90     // assignments for PIO 2nd channel protocol swtch
+#define PIOCA_2 0x92
+#define PIODB_2 0x91
+#define PIOCB_2 0x93
+
+/* START FUNCTION DESCRIPTION ********************************************
+prsend1                      <PRPORT.LIB>
+
+SYNTAX: int prsend1(char dat);
+
+KEY WORDS: output, printer
+
+DESCRIPTION: Sends the character, dat, to the printer on PIO port 1.
+
+RETURN VALUE: 0 if the character was sent successfully; 1 if the printer is
+offline; 2 if the printer is out of paper.
+END DESCRIPTION **********************************************************/
+int prsend1(char dat)
+{
+    static int jt;           // integer local variable
+    static char er;
+    for (jt = 0; jt < 500; jt++)
+    {
+        er = inport(PIODB_2); // get status register
+        if ((er & '\x90') == '\x80') 
+            goto prready;
+    }
+                             // error exit
+    if (BIT(&er, 5)) 
+        return 2;            // paper out
+    else 
+        return 1;            // offline
+
+                             // now out the character
+prready:
+    outport(PIODA_2, dat);   // put character on the data lines
+    outport(PIODB_2, 4);     // strobe low
+                             // now wait for busy or ack or wait for timeout
+    for (jt = 0; jt < 20; jt++)
+    {
+        if ((inport(PIODB_2) ^ 2) & 0x82) 
+            break;           // quit now on busy or ack
+    }
+    outport(PIODB_2, 5);     // strobe back high
+    return 0;                // finally return after timeout
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+prsend1_init                 <PRPORT.LIB>
+
+SYNTAX: int prsend1_init(void);
+
+KEY WORDS: init, printer
+
+DESCRIPTION: Initializes PIO port 1 for sending data to an IBM PC style
+printer.
+
+RETURN VALUE: Undefined.
+END DESCRIPTION **********************************************************/
+int prsend1_init(void)
+{
+    static unsigned int j;
+    static char x1[] =
+            {
+                0x7          // disable interrupts
+                , 0x7        // again for synchronization
+                , 0x17       // disable pending interrupts bit 4
+                , 0x0        // dummy mask
+                , 0xcf, 0x00
+            };               // all output port A
+    static char x2[] =
+            {
+                7            // disable interrupts
+                , 7          // again, synchronize
+                , 0x57       // disable pending ints
+                , 0xfe       // mask bit 0, interrupt on low
+                , 0xcf, 0xf2
+            };               // output bits are zero
+                             // set up port A as the Data port
+    
+    outportn(PIOCA_2, x1, sizeof(x1));
+                             // port B is the control port
+    outport(PIODB_2, 0x5);   // set handshaking lines
+    outportn(PIOCB_2, x2, sizeof(x2));
+    piolatch();
+    
+    /*
+      printer bits:
+      bit 7 -error A low signals printer error condition
+      bit 6 slct A plus signals that the printer is selected
+      bit 5 +PE A plus indicates out of paper
+      bit 4 +busy A plus indicates the printer is busy
+      bit 3 -slctin  printer indicates it is selected
+      bit 2 -int drive a negative pulse to reset printer
+      bit 1 -ack A negative plus is acknowledgement
+      bit 0 -strobe a negative pulse indicates char ready
+   */
+
+    outport(PIODB_2, 0xd);   // enable selectin, printer reset
+    for (j = 0; j < 10; j++)
+        ;                    // 50 us
+    outport(PIODB_2, 0x5);   // disable printer reset
+                             // now ready for printer communication
+}
+
+
+/*** BeginHeader doreti */
+
+void doreti(void);
+
+/*** EndHeader doreti */
+
+/* START FUNCTION DESCRIPTION ********************************************
+doreti                       <PRPORT.LIB>
+
+SYNTAX: void doreti(void);
+
+KEY WORDS:
+
+DESCRIPTION: Call this routine to perform a Z80 style reti instruction. Use
+to prevent resetting the IUS latch on 2 peripheral devices with one reti if
+LIR is enabled on Tiny Giant, Little Giant. Call with interrupts off or risk
+executing other interrupt routines with the wait states set to a high value.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+#asm
+doreti::
+   in0   b,(DCNTL)   ; save existing value
+   ld    a,40h       ; min of 1 wait state
+   or    b
+   out0  (DCNTL),a   ; new value with at least one wait state
+   in0   e,(OMCR)    ; save current value
+   ld a,40h
+   out0  (OMCR),a
+   call  adoreti
+   out0  (OMCR),e    ; restore old value
+   out0  (DCNTL),b   ; restore old value
+   ret
+adoreti:
+   reti
+#endasm
+
+
+/*** BeginHeader piolatch */
+
+int piolatch(void);
+
+/*** EndHeader piolatch */
+
+/* START FUNCTION DESCRIPTION ********************************************
+piolatch                     <PRPORT.LIB>
+
+SYNTAX: int piolatch(void);
+
+KEY WORDS:
+
+DESCRIPTION: Guarantees an LIR cycle to latch PIO interrupt state.
+
+RETURN VALUE: Undefined.
+END DESCRIPTION **********************************************************/
+#asm
+piolatch::
+   in0   a,(OMCR)
+   and   0bfh     ; make LIRTE be clear
+   out0  (OMCR),a
+   ret
+#endasm
+
+
+/*** BeginHeader setwaits */
+int setwaits(int mem, int io);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+setwaits                     <PRPORT.LIB>
+
+SYNTAX: int setwaits(int mem, int io);
+
+KEY WORDS:
+
+DESCRIPTION: Sets up programmable wait state register in Z180 without
+disturbing dma control in the lower part of the register. mem specifies the
+number of memory wait states (0 - 3). io specifies the number of io wait
+states (0 - 3).
+
+RETURN VALUE: Undefined.
+END DESCRIPTION **********************************************************/
+int setwaits(int mem, int io)
+{
+    outport(DCNTL, (inport(DCNTL) & 0xf)
+        | ((mem << 6) & 0xc0) | ((io << 4) & 0x30));
+}
+
+
+/*** BeginHeader plink_init0, plink_rdy0, plink_getc0 */
+
+struct circ_buf
+{
+    shared int index_in;
+    shared int index_out;
+    int mask;
+    char *buf;
+};
+int plink_init0(struct circ_buf * ptr, char *buf, int amask);
+int plink_getc0(int no_purge);
+int plink_rdy0(void);
+
+/*** EndHeader   */
+#ifndef PIODA_1              // if not already defined, define PIOxx_1
+
+#ifdef USELG
+
+#define PIODA_1 PIODA
+#define PIOCA_1 PIOCA
+#define PIODB_1 PIODB
+#define PIOCB_1 PIOCB
+#define PIOB_1_VEC PIOB_VEC
+
+#else
+
+#ifdef USETG
+#define PIODA_1 PIODA
+#define PIOCA_1 PIOCA
+#define PIODB_1 PIODB
+#define PIOCB_1 PIOCB
+#define PIOB_1_VEC PIOB_VEC
+
+#else
+
+#ifdef USEPS1
+
+#define PIODA_1 0x90         // definitions protocol switch port 1
+#define PIOCA_1 0x92
+#define PIODB_1 0x91
+#define PIOCB_1 0x93
+
+#define PIOB_1_VEC 0x16
+
+#else
+
+#define PIODA_1 0x80         // definitions protocol switch port 0
+#define PIOCA_1 0x82
+#define PIODB_1 0x81
+#define PIOCB_1 0x83
+
+#define PIOB_1_VEC 0x14      // vector for PIO channel B
+
+#endif
+#endif                       // match with ifdef USETG .. else
+#endif                       // match with ifdef USELG .. else
+#endif                       // match with ifndef PIODA_1
+
+
+struct circ_buf *plink_ptr;
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+plink_init0                  <PRPORT.LIB>
+
+SYNTAX: int plink_init0(struct circ_buf *ptr, char *buf, int amask);
+
+KEY WORDS:
+
+DESCRIPTION: Initializes functions to make the PIO device appear to be an
+IBM PC style printer. Characters will be captured under interrupt into the
+circular buffer provided to this function. The plink_rdy0 and plinkgetc0
+functions may be used to retrieve characters from the buffer. It may be
+desirable to load a TSR on the PC to insure that no characters will be lost.
+ptr points to a circ_buf structure used by the plink... routines. buf points
+to the circular buffer. amask is the buffer wrap mask; this value must be
+set to 2^n-1 where n is an integer between 2 and 16 and 2^n is the size of
+the buffer in bytes.
+
+RETURN VALUE: Undefined.
+END DESCRIPTION **********************************************************/
+int plink_init0(struct circ_buf * ptr, char *bf, int amask)
+{
+
+    plink_ptr = ptr;         // set up buffer pointers
+    plink_ptr->index_in = plink_ptr->index_out = 0;
+    plink_ptr->mask = amask;
+    plink_ptr->buf = bf;
+
+    plinki0();               // initialize the printer port
+
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+plink_rdy0                   <PRPORT.LIB>
+
+SYNTAX: int plink_rdy0(void);
+
+KEY WORDS:
+
+DESCRIPTION: Checks for characters received in the circular buffer.
+
+RETURN VALUE: 0, if buffer is empty; 1, if buffer contains at least one 
+character.
+END DESCRIPTION **********************************************************/
+int plink_rdy0(void)
+{
+    if (plink_ptr->index_in != plink_ptr->index_out) 
+        return 1;
+    return 0;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+plink_getc0                  <PRPORT.LIB>
+
+SYNTAX: int plink_getc0(int no_purge);
+
+KEY WORDS:
+
+DESCRIPTION: Retrieves the next character from the circular buffer. This
+function must not be called if the buffer is empty. If no_purge is non-zero
+the character will remain in the buffer after this call. Interrupts must be
+enabled when this function is called.
+
+RETURN VALUE: First character in buffer.
+END DESCRIPTION **********************************************************/
+int plink_getc0(int purge)
+{
+    static char c;
+
+    c = plink_ptr->buf[plink_ptr->index_out];
+    if (!purge)
+    {
+        DI();
+        plink_ptr->index_out = ++plink_ptr->index_out & plink_ptr->mask;
+        EI();
+    }
+    return c;
+
+}
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+plinki0                      <PRPORT.LIB>
+
+SYNTAX: int plinki0(void);
+
+KEY WORDS:
+
+DESCRIPTION: Initializes the printer port for high speed input/output.
+
+RETURN VALUE: Undefined.
+END DESCRIPTION **********************************************************/
+plinki0(void)
+{
+    static unsigned int j;
+    static char x1[] =
+            {
+                0x7          // disable interrupts
+                , 0x7        // again for synchronization
+                , 0x17       // disable pending interrupts bit 4
+                , 0x0        // dummy mask
+                , 0xcf, 0xff
+            };               // all input port A
+    static char x2[] =
+            {
+                7            // disable interrupts
+                , 7          // again, synchronize
+                , 0x57       // disable pending ints
+                , 0xfe       // mask bit 0, interrupt on low
+                , 0xcf, 0x0d
+            };               // output bits are zero
+    DI();
+                             // set up port A as the Data port
+    outportn(PIOCA_1, x1, sizeof(x1));
+                             // port B is the control port
+    outport(PIODB_1, 0xd2);  // set abort code
+    outportn(PIOCB_1, x2, sizeof(x2));
+    piolatch();
+    outport(PIOCB_1, PIOB_1_VEC);// load interrupt vector
+    outport(PIOCB_1, 0xc7);  // enable interrupt
+    piolatch();
+                             /* printer bits:
+                         bit 7 -error A low signals printer error condition
+                     bit 6 slct A plus signals that the printer is selected
+                     bit 5 +PE A plus indicates out of paper
+                     bit 4 +busy A plus indicates the printer is busy
+                     bit 1 -ack A negative plus is acknowledgement
+                                                                         */
+    outport(PIODB_1, 0xc2);  // set printer ready
+                             // now ready for a burst of high speed input
+    EI();
+}
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+plink_intr0                  <PRPORT.LIB>
+
+SYNTAX: int plink_intr0(void);
+
+KEY WORDS:
+
+DESCRIPTION: Interrupt to handle receipt of characters into the circular
+buffer passed to plink_init0.
+
+RETURN VALUE: Undefined.
+END DESCRIPTION **********************************************************/
+#INT_VEC  PIOB_1_VEC plink_intr0
+
+char lbuf[6];
+char val;
+char *ptr;
+int j, cnt;
+
+interrupt plink_intr0(void)
+{
+    static char cc;
+    static int index;
+    cc = inport(PIODA_1);    // get the character
+    outport(PIODB_1, 0xd0);  // set busy and lower ack
+    EI();
+    doreti();                // reset interrupt under service flag
+
+    index = (plink_ptr->index_in + 1) & plink_ptr->mask;
+    if (index != plink_ptr->index_out) // ignore characters if buf full
+    {
+        plink_ptr->buf[plink_ptr->index_in] = cc;
+        plink_ptr->index_in = index;
+    }
+
+    // wait for strobe to go high, in case protocol interlocked
+    for (index = 0; index < 500; index++) 
+        if (inport(PIODB_1) & 1) 
+            break;
+    outport(PIODB_1, 0xc2);  // set printer ready again, busy-low, ack-high
+}
+
+
+/*** BeginHeader clink_init */
+
+void clink_init(void);
+
+/*** EndHeader clink_init */
+
+/*#define NO_TIMEOUT 1*/
+
+#ifndef PIODA_1              // if not already defined, define PIOxx_1
+
+
+#ifdef USELG
+
+#define PIODA_1 PIODA
+#define PIOCA_1 PIOCA
+#define PIODB_1 PIODB
+#define PIOCB_1 PIOCB
+#define PIOB_1_VEC PIOB_VEC
+
+#else
+
+#ifdef USETG
+
+#define PIODA_1 PIODA
+#define PIOCA_1 PIOCA
+#define PIODB_1 PIODB
+#define PIOCB_1 PIOCB
+#define PIOB_1_VEC PIOB_VEC
+
+#else
+
+#ifdef USEPS1
+
+#define PIODA_1 0x90         // definitions protocol switch port 1
+#define PIOCA_1 0x92
+#define PIODB_1 0x91
+#define PIOCB_1 0x93
+
+#define PIOB_1_VEC 0x16
+
+#else
+
+#define PIODA_1 0x80         // definitions protocol switch port 0
+#define PIOCA_1 0x82
+#define PIODB_1 0x81
+#define PIOCB_1 0x83
+
+#define PIOB_1_VEC 0x14      // vector for PIO channel B
+
+#endif
+#endif                       // match with ifdef USETG .. else
+#endif                       // match with ifdef USELG .. else
+#endif                       // match with ifndef PIODA_1
+
+#define timeoutc 1000        // timeout count, units of 10 us
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+clink_init                   <PRPORT.LIB>
+
+SYNTAX: void clink_init(void);
+
+KEY WORDS: init, PC
+
+DESCRIPTION: Initializes functions for high speed communications with the
+parallel port of an IBM PC. This function takes no parameters, however the
+calling program must contain certain definitions: several data buffers must
+be defined; bufptrs must be declared as an array of pointers to the buffers;
+NBUFS must be defined to be the number of buffers. These definitions must
+all occur in the source code before any reference to clink_init. All
+communications after this call are entirely driven by the PC, so the actual
+size and number of buffers depends on the PC application.
+
+After the link is established, the PC may initiate communication by sending
+a command packet to the target. This packet will be either 4 or 6 bytes
+depending on the command. The first three bytes of the packet are the
+command, device address (unused), and buffer number. 4-byte packets contain
+a checksum in the fourth byte; 6-byte packets contain a 2-byte count in the
+fourth and fifth bytes and a checksum in the sixth byte. The buffer number
+identifies the buffer (in the bufptrs array) to perform the operation on.
+Possible command values are 0x11, 0x22, 0x33, 0x44, and 0x55. Commands 0x11
+(receive block) and 0x22 (send block) require 6 bytes; the other commands
+require 4.
+
+Command 0x11 (receive block) forces the target to receive count bytes of
+data and a checksum byte into the specified buffer. The target will respond
+with 0xAA if successful, 0xCC if one of the checksums failed.
+
+Command 0x22 (send block) forces the target to first acknowledge the command
+packet (0xAA for success; 0xCC for fail), and then send count bytes of data
+from the specified buffer, followed by a checksum byte. If the initial
+acknowledgement is negative (0xCC) no data will be sent.
+
+Command 0x33 (set) sets the first byte of the specified buffer to 1. The
+target will respond with 0xAA if successful, or 0xCC if the command packet
+checksum fails.
+
+Command 0x44 (clear) clears the first byte of the specified buffer to 0. The
+target will respond with 0xAA if successful, or 0xCC if the command packet
+checksum fails.
+
+Command 0x55 (test) test the value of the first byte in the specified
+buffer. If the value is non-zero, a response of 0xBB will be sent. If the
+value is zero, the response will be 0xAA. If the command packet checksum
+fails, 0xCC will be sent.
+
+RETURN VALUE: None
+END DESCRIPTION **********************************************************/
+void clink_init(void)
+{
+    static unsigned int j;
+    static char x1[] =
+            {
+                0x7          // disable interrupts
+                , 0x7        // again for synchronization
+                , 0x17       // disable pending interrupts bit 4
+                , 0x0        // dummy mask
+                , 0xcf, 0xff
+            };               // all input port A
+    static char x2[] =
+            {
+                7            // disable interrupts
+                , 7          // again, synchronize
+                , 0x57       // disable pending ints
+                , 0xfe       // mask bit 0, interrupt on low
+                , 0xcf, 0x0d
+            };               // output bits are zero
+    DI();
+                             // set up port A as the Data port
+    outportn(PIOCA_1, x1, sizeof(x1));
+    piolatch();
+                             // port B is the control port
+    outport(PIODB_1, 0xd2);  // set abort code
+    outportn(PIOCB_1, x2, sizeof(x2));
+    piolatch();
+    outport(PIOCB_1, PIOB_1_VEC);// load interrupt vector
+    outport(PIOCB_1, 0xc7);  // enable interrupt
+    piolatch();              // force LIR signal for PIO
+    outport(PIODB_1, 0xc2);  // set ready_first flag
+                             // now ready for a burst of high speed input
+    EI();
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+checksum                     <PRPORT.LIB>
+
+SYNTAX: int checksum(char *buf, int len);
+
+KEY WORDS: data
+
+DESCRIPTION: Perform a checksum on the data contained in buf. len is the
+number of bytes that will be included in the checksum.
+
+RETURN VALUE: The checksum value (also stored in the variable summer).
+END DESCRIPTION **********************************************************/
+char summer;                 // checksum value
+
+#asm nodebug
+checksum::
+   pop   bc    ; return address
+   pop   hl    ; first arg
+   pop   de    ; second arg
+   push  de
+   push  hl
+   push  bc
+   inc   d     ; false high
+   xor   a
+chkl:
+   add   a,(hl)
+   inc   hl
+   dec   e
+   jr nz,chkl
+   dec   d
+   jr nz,chkl
+   ld (summer),a  ; save
+   ld l,a
+   ld h,0
+   ret      ; result in hl
+#endasm
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+pioint                       <PRPORT.LIB>
+
+SYNTAX: int pioint(void);
+
+KEY WORDS: PC
+
+DESCRIPTION: Interrupt routine to handle high speed communications with the
+PC parallel port. This routine will process an entire packet (send or
+receive) from the PC before it returns.
+
+RETURN VALUE: Undefined.
+END DESCRIPTION **********************************************************/
+#INT_VEC  PIOB_1_VEC pioint
+
+nodebug interrupt pioint(void)
+{
+
+    static char lbuf[6];     // buffer to receive-send header msgs
+    static char val;         // temporary storage for checksum
+    static char *ptr;        // temporary pointer to array
+    static int cnt;          // temp variables
+
+start_pioint:
+                             // enter when strobe signal goes low
+    outport(PIOCB_1, 7);     // disable PIO interrupts
+    outport(PIOCB_1, 0x57);
+    outport(PIOCB_1, 0xfe);
+    piolatch();
+    doreti();                // reset interrupt under service flag
+                             // interlock kernel here
+    EI();
+    // get 1st 4 bytes: op_code, dev_adr, buf_num, [checksum or count_least]
+    if (fastblock(lbuf, 2)) 
+        goto timer;          // read 4 bytes from PC
+    if (lbuf[2] < NBUFS)
+        ptr = bufptrs[lbuf[2]];
+    else 
+        ptr = lbuf;          // point to buffer
+                             // the op codes are 11, 22, 33, 44, 55
+    if (lbuf[0] > 0x22)
+    {
+        outport(PIODB_1, 0xc2); // terminate message received
+        checksum(lbuf, 3);
+        if (summer == lbuf[3])  // this is flag set/ test op
+        {
+            val = 0xaa;         // good checksum
+            if (lbuf[0] == 0x33) 
+                *ptr = 1;
+            else if (lbuf[0] == 0x44) 
+                *ptr = 0;
+            else if (lbuf[0] == 0x55)
+            {
+                if(*ptr) 
+                    val = 0xbb;
+            }                   // return 1 flag
+        }
+        else 
+            val = 0xcc;         // bad checksum
+        if (sendfast(&val, 1)) 
+            goto timer;         // send response
+timer:
+opdone:
+        DI();
+                                // interlock kernel here
+                         // change output data to 0xc ready first command
+        outport(PIODB_1, 0xc2); // now high ack,
+        outport(PIOCB_1, 0x57);
+        outport(PIOCB_1, 0xfe); // mask
+        piolatch();
+        /* negative transitions of strobe after next statement are
+           detected and latch the interrupt request. before, ignored */
+        outport(PIOCB_1, 0x83); // enable interrupts Are pendings caught ??
+        piolatch();
+        if (! (inport(PIODB_1) & 1)) 
+            goto start_pioint;  // strobe beat us
+        return;
+    }
+
+    else                        // receive or request data
+    {
+
+        if (fastblock(&lbuf[4], 1)) 
+            goto timer;         // get 2 more bytes
+        checksum(lbuf, 5);
+        if (summer == lbuf[5])  // checksum on header
+        {
+            val = 0xaa;
+            cnt = *( (int *)&lbuf[3]); // count of bytes to send
+        }
+        else 
+            val = 0xcc;         // bad checksum
+
+        if (lbuf[0] == 0x11)    // receive data from PC
+        {
+            outport(PIODB_1, 0xc2); // enable ready first
+            if (fastblock(ptr, (cnt + 2) / 2)) 
+                goto timer;
+            checksum(ptr, cnt);
+            if (summer != ptr[cnt]) 
+                val = 0xcc;     // force bad checksum
+            ptr[cnt] = 0;       // terminal null
+            if (sendfast(&val, 1)) 
+                goto timer;     // send the acknowledgement
+            goto opdone;
+        }
+        else if (lbuf[0] == 0x22)
+        {
+            if (sendfast(&val, 1)) 
+                goto timer;     // send ack
+            if (val != 0xcc)
+            {
+                if (sendfast(ptr, cnt)) 
+                    goto timer;
+                checksum(ptr, cnt); // compute checksum
+                if (sendfast(&summer, 1)) 
+                    goto timer; // send the checksum
+            }
+            goto opdone;
+        }
+    }
+    goto opdone;
+}
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+fastblock                    <PRPORT.LIB>
+
+SYNTAX: int fastblock(char *buf, unsigned int cnt2);
+
+KEY WORDS: input
+
+DESCRIPTION: Receives a block of data from the PC parallel port. This
+function will not return until the entire block is received, or a timeout
+occurs. buf specifies the location to store the data. cnt2 specifies the
+size of the block to receive in words (1/2 the number of bytes to receive).
+
+RETURN VALUE: 0 if successful; 1 if a timeout occurred.
+END DESCRIPTION **********************************************************/
+useix nodebug int fastblock(char *buf, unsigned int cnt2)
+{
+    static int retval;
+
+#asm xmemok
+   ld l,(ix+buf)
+   ld h,(ix+buf+1)
+   ld de,0a0a2h       ; d and e control for, the "a" is ready_next code
+   ld bc,PIODB_1
+   exx
+   ld l,(ix+cnt2)    ; count
+   ld h,(ix+cnt2+1)  ; count most
+   ld bc,PIODA_1
+   ld e,0            ; least of timeout count
+   exx
+
+; hl pointer to data
+; d put -ack low, e put -ack high
+; hl' 1/2 count of bytes to transfer
+; bc address of port PIODB_1
+; bc' address of port PIODA_1
+; a'- e' timeout counter
+
+;
+ff00:
+ff0:  in    a,(c)       ; 9 look for strobe
+      rra               ; 4
+      jr    nc,ff0a     ; 6
+; second iteration
+      in    a,(c)       ; 9 look for strobe
+      rra               ; 4
+      jr    nc,ff0a     ; 6
+; 3rd iteration
+      in    a,(c)       ; 9 look for strobe
+      rra               ; 4
+      jr    nc,ff0a     ; 6
+; 4th iteration
+      in    a,(c)       ; 9 look for strobe
+      rra               ; 4
+      jr    nc,ff0a     ; 6
+; check timeout
+ff00a1:
+      exx
+      ld de,timeoutc
+      exx
+ff00a2:
+      in a,(c)    ; look for strobe
+      rra
+      jr nc,ff0a
+      exx
+      dec   de
+      ld a,d
+      or e
+      exx
+      jr    nz,ff00a2      ; loop timeoutc times
+#ifdef NO_TIMEOUT
+      jr ff00a2
+#else
+      jr ff8      ; timeout
+#endif
+;/* here found strobe */
+ff0a: exx
+      in    a,(c)       ; 9 get 8 bit data from port A
+      exx
+      out   (c),d       ; ack low first time
+      ld    (hl),a      ; 7 store data
+      inc   hl          ; 4 step pointer
+;
+ff1:
+ff2:  in    a,(c)       ; 9 look for next strobe
+      rra               ; 4 put strobe to carry
+      jr    c,ff3       ; 6 wait for strobe to go high
+; second iteration
+      in   a,(c)
+      rra
+      jr    c,ff3
+; 3rd iteration
+      in   a,(c)
+      rra
+      jr    c,ff3
+; 4th iteration
+      in   a,(c)
+      rra
+      jr    c,ff3
+; check timeout
+ff20a1:
+      exx
+      ld de,timeoutc
+      exx
+ff20a2:
+      in a,(c)    ; look for strobe
+      rra
+      jr c,ff3
+      exx
+      dec   de
+      ld a,d
+      or e
+      exx
+      jr    nz,ff20a2      ; loop timeoutc times
+#ifdef NO_TIMEOUT
+      jr ff20a2
+#else
+      jr ff8      ; timeout
+#endif
+;/* here found high strobe */
+ff3:  exx               ; 3
+      in    a,(c)       ; 9 get 8 bit data from port A
+      exx               ; 3
+      out  (c),e        ; ack goes high
+      ld    (hl),a      ; 7 store data
+      inc   hl          ; 4
+      exx               ; 3
+      dec   l           ; 4
+      exx               ; 3
+      jr    nz,ff00     ; 8 loop over count (104 clocks 1/2 wait, 74 no wait )
+      exx
+      ld    a,h
+      dec   h
+      or    a
+      exx
+      jr    nz,ff00     ; loop back
+; everything received
+; here to break out of loop on good transmission
+      ld hl,0
+      ld a,0a2h       ; ready_next code code and ack high
+      jr ff9
+; timeout
+ff8:  ld hl,1     ;/* if timeout return 1 */
+      ld a,0c2h         ; c is ready first code, abort other side
+      jr ff9
+ff9:
+      ld bc,PIODB_1
+      out   (c),a    ; change signaled back state to abort other side maybe
+      ld (retval),hl ; return code, 1 for timeout
+#endasm
+
+    return retval;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+sendfast                     <PRPORT.LIB>
+
+SYNTAX: int sendfast(char *buf, int cnt4);
+
+KEY WORDS: output, printer
+
+DESCRIPTION: Sends a block of data to the PC parallel port. This function
+will not return until the entire block is sent, or a timeout occurs. buf
+points to the data to send. cnt4 is the size of the block in bytes. This
+function uses port B. On entry PB1, PB2-PB7 are outputs, other bits are
+inputs.
+
+RETURN VALUE: 0 if data sent successfully; 1 if a timeout occurred.
+END DESCRIPTION **********************************************************/
+nodebug useix int sendfast(char *buf, int cnt4)
+{
+
+    static int  retval;
+    static char temp;
+#asm xmemok
+   ld l,(ix+buf)
+   ld h,(ix+buf+1)
+   exx
+   ld e,(ix+cnt4)    ; count
+   ld d,(ix+cnt4+1)  ; count most
+   ld bc,PIODA_1     ; port a data register
+   exx
+   ld de,timeoutc
+   ld bc,PIODB_1     ; control lines
+ffb00:
+   exx
+   in a,(c)          ; get state of other side, make sure receptive
+   exx
+   cp a,088h         ; ready mode code for other side
+   jp z,ffb01         ; jmp if other side ready
+   dec   de       ; timeout count
+   ld a,d
+   or e
+   jr nz,ffb00
+
+#ifdef NO_TIMEOUT
+   jr ffb00    ; change to jr ff8 timeout
+#else
+   jp ff8
+#endif
+
+ffb01:
+; send upper 4 bits of first byte
+;  ************ send first 4-bit nibble **********
+   ld    a,(hl)   ; first byte
+;   ld    e,a      ;stash 1st byte in e
+   or    2        ;make sure -ack, -seltin high still high
+   out   (c),a    ; send data
+; now lower ack
+   and   0fch
+   out   (c),a    ; data and ack enabled  (ack low)
+   ld    de,timeoutc
+ffb02:
+   exx
+   in    a,(c)    ; get data lines and look for 85h, ready for next
+   exx
+   cp 85h
+   jr z,ffb04
+   dec de
+   ld a,e
+   or d
+   jr nz,ffb02
+
+#ifdef NO_TIMEOUT
+   jr ffb02    ; change to jr ff8 timeout
+#else
+   jp ff8
+#endif
+
+ffb04:
+   ld e,(hl)      ; set up e properly
+   jr    ff00b    ; jump into middle of loop
+;
+; send upper 4 bits of first byte
+ff00:
+;  ************ send first 4-bit nibble **********
+   ld    a,(hl)   ; first byte
+   ld    e,a      ;stash 1st byte in e
+   or    2        ;make sure -ack, -seltin high still high
+   out   (c),a    ; send data
+; now lower ack
+   and   0fch
+   out   (c),a    ; data and ack enabled  (ack low)
+ff00b:
+; setup send next 4 bit nibble
+   ld    a,e      ;first byte
+   rla
+   rla
+   rla
+   rla
+   and   0fch  ; ack low
+; ack still low
+   ex    af,af'   ; save in alternate register
+; now wait for reply, strobe low
+ff01:
+   in    a,(c)
+   rra
+   jr    nc,ff02  ; if detected strobe low
+
+   in    a,(c)
+   rra
+   jr    nc,ff02  ; if detected strobe low
+
+   in    a,(c)
+   rra
+   jr    nc,ff02  ; if detected strobe low
+
+   in    a,(c)
+   rra
+   jr    nc,ff02  ; if detected strobe low
+   ld    de,timeoutc     ;timeout value
+ff01a:
+   in    a,(c)    ; second try
+   rra
+   jr    nc,ff02  ; if detected strobe
+   exx
+   in    a,(c)    ; get other data lines
+   exx
+   cp    85h
+   jp    nz,ff8   ; time out if not ready next mode
+; check for timeout here
+   dec   de
+   ld a,e
+   or d
+   jr nz,ff01a
+#ifdef NO_TIMEOUT
+   jr ff01a
+#else
+   jp ff8
+#endif
+; *************send 2nd 4-bit nibble ***************
+ff02:
+   ex    af,af'      ; get next data item, saved in af'
+   out   (c),a ; new data
+   or    2
+   out   (c),a ; now ack set high to signal new data
+; adjust counts, etc.
+   inc   hl    ; step to next byte
+   exx
+   dec   de    ;decrement count
+   ld    a,e
+   or    d
+   ex    af,af'   ; save count in af'
+   exx
+
+; now wait for reply, strobe high
+ff04:
+   in    a,(c)
+   rra
+   jr    c,ff05   ; if detected strobe high
+   in    a,(c)
+   rra
+   jr    c,ff05   ; if detected strobe high
+   in    a,(c)
+   rra
+   jr    c,ff05   ; if detected strobe high
+   in    a,(c)
+   rra
+   jr    c,ff05   ; if detected strobe high
+   ld de,timeoutc     ;set timeout
+ff04a:
+   in    a,(c)    ; second try
+   rra
+   jr    c,ff05   ; if detected strobe not
+   exx
+   in    a,(c)    ; get other data lines
+   exx
+   cp    85h
+  jp    nz,ff8   ; time out if not ready next mode
+; check for timeout here
+   dec   de
+   ld a,e
+   or d
+   jr nz,ff04a
+#ifdef NO_TIMEOUT
+   jr ff04a
+#else
+   jr ff8   ; timeout
+#endif
+
+ff05:
+; now count number of bytes sent
+   ex af,af'      ; get count zero flag
+   jp nz,ff00  ; count not expired
+ff06:
+      ld hl,0     ; good return
+      jp ff9
+; timeout entry
+ff8:  ld hl,1        ; come here for timeout
+ff9:  ld (retval),hl
+      ld bc,PIODB_1
+      ld a,0c2h
+      out   (c),a    ; place ready first code on output
+#endasm
+    return retval;
+}
+
+

@@ -1,0 +1,372 @@
+/***************************************************************************
+SCOREZ1.LIB
+Z-World Engineering   @Copyright 1995
+
+Keyscan routines for the SmartCoreZ1 with the evaluation board. 
+***************************************************************************/
+/*** BeginHeader */
+#if BOARD_TYPE!=SCoreZ1
+#error "SmartCoreZ1 only."
+#endif
+/*** EndHeader */
+
+
+/*** Beginheader */
+#define LCDWR CS3
+#define LCDRD CS3
+/*** EndHeader */
+
+/*** BeginHeader lc_kxinit, lc_kxget */
+void lc_kxinit();
+int lc_kxget(int mode);
+void lc_keyscan();
+unsigned int up_lastkey();
+/*** EndHeader */
+
+#ifndef DebounceCount
+#define DebounceCount   10
+#endif
+
+char lc_kxdead;   // dead key
+char lc_kxkey;    // previous key mask for debouncing
+char lc_keyrpt;   // number of times to stay the same
+char lc_kxbuf[16];   // 16 bytes keypad buffer
+char lc_kxinptr;
+char lc_kxoutptr;    
+unsigned int lc_keycount;
+
+/* START FUNCTION DESCRIPTION ********************************************
+lc_kxinit             <SCOREZ1.LIB>
+
+SYNTAX: void lc_kxinit();
+
+KEYWORDS:   Keypad, init.
+
+DESCRIPTION: Initialize the keypad driver and accessory variables. 
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug 
+void lc_kxinit()
+{
+	lc_kxkey = 0;
+	lc_keyrpt = DebounceCount;
+	lc_kxinptr = lc_kxoutptr = lc_keycount = lc_kxdead = 0;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+lc_kxget             <SCOREZ1.LIB>
+
+SYNTAX: int lc_kxget(int mode);
+
+KEYWORDS:   Keypad.
+
+DESCRIPTION: Fetches the key value from the FIFO keypad buffers. If 
+"mode = 0", value is removed from the buffer; else value remains in the 
+buffer.
+
+RETURN VALUE: Key value or -1, if no key is available.
+END DESCRIPTION **********************************************************/
+nodebug 
+int lc_kxget(int mode)
+{
+	auto char temp;
+
+	if(lc_kxinptr == lc_kxoutptr) return -1;
+
+	temp = lc_kxbuf[lc_kxoutptr];
+	if(!mode)
+		lc_kxoutptr = ++lc_kxoutptr & 0x0f; // step the circular buffer
+	return temp;
+}
+
+/* returns time since last key in units of 1/40 sec
+	max number returned is 0x8000 or 32768 */
+/* START FUNCTION DESCRIPTION ********************************************
+up_lastkey        <SCOREZ1.LIB>
+
+SYNTAX: unsigned int up_lastkey(void);
+
+KEYWORDS: keypad, time
+
+DESCRIPTION: Returns time since last key was pressed, in units of the 
+				 scan rate for function lc_keyscan(). 
+
+RETURN VALUE: Lapsed time.
+END DESCRIPTION **********************************************************/
+nodebug unsigned int up_lastkey(void)
+{
+	 return lc_keycount;
+}
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+lc_keyscan        <SCOREZ1.LIB>
+
+SYNTAX: void lc_keyscan();
+
+KEYWORDS:   
+
+DESCRIPTION: Scan the 2x6 keypad on the Evaluation Board for the SmartCore. 
+A valid key has to be persistent for the number of DebounceCount. Call 
+lc_keyscan in a periodic routine. Valid keys are put in the keypad buffer 
+and accessed via function lc_kxget().
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+#asm nodebug
+lc_keyscan::
+
+		ld    hl, (lc_keycount)
+		inc   hl
+		ld    a, h
+		and   0x80
+		jr    nz, maxout
+		ld    (lc_keycount), hl
+maxout:
+		ld    bc, CS1+6
+		ld    a, 1
+		out   (c), a            ; activate driver KH0
+		ld    bc, CS1+7         ; inc   c
+		out   (c), a            ; activate driver KH1
+		ld    bc, CS2        
+		in    a, (c)
+		and   00111111b
+		cp    00111111b
+		jp    z, nokey_pressed
+
+drvrow1:
+		ld    bc, CS1+7         ; deactivate row 2
+		xor   a
+		out   (c), a
+		
+		ld    bc, CS2
+		in    a, (c)
+		and   00111111b
+		ld    l, a
+
+		xor   a
+		ld    bc, CS1+6
+		out   (c), a
+		
+		ld    a, 00111111b
+		cp    l
+		jr    z, drvrow2
+		ld    h, 0
+
+		jp    keyconvert
+		
+drvrow2:
+		ld    bc, CS1+7
+		ld    a, 1
+		out   (c), a
+
+		ld    bc, CS2
+		in    a, (c)
+		and   00111111b
+		ld    l, a
+
+		xor   a
+		ld    bc, CS1+7
+		out   (c), a
+
+		ld    a, 00111111b
+		cp    l
+		jr    z, nokey_pressed
+		ld    h, 6
+
+keyconvert:             ; convert key pressed to a numeral number
+								; handle one key pressed at a time
+		xor   a
+		ld    bc, CS1+6
+		out   (c), a      ; deactivate row1
+		ld    bc, CS1+7   ; inc   bc
+		out   (c), a      ; deactivate row2
+
+		ld    a, 00100000b   ; start counting from bit 5 
+		ld    c, 1
+		ld    b, 6
+chk_bit:
+		and   l
+		jr    z, bit_is_zero
+		inc   c
+		rra
+		djnz  chk_bit
+
+		jp    nokey_pressed
+
+bit_is_zero:
+		ld    a, c
+		add   a, h
+
+		ld    hl, lc_kxkey
+		cp    (hl)
+
+		jr    nz, new_key
+		jr    same_key
+
+new_key:
+		ld    hl, lc_keyrpt
+		ld    (hl), DebounceCount
+		ld    hl, lc_kxkey
+		jr    check_key
+
+same_key:
+		ld    hl, lc_keyrpt
+		dec   (hl)
+		jr    nz, not_debounced
+		ld    c, DebounceCount
+		srl   c
+		ld    (hl), c           ; DebounceCount/2
+		ld    hl, lc_kxkey
+		ld    (hl), 0           ; zero out previous key
+
+check_key:
+		push  af                ; save the data still in a
+		ld    a, (hl)
+		or    a
+		jr    z, put_key
+		pop   af
+		jr    nokey_pressed
+
+put_key:
+		pop   af
+		ld    (hl), a
+
+		push  af
+		ld    a, (lc_kxinptr)
+		ld    hl, lc_kxoutptr
+		inc   a
+		and   0x0f              ; mask for 16 bytes only
+		cp    (hl)
+		jr    z, kxovfl         ; if same keypad buffer is full, ignore
+		ld    h, a
+		ld    a, (lc_kxinptr)   ; get the old buffer pointer again
+		ld    l, a
+		
+		ld    a, h
+		ld    (lc_kxinptr), a   ; update to new buffer pointer
+		ld    h, 0
+		ld    bc, lc_kxbuf
+		add   hl, bc
+		pop   af                ; pop data back
+		ld    (hl), a           ; store in the data
+
+		ld    hl, 0x0000        ;
+		ld    (lc_keycount), hl ;
+		ld    a, 3
+		ld    (lc_kxdead), a
+
+		jp    end_scankey       ; return a properly debounced key
+
+kxovfl:                       ; over flow buffer
+		pop   af                ; one pop to equalize
+		
+not_debounced:                ; key not debounced yet
+end_scankey:                  ; end scan key after a key is found
+		ret
+
+nokey_pressed:
+		xor      a
+		ld       bc, CS1+6
+		out      (c), a
+		ld       bc, CS1+7      ; inc      bc
+		out      (c), a
+		ld       a, (lc_kxkey)
+		or       a
+		ret      z
+
+check_deadtime:
+		ld       a, (lc_kxdead)
+		or       a
+		jr       nz, decdeadtime
+		xor      a
+		ld       (lc_kxkey), a
+		ret
+
+decdeadtime:
+		dec      a
+		ld       (lc_kxdead), a
+		ret
+#endasm
+
+
+/*** BeginHeader up_beep, lc_beepscan */
+void lc_beepscan();
+//void lc_setbeep(unsigned int count);
+void up_beep(unsigned int millisecond);
+/*** EndHeader */
+
+#ifndef BeepScale
+#define BeepScale       0.04
+#endif
+
+unsigned int my_beepcount;
+
+/* START FUNCTION DESCRIPTION ********************************************
+up_beep        <SCOREZ1.LIB>
+
+SYNTAX: void up_beep(unsigned int k);
+
+KEYWORDS: beep
+
+DESCRIPTION: Sets beeper on for k milliseconds.  Scaling of the count passed
+is dependent on the periodic routines that calls lc_beepscan. E.g. if
+lc_beepscan() is called every 25ms, then BeepScale = 1/25 = 0.04. If 
+BeepScale is undefined, it is defaulted to 0.04.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug
+void up_beep(unsigned int milliseconds)
+{
+	my_beepcount =  milliseconds * BeepScale;
+	outport(CS1+4, 1);
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+lc_beepscan        <SCOREZ1.LIB>
+
+SYNTAX: void lc_beepscan();
+
+KEYWORDS:   
+
+DESCRIPTION: Service the beeper on the Evaluation Board for the SmartCore. 
+Beeper on time should have been set through function up_beep(). Beep on 
+time counter is counted down whenever this function is called. Beeper is 
+turned off once the counter is zero.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+#asm nodebug
+lc_beepscan::
+	ld    hl, (my_beepcount)
+	ld    a, l
+	or    h
+	ret   z
+	dec   hl
+	ld    (my_beepcount), hl
+	ld    a, l
+	or    h
+	ret   nz
+	xor   a
+	ld    bc, CS1+4
+	out   (c), a
+	ret
+#endasm
+	
+  
+	
+	
+/*** BeginHeader _sysZIfPwrFail */
+
+/*** EndHeader */
+
+#asm
+_sysZIfPwrFail::
+			ld		bc,NMI
+			in    a, (c)       ; read NMI bit
+			bit   6, a              ;
+			ret
+#endasm
+

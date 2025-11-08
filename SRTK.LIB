@@ -1,0 +1,219 @@
+
+/* START LIBRARY DESCRIPTION *********************************************
+srtk.LIB
+	Copyright (c) 1994, Z-World.
+
+DESCRIPTION: Provides simplified real time kernel based on use of
+             Function blocks.
+
+SUPPORT LIB'S:
+END DESCRIPTION **********************************************************/
+
+/*** Beginheader blk_speedup */
+	int blk_speedup();
+char lowrequest;
+unsigned long BACK_SEC_TIMER; 
+
+/*** Endheader */
+
+/* _START FUNCTION DESCRIPTION ********************************************
+blk_speedup                    <RTK.LIB>
+
+SYNTAX: blk_speedup();  
+
+KEY WORDS: kernel, multitasking
+
+DESCRIPTION:  allow new thread in run_timer
+
+RETURN VALUE: Undefined.
+END DESCRIPTION **********************************************************/
+
+int blk_speedup(){ 
+	extern char lowrequest;
+	extern long BACK_SEC_TIMER; 
+	#GLOBAL_INIT{lowrequest=0;} 
+	lowrequest=1;
+}
+
+/*** Beginheader init_kernel */
+	int init_kernel(); 
+/*** Endheader */
+
+/* _START FUNCTION DESCRIPTION ********************************************
+init_kernel                  <RTK.LIB>
+SYNTAX: n/a 
+KEY WORDS: kernel, multitasking
+DESCRIPTION:  dummy for compatibility with RTK 
+RETURN VALUE: Undefined.
+END DESCRIPTION **********************************************************/
+init_kernel(){}		
+
+/*** Beginheader run_timer  */
+
+	int run_timer();
+	char pkernel_ready;
+
+/*** Endheader */
+
+/* _START FUNCTION DESCRIPTION ********************************************
+run_timer                    <RTK.LIB>
+
+SYNTAX: int run_timer(void);
+
+KEY WORDS: kernel, multitasking
+
+DESCRIPTION: For the simplified real-time kernel to operate, this function must be
+				called by the virtual driver when timer interrupts occur.
+				There are 2 levels of priority to be processes. The high
+				priority task function (dummy if not defined by the user)
+				is called every 25 ms. The low priority task function
+			   (dummy if not defined by the user) is called every 100 ms.
+				#define RUNKERNEL 1 must be used and init_srtkernel() must
+				be called before the timer interrupt will call this. 			
+
+RETURN VALUE: Undefined.
+END DESCRIPTION **********************************************************/
+// this is the main entry to the real time kernel, call every tick
+
+
+#if CC_VER>=0x420
+#makechain _srtk_hightask
+#makechain _srtk_lowtask
+#endif
+
+#funcchain _sys_25msPostEI run_timer
+
+root int run_timer(){
+
+	static char block1,block2;  // flags to prevent reentry
+	static char intcount; 		// count of entries here
+	extern char lowrequest;
+	extern unsigned long BACK_SEC_TIMER; 
+
+#GLOBAL_INIT {intcount=0; block1=block2=0; pkernel_ready=1;}
+
+	if(pkernel_ready) return; // one time start up flag
+	DI(); if(block1){EI(); return;}  // task busy
+	block1=1;
+	EI();
+
+//  high priority task
+#if CC_VER>=0x420
+	_srtk_hightask();
+#else
+	srtk_hightask();
+#endif
+
+	intcount++; 
+	if( lowrequest || !(intcount&3) ) block1=0;
+	else {block1=0; return;} // block1 zero allows new thread to enter above
+
+	DI(); if(block2) {EI();  return;} 	// task busy
+	block2=1;
+	EI();
+	lowrequest=0;								// any pending request fulfilled
+
+// low priority task
+#if CC_VER>=0x420
+	_srtk_lowtask();
+#else
+	srtk_lowtask();
+#endif
+
+	BACK_SEC_TIMER=SEC_TIMER;  			// keep track of current time crash analysis
+	block2=0;									// allow entry of a new thread
+
+	return;
+}
+
+/*** BeginHeader srtk_hightask */
+
+int srtk_hightask();
+#if CC_VER>=0x420
+#funcchain _srtk_hightask srtk_hightask
+#endif
+
+/*** Endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+srtk_hightask                 <srtk.lib>
+
+SYNTAX:	srtk_hightask(); 
+
+			KEYWORDS:  kernel,cooperative multitasking 
+
+DESCRIPTION: This is the routine called every 25 ms by the SRTK to run
+				high priority tasks.	This is a dummy routine. The user
+				should define an srtk_hightask() function if a high
+				priority thread is desired with the SRTK. 
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+srtk_hightask(){}	// dummy for not supplied by user
+
+
+/*** BeginHeader srtk_lowtask  */
+
+srtk_lowtask();
+#if CC_VER>=0x420
+#funcchain _srtk_lowtask srtk_lowtask
+#endif
+
+/*** Endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+srtk_lowtask                 <srtk.lib>
+
+SYNTAX:	srtk_lowtask(); 
+
+			KEYWORDS:  kernel,cooperative multitasking 
+
+DESCRIPTION: This is the routine called every 100 ms by the SRTK to run
+				high priority tasks.	This is a dummy routine. The user
+				should define an srtk_low() function if a low
+				priority thread is desired with the SRTK. 
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+srtk_lowtask(){}		// dummy if not suppliled by user
+
+
+/*** BeginHeader init_srtkernel */
+
+int init_srtkernel();
+
+/*** Endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+init_srtkernel                <srtk.lib>
+
+SYNTAX:	init_srtkernel(); 
+
+			KEYWORDS:  kernel,cooperative multitasking 
+
+DESCRIPTION:  call to initialize simplified real-time kernel.
+				 Once this is called, periodic interrupts will
+				 automatically invoke the SRTK high and low proirity
+				 tasks. #define RUNKERNEL 1 must be used and the virtual
+				 driver should be initialized before this function is
+				 called
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+
+extern char pkernel_ready;
+
+int init_srtkernel(){
+#ifdef RUNKERNEL
+		pkernel_ready=0; 		// let the kernel interrupts start
+#else
+#if ROM!=1
+		printf("*** need to #define RUNKERNEL 1 to ***\n");
+		printf("***    call init_srtkernel()       ***\n");
+#endif
+#endif
+}
+
+#asm
+dummy: equ run_timer
+#endasm

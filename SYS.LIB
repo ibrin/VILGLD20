@@ -1,0 +1,3917 @@
+/* START LIBRARY DESCRIPTION *********************************************
+SYS.LIB
+	Copyright (c) 1994, Z-World.
+
+DESCRIPTION:
+
+SUPPORT LIB'S:
+END DESCRIPTION **********************************************************/
+
+/*** BeginHeader */
+
+#ifndef __SYS_LIB
+#define __SYS_LIB
+
+#define SWBIT(v,b,s) (v&~b)|(s?b:0)
+
+/*** EndHeader */
+
+/*** Beginheader errno */
+/*** Endheader */
+unsigned int errno;
+
+/*** Beginheader llong_s,st4_s,slong_s,q_s,h_s,doldir_s  */
+/*** Endheader */
+#asm nodebug fast
+
+; library data area items which must be intitialized at run time
+;  Module Shared1.180
+
+
+; modified to enable interrupt only if first off 12/30/89
+; 32 bit common library routines
+; these turn off interrupts
+;   cseg
+; load 32 bit at hl to bc-de
+llong_s::
+	ld a,i   ; iff to parity flag
+	di
+	ld e,(hl)
+	inc   hl
+	ld d,(hl)
+	inc   hl
+	ld c,(hl)
+	inc   hl
+	ld b,(hl)
+	inc   hl
+	ret   po    ;dont enable int if previously off
+	ei
+	ret
+; load 32 bit at address on top of stack to bc-de
+st4_s::  ex (sp),hl
+	call  llong.
+	ex (sp),hl
+; store 32 bit from bc-de to address in hl
+slong_s::
+	ld a,i   ; set parity flag with iff
+	di
+	ld (hl),e
+	inc   hl
+	ld (hl),d
+	inc   hl
+	ld (hl),c
+	inc   hl
+	ld (hl),b
+	ret   po ; if interrupts previously off dont enable
+	ei
+	ret
+;
+; store hl at address pushed on stack, without damaging hl
+q_s:: ex de,hl
+	pop   hl ;return address
+	ex (sp),hl  ; put return back, get address to hl
+	ld a,i   ; save iff in parity
+	di    ;interrupts off
+	ld (hl),e
+	inc   hl
+	ld (hl),d
+	ex de,hl
+	ret   po ; if interupts were off
+	ei
+	ret
+
+; fetch hl <- (hl)
+h_s:: ld a,i   ; iff to parity flag
+	di
+	ld a,(hl)
+	inc   hl
+	ld h,(hl)
+	ld l,a
+	ret   po ; if interrupts previously off
+	ei
+	ret
+; do an ldir shared
+doldir_s::
+	ld a,i
+	push  af
+	di
+	ldir
+	pop   af
+	ret   po ;if interrupts werent on
+	ei
+	ret
+#endasm
+/*** Beginheader sspixfn_,sspixffn_,rspixfn_,rspixffn_ */
+/*** EndHeader */
+/* nouseix versions of entry and exit routines */
+#asm nodebug fast
+
+
+
+; SSPIXFn. : Entry C Function ( Not Interrupt ) (no ix version)
+;
+; CALLING :
+;           ld    hl,stackadj
+;           call  sspixfn_     ;does not use ix
+; INPUT   :
+;           HL = Space Required for Locals
+; OUTPUT  :
+;           None
+
+sspixfn_::
+	pop   iy    ; Ret Addr
+	pop de  ; top of stack
+	push    de
+;   push  ix    ; Save IX
+;   ld ix,0
+;   add   ix,sp    ; Set Frame Pointer
+	add   hl,sp
+	ld sp,hl    ; Adjust Stack
+	ld hl,(STACK_LIMIT)
+	add   hl,sp
+	jp nc,sser1 ; Stack Overflow
+; checksum top 2 bytes of stack (return address)
+	ld a,e
+	xor   d
+
+;   ld a,(ix)      ; Compute Stack Checksum
+;   xor   (ix+1)
+;   xor   (ix+2)
+;   xor   (ix+3)
+	ld hl,(AUX_STACK_PTR)
+	dec   hl
+; order important
+	ld (AUX_STACK_PTR),hl   ; Restore Stack Pointer
+	ld (hl),a      ; Save Checksum
+	ld de,(AUX_STACK_LIMIT)
+	add   hl,de    ; Carry is Clear
+	jp nc,sser2 ; AUX_STACK Overflow
+	push  iy
+	jp .fentry
+
+; SSPIXFF. : Fast Version of sspixf.
+;
+; INPUT  :
+;           HL = Space Required for Locals
+; OUTPUT :
+;           None
+
+sspixffn_::
+	pop   iy    ; Ret Addr
+;   push  ix    ; Save IX
+;   ld ix,0
+;   add   ix,sp    ; Set Frame Pointer
+	add   hl,sp
+	ld sp,hl    ; Adjust Stack
+	push  iy    ; Restore Ret Addr
+	jp .fentry     ; Return
+
+; RSPIXF. : Return from C Function
+;
+; CALLING :
+;           exx
+;           ld    hl,stackadj
+;           call  rspixff.
+; INPUT   :
+;           HL = Stack Adjustment for Function Return
+; OUTPUT  :
+;           None
+
+rspixfn_::
+	pop   iy    ; Error Address
+	add   hl,sp
+	ld sp,hl    ; Adjust Stack
+	pop   hl
+	push  hl
+	ld a,l
+	xor   h  ;checksum
+
+;   ld a,(ix)
+;   xor   (ix+1)
+;   xor   (ix+2)
+;   xor   (ix+3)      ; A = Checksum
+;   pop   ix    ; Restore IX
+	ld hl,(AUX_STACK_PTR)
+	xor   (hl)
+	jp nz,sser3 ; Checksum Error
+	inc   hl    ; Pop from AUX_STACK
+	ld (AUX_STACK_PTR),hl
+	exx         ; Restore C Arguements
+	jp .fexit      ; Allow F8 Key to Function
+
+; RSPIXFF. : Fast Version of rspixf.
+;
+; CALLING :
+;           exx
+;           ld    hl,stackadj
+;           jp    rspixff.
+; INPUT   :
+;           HL = Stack Adjustment for Function Return
+; OUTPUT  :
+;           None
+
+rspixffn_::
+	add   hl,sp
+	ld sp,hl    ; Adjust Stack
+;      pop   ix
+	exx
+	jp .fexit      ; Return
+
+#endasm
+
+/*** BeginHeader sspixrf_,sspixrff_,sspixrffw_,rspixrf_,rspixrff_ */
+/*** Endheader */
+#asm nodebug fast
+
+; Dyanmic C Compaction Routines
+
+;  extrn .fentry     ; Enable F8 Key to Work
+;  extrn .fexit
+;  extrn CBR
+
+;  cseg
+
+; SSPIXRF. : Entry to C Function w/ Register Variables
+;
+; CALLING :
+;           ld    hl,stack_change   -- amount to add to stack pointer
+;           ld    de,register_base  -- address to save-restore registers
+;           ld    bc,count -- count of register bytes to move
+;           call  sspixrf.
+; INPUT   :
+;           HL = Bytes to Add to SP
+;           DE = Address to Save Registers
+;           BC = Size of Register Block
+; OUTPUT  :
+;           None
+
+sspixrf_::
+	pop   iy    ; Ret Addr
+	push  ix
+	ld ix,0
+	add   ix,sp    ; Set Frame Pointer
+	add   hl,sp
+	ld sp,hl    ; Adjust Stack
+	ex de,hl    ; DE = Target is Stack
+	ldir        ; Save Registers
+	ld hl,(STACK_LIMIT)
+	add   hl,sp
+	jp nc,sser1 ; Stack Overflow
+	ld a,(ix)      ; Compute Stack Checksum
+	xor   (ix+1)
+	xor   (ix+2)
+	xor   (ix+3)
+	ld hl,(AUX_STACK_PTR)
+	dec   hl
+; order important to protect aux stack against corruption by interrupt
+	ld (AUX_STACK_PTR),hl   ; Restore Stack Pointer
+	ld (hl),a      ; Save Checksum
+	ld de,(AUX_STACK_LIMIT)
+	add   hl,de    ; Carry is Clear
+	jp nc,sser2 ; AUX_STACK Overflow
+	push  iy    ; Ret Addr
+	jp .fentry     ; Return
+
+
+; SSPIXRFF. : Fast Version of SSPIXRF.
+;
+; CALLING :
+;           ld    hl,stack_change   -- amount to add to stack pointer
+;           ld    de,register_base  -- address to save-restore registers
+;           ld    bc,count -- count of register bytes to move
+;           call  sspixrff.
+; INPUT   :
+;           HL = Bytes to Add to SP
+;           DE = Address to Save Registers
+;           BC = Size of Register Block
+; OUTPUT  :
+;           None
+
+sspixrff_::
+	pop   iy    ; Ret Addr
+	push  ix
+	ld ix,0
+	add   ix,sp    ; Set Frame Pointer
+	add   hl,sp
+	ld sp,hl    ; Adjust Stack
+	ex de,hl    ; DE = Target Stack
+	ldir        ; Save Registers
+	push  iy    ; Restore Ret Addr
+	jp .fentry     ; Return
+
+; version without fentry call
+
+sspixrffw_::
+	pop   iy    ; Ret Addr
+	push  ix
+	ld ix,0
+	add   ix,sp    ; Set Frame Pointer
+	add   hl,sp
+	ld sp,hl    ; Adjust Stack
+	ex de,hl    ; DE = Target Stack
+	ldir        ; Save Registers
+	exx
+	jp (iy)     ;return
+
+
+; RSPIXRF. : Return from C Function w/ Register Variables
+;
+; CALLING :
+;           exx
+;           ld    de,move_to
+;           ld    bc,count_to_move
+;           ld    hl,stack_change
+;           call  rspixrf.
+; INPUT   :
+;           ????
+; OUTPUT  :
+;           None
+
+rspixrf_::
+	pop   iy    ; IY = Error Address
+	push  hl    ; Save Stack Adjustment
+	ld hl,2
+	add   hl,sp    ; Source of Move
+	ldir        ; Restore Registers
+	pop   hl    ; Stack Adjustment
+	add   hl,sp
+	ld sp,hl    ; Adjust Stack
+	ld a,(ix)
+	xor   (ix+1)
+	xor   (ix+2)
+	xor   (ix+3)      ; A = Checksum
+	pop   ix    ; Restore IX
+	ld hl,(AUX_STACK_PTR)
+	xor   (hl)
+	jp nz,sser3 ; Checksum Error
+	inc   hl
+	ld (AUX_STACK_PTR),hl
+	exx   ;get args back
+	jp .fexit      ; Return
+
+; RSPIXRFF. : Fast Version of RSPIXRF.
+;
+; CALLING :
+;           exx
+;           ld    hl,stack_adj
+;           ld    de,regdest
+;           ld    bc,count of reg bytes
+;           jp    rspixrff.
+; INPUT   :
+;           ????
+; OUTPUT  :
+;           None
+
+rspixrff_::
+	push  hl    ; Save Stack Adjustment
+	ld hl,2
+	add   hl,sp    ; Source of Move
+	ldir        ; Restore Registers
+	pop   hl    ; Stack Adjustment
+	add   hl,sp
+	ld sp,hl    ; Adjust Stack
+	pop   ix    ; Restore IX
+	exx
+	jp .fexit      ; Return
+
+#endasm
+
+/*** Beginheader sser3,sser2,sser1 */
+/*** Endheader */
+#asm nodebug fast
+
+sser3::
+	ld hl,128+102  ; Stack Corrupted Runtime Error
+	jp sser1a
+sser2::
+	ld hl,128+104  ; AUX_STACK Overflow
+	jr sser1a
+sser1::
+	ld hl,231   ;128+103  ; Stack Overflow Runtime Error
+sser1a:
+	push  iy    ; Address of Error
+	push  hl    ; Error Code
+	push  hl    ; Dummy Return
+	ld iy,(ERROR_EXIT)
+	jp (iy)     ; Handler Should not Return
+#endasm
+/*** Beginheader sspixf_,sspixff_,rspixf_,rspixff_ */
+
+/*** Endheader */
+#asm nodebug fast
+; version of above without fexit call
+
+
+
+; SSPIXF. : Entry C Function ( Not Interrupt )
+;
+; CALLING :
+;           ld    hl,stackadj
+;           call  sspixf.
+; INPUT   :
+;           HL = Space Required for Locals
+; OUTPUT  :
+;           None
+
+sspixf_::
+	pop   iy    ; Ret Addr
+	push  ix    ; Save IX
+	ld ix,0
+	add   ix,sp    ; Set Frame Pointer
+	add   hl,sp
+	ld sp,hl    ; Adjust Stack
+	ld hl,(STACK_LIMIT)
+	add   hl,sp
+	jp nc,sser1 ; Stack Overflow
+	ld a,(ix)      ; Compute Stack Checksum
+	xor   (ix+1)
+	xor   (ix+2)
+	xor   (ix+3)
+	ld hl,(AUX_STACK_PTR)
+	dec   hl
+; order important
+	ld (AUX_STACK_PTR),hl   ; Restore Stack Pointer
+	ld (hl),a      ; Save Checksum
+	ld de,(AUX_STACK_LIMIT)
+	add   hl,de    ; Carry is Clear
+	jp nc,sser2 ; AUX_STACK Overflow
+	push  iy
+	jp .fentry
+
+; SSPIXFF. : Fast Version of sspixf.
+;
+; INPUT   :
+;           HL = Space Required for Locals
+; OUTPUT  :
+;           None
+
+sspixff_::
+	pop   iy    ; Ret Addr
+	push  ix    ; Save IX
+	ld ix,0
+	add   ix,sp    ; Set Frame Pointer
+	add   hl,sp
+	ld sp,hl    ; Adjust Stack
+	push  iy    ; Restore Ret Addr
+	jp .fentry     ; Return
+
+; RSPIXF. : Return from C Function
+;
+; CALLING :
+;           exx
+;           ld    hl,stackadj
+;           call  rspixff.
+; INPUT   :
+;           HL = Stack Adjustment for Function Return
+; OUTPUT  :
+;           None
+
+rspixf_::
+	pop   iy    ; Error Address
+	add   hl,sp
+	ld sp,hl    ; Adjust Stack
+	ld a,(ix)
+	xor   (ix+1)
+	xor   (ix+2)
+	xor   (ix+3)      ; A = Checksum
+	pop   ix    ; Restore IX
+	ld hl,(AUX_STACK_PTR)
+	xor   (hl)
+	jp nz,sser3 ; Checksum Error
+	inc   hl    ; Pop from AUX_STACK
+	ld (AUX_STACK_PTR),hl
+	exx         ; Restore C Arguements
+	jp .fexit      ; Allow F8 Key to Function
+
+; RSPIXFF. : Fast Version of rspixf.
+;
+; CALLING :
+;           exx
+;           ld    hl,stackadj
+;           jp    rspixff.
+; INPUT   :
+;           HL = Stack Adjustment for Function Return
+; OUTPUT  :
+;           None
+
+rspixff_::
+	add   hl,sp
+	ld sp,hl    ; Adjust Stack
+		pop   ix
+	exx
+	jp .fexit      ; Return
+
+#endasm
+
+
+
+
+/*** BeginHeader setjmp,longjmp */
+
+int setjmp(jmp_buf env);
+void longjmp(jmp_buf env, int val);
+
+/*** EndHeader   setjmp,longjmp */
+
+/* START FUNCTION DESCRIPTION ********************************************
+setjmp                       <SYS.LIB>
+
+SYNTAX: int setjmp(jmp_buf env);
+
+KEYWORDS:
+
+DESCRIPTION: Store the PC (program counter), SP (stack pointer) and other
+information about the current state into env.  The saved information can
+be restored by executing longjmp.
+
+Typical usage:
+
+switch (setjmp(e)) {
+	case 0:
+		// first time
+		f();     // try to execute f, which may eventually call longjmp
+		break;   // if we get here, f() was successful
+	case 1:
+		// if we get to here f() must have called longjmp
+		// do exception handling
+		break;
+	case 2:
+		// similar to above, just a different exception code.
+		...
+	}
+
+f() {
+	g()
+	...
+	}
+
+g() {
+	...
+	longjmp(e,2);     // exception code 2
+							// jump back to setjmp statement,
+							// but causes setjmp to return 2, and
+							// therefore execute case 2 in the switch
+							// statement
+	}
+
+PARAMETER1: information about the current state
+
+RETURN VALUE: Returns zero if it is executed.  After longjmp is executed,
+the program counter, stack pointer and etc. are restored to the state
+when setjmp was executed the first time.  However, this time setjmp returns
+whatever value is specifed by the longjmp statement.
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+longjmp                      <SYS.LIB>
+
+SYNTAX: void longjmp(jmp_buf env, int val);
+
+KEYWORDS:
+
+DESCRIPTION: Restores the stack environment saved in array env[].  See
+the description of setjmp for details of usage.
+
+PARAMETER1: environment previously saved with setjmp()
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+#asm  nodebug fast
+
+;  SETJMP.CC
+;
+;  Purpose:
+;
+;    SETJMP saves its stack environment in array env[] for possible
+;    later use by LONGJMP. It returns the value 0.
+;
+;    LONGJMP restores the stack environment saved in array env[].
+;    The only confusing issue is how the return is made, and the effect
+;    on the registers.
+;
+;          LONGJMP RETURN:  HL=VAL
+;                           AF,BC,DE clobbered
+;                           PC=address after the CALL SETJMP
+;                              that created the data in env[].
+;                           SP=env[0] - same as set by SETJMP
+;
+;    The use of SETJMP is not dangerous, since all it does is save
+;    values. LONGJMP may be a problem if SETJMP is called recursively.
+;
+;  Reference: S.R.Bourne, "The Unix System", Addison-Wesley, 1983
+;
+
+setjmp::
+		pop      bc
+		pop      de                   ; point to env[] structure
+		ld       hl,0                 ; Get Location of SP
+		add      hl,sp
+		push     de
+		push     bc
+		ex       de,hl                ; HL = env
+		ld       (hl),e               ; save stack pointer
+		inc      hl
+		ld       (hl),d
+		inc      hl
+		ld       de,(AUX_STACK_PTR)   ; Save Auxiliary Stack
+		ld       (hl),e
+		inc      hl
+		ld       (hl),d
+		inc      hl
+		push     ix                   ; Save IX
+		pop      de
+		ld       (hl),e
+		inc      hl
+		ld       (hl),d
+		inc      hl
+		ld       (hl),c               ; save return address
+		inc      hl
+		ld       (hl),b
+		inc     hl
+		in0     a,(CBR)
+		ld          (hl),a                  ; save CBR
+		ld       hl,0
+		ret
+
+longjmp::
+		pop      bc                   ; Return Addr
+		pop      hl                   ; Jump Buffer
+		ld       e,(hl)               ; DE = Stack Pointer
+		inc      hl
+		ld       d,(hl)
+		inc      hl
+		ld       c,(hl)               ; Restore AUX_STACK_PTR
+		inc      hl
+		ld       b,(hl)
+		inc      hl
+		ld       (AUX_STACK_PTR),bc
+		ld       c,(hl)               ; Restore IX
+		inc      hl
+		ld       b,(hl)
+		inc      hl
+		push     bc
+		pop      ix
+		ld       a,(hl)               ; HL = Return Addr
+		inc      hl
+;      ld       h,(hl)
+;      ld       l,a
+		ld          b,(hl)
+		ld          c,a
+		push        bc
+		inc     hl
+		ld          a,(hl)
+		out0        (CBR),a
+		pop     hl
+
+		ex       de,hl
+		pop      bc                   ; Value
+		ld       sp,hl                ; stack reset to old value
+		ld       h,b                  ; return VAL in HL
+		ld       l,c
+		push     de                   ; Dummy Parameter to be Popped by setjmp
+		push     de                   ; put on new return address
+		ret
+
+#endasm
+
+/*** BeginHeader malloc,bfree,free,pack */
+
+int free(void * ptr);
+void *malloc(unsigned size);
+unsigned bfree(void *lo, void *hi);
+
+/*** EndHeader   malloc,bfree,free,pack */
+
+/*=========================================================================*\
+	Implementation of multiple heaps w/ set boundaries (i.e. will not run
+	into stack, although the stack may run into heap) and multiple free
+	blocks (i.e. intentional fragmentation for tight memory or working
+	around memory mapped i/o).
+
+	All blocks on free list begin with 2 words - block size (includes 4 bytes
+	for header) and a pointer to next block on free list (NULL if last
+	block in list). Blocks are kept in order, with the block with the
+	lowest address being pointed to by alloc_h, the allocation table head
+	pointer. A block which is allocated for user storage is removed from
+	the free list, the size field is set to reflect the size of the block
+	( this time only including two bytes for the size field - the next
+	field is available for overwrite by the user ), and the pointer returns
+	the address of the byte immediately following the size tag. Any writing
+	in an allocated space obscures any size or next field will probably
+	sacrafice the integrity of the dynamic allocation system.
+\*=========================================================================*/
+
+/*=========================================================================*\
+	Current free list head pointer; This MUST be manually initialized to
+	0 (i.e. NULL) prior to calls to bfree(). This must be done to avoid
+	the embedding of alloc_h in the cseg, which is what happens with
+	the initialization "int *alloc_h = NULL;"
+\*=========================================================================*/
+
+struct free_list    *alloc_h;
+
+/*=========================================================================*\
+	Allocates a dynamic block of size bytes and returns a pointer to the
+		beginning of this block.
+
+		o  Malloc() returns NULL (i.e. 0) if not enough consecutive bytes
+				are available to fill the request. At this point, pack() may
+				solve the problem. If NULL is returned again, more memory, if
+				available, call be made available with the bfree() command.
+
+		o  The pointer returned is immediately preceeded by the size of the
+				allocated block. This size is two larger (to accomadate the
+				size header) than requested. The is how free() knows how
+				much memory is to be deallocated.
+
+		o  Malloc()s for small sizes can be quite memory inefficient since
+				each malloc() requires a two byte overhead.
+\*=========================================================================*/
+
+/* START FUNCTION DESCRIPTION ********************************************
+malloc                       <SYS.LIB>
+
+SYNTAX: void *malloc(unsigned size);
+
+KEYWORDS: memory
+
+DESCRIPTION: Allocates a dynamic block of "size" bytes.  Must call bfree
+before using malloc (compiler automatically calls bfree before main
+if the user reserves some heap space in the logical memory options).
+Because malloc uses a global free list pointer, malloc cannot be
+preempted by another malloc.
+
+PARAMETER1: size of block to allocate
+
+RETURN VALUE: Pointer to beginning of block; or NULL, if space is 
+unavailable.
+END DESCRIPTION **********************************************************/
+
+nodebug void *malloc(unsigned size)
+{
+	register struct free_list    *p, *q, *f;
+
+	if (alloc_h == NULL)
+		return (NULL);
+	size += 2;
+	q = NULL;
+	p = alloc_h;
+	while (p->size < size)
+		if ((p = (q = p) ->next) == NULL)
+			return (NULL);
+	if (p->size >= size && p->size <= size + 3)
+	{
+		if (q == NULL)
+			alloc_h = p->next;
+		else
+			q->next = p->next;
+		return ((char *) p + 2);
+	}
+/*
+ *      p->size -= size;
+ */
+	p->size = p->size - size;
+	f = (struct free_list *)((char *)p + p->size);
+	f->size = size;
+	return ( (void *)f + 2);
+}
+
+/*=========================================================================*\
+	Defines block of RAM, from lo to hi inclusive, as available for dynamic
+		allocation.
+
+		o  Bfree() can be called as many times as desired. Multiple calls will,
+		  however, result in slow response to the dynamic system call and
+		  will fragment memory.
+
+		o  If bfree()d blocks overlap, the pack() call must be made to correct
+		  the free list. Otherwise, memory will probably be allocated twice
+		  and some list header will be overwritten.
+\*=========================================================================*/
+
+/* START _FUNCTION DESCRIPTION ********************************************
+bfree                        <SYS.LIB>
+
+SYNTAX: unsigned bfree(void *lo, void *hi);
+
+KEYWORDS: memory
+
+DESCRIPTION: Defines block of RAM, from lo to hi inclusive, as available 
+for dynamic allocation.
+
+RETURN VALUE: Non-zero if successful.
+END DESCRIPTION **********************************************************/
+nodebug unsigned bfree(void *lo, void *hi)
+{
+	int size;
+
+	if ((size = (int) hi - (int) lo + 1) < 4)
+		return (0);
+	* (int *) lo = size;
+	return (free((int *)lo + 1));
+}
+
+/*=========================================================================*\
+	Put block of dynamically allocated RAM pointed to by f back on free list.
+
+		o  Free() is not to be confused with bfree().
+
+		o  Free()ing memory not allocated my malloc will result in failure of
+			dynamic allocation system.
+
+		o  Packing does not occur automatically after a block is free()d.
+		  Since free()ing and malloc()ing usually occur in bursts, the
+		  proper procedure is to free() as many items as desired and then
+		  call the pack() routine.
+\*=========================================================================*/
+
+/* START FUNCTION DESCRIPTION ********************************************
+free                         <SYS.LIB>
+
+SYNTAX: int free(void *f);
+
+KEYWORDS: memory
+
+DESCRIPTION: Returns block of dynamically allocated RAM back to the free list.
+
+PARAMETER1: pointer to the block to free
+
+RETURN VALUE: Non-zero if successful.
+END DESCRIPTION **********************************************************/
+nodebug int free(void * f1)
+{
+	struct free_list    *p, *q;
+	struct free_list *f;
+
+	f = (struct free_list *)((char *)f1 - sizeof (p->size));
+	if (f->size < 3)
+		return (0);
+	p = alloc_h;
+	q = NULL;
+	while (p < f && p != NULL)
+		p = (q = p) ->next;
+	if (q == NULL)
+		alloc_h = f;
+	else
+		q->next = f;
+	f->next = p;
+	pack();
+	return (1);
+}
+
+/*=========================================================================*\
+	Reduces fragmentation of dynamic memory by linking adjacent blocks.
+
+		o  This is not done automatically after free(). This allow multiple
+		  free()s to occur before packing, thus avoiding some computational
+		  overhead.
+
+		o  Pack() will even fix free()d or bfree()d section that overlap, thus
+		  avoiding the problem of multiple allocations of the same memory.
+		  This is necessary since it is possible that an embedded program
+		  may not know ahead of time how much memory call be bfreed(), and
+		  may make such an overlap error.
+\*=========================================================================*/
+
+/* START FUNCTION _DESCRIPTION ********************************************
+pack                         <SYS.LIB>
+
+SYNTAX: int pack(void);
+
+KEYWORDS: memory
+
+DESCRIPTION: Reduces fragmentation of dynamic memory by linking adjacent 
+blocks.
+
+RETURN VALUE: The total amount of bytes that is free.
+END DESCRIPTION **********************************************************/
+nodebug pack(void)
+{
+	struct free_list *p, *q;
+	int              size;
+
+	if ((q = alloc_h) == NULL)
+		return (0);
+	p = alloc_h->next;
+	size = 0;
+	while (q != NULL)
+	{
+		if ((char *)q + q->size >= (char *)p - 1)
+		{
+			q->size = ((char *)p + p->size) - (char *)q;
+			q->next = p = p->next;
+		}
+		else
+		{
+			size += q->size;
+			p = (q = p) ->next;
+		}
+	}
+	return (size);
+}
+
+
+/*** BeginHeader calloc */
+
+void *calloc(unsigned count, unsigned size);
+
+/*** EndHeader   calloc */
+
+/***************************************************************************\
+	ANSI Memory Allocation
+
+		 void    *calloc ( size_t count, size_t size )
+\***************************************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+calloc                       <SYS.LIB>
+
+SYNTAX: void *calloc(unsigned count, unsigned size);
+
+KEYWORDS: memory
+
+DESCRIPTION:   Allocate memory "count" memory blocks, each of "size" bytes
+long.
+
+PARAMETER1: number of blocks to allocate
+
+PARAMETER2: size of blocks to allocate
+
+RETURN VALUE:  A pointer to the allocated block.
+END DESCRIPTION **********************************************************/
+nodebug void *calloc(unsigned count, unsigned size)
+{
+	int  i;
+	void *p;
+
+	// 20 Dec 90 fix memset store to zero, if malloc returns null
+	if (p = malloc(i = size * count)) 
+		memset(p, 0, i);
+	return (p);
+}
+
+/*** Beginheader _param2,_param3,.param2,.param3  */
+/*** Endheader */
+
+#asm nodebug fast
+.param2::
+_param2::
+	pop   iy    ; Protect Return Address
+	pop   bc    ; Protect Caller's Return Address
+	pop   hl    ; First Parameter
+	pop   de    ; Second Parameter
+	push  de    ; Restore Stack
+	push  hl
+	push  bc
+	push  iy
+	ret
+; Read Three Parameters of Stack
+;
+; HL = First Parameter
+; DE = Second Parameter
+; BC = Third Parameter
+;
+
+.param3::
+_param3::
+	exx         ; Use Alternate Registers for Protection
+	pop   hl    ; Protect Return Address
+	pop   de    ; Protect Caller's Return Address
+	exx         ; Read Parameters
+	pop   hl    ; First Parameter
+	pop   de    ; Second Parameter
+	pop   bc    ; Third Parameter
+	push  bc    ; Restore Stack
+	push  de    ; Restore Stack
+	push  hl
+	exx
+	push  de
+	push  hl
+	exx
+	ret
+#endasm
+
+/*** BeginHeader qsort */
+
+int qsort(char *base, unsigned n, unsigned s, int (*cmp) ());
+
+/*** EndHeader   qsort */
+
+
+/* START FUNCTION _DESCRIPTION ********************************************
+swap                         <SYS.LIB>
+
+SYNTAX: swap(char a[], char b[], int s)
+
+KEYWORDS:
+
+DESCRIPTION:
+
+RETURN VALUE:
+END DESCRIPTION **********************************************************/
+nodebug static swap(a, b, s)
+char a[], b[];
+int s;
+{
+	static char tmp;
+	static int i;
+
+	for (i = 0; i < s; ++i)
+	{
+		tmp = a[i];
+		a[i] = b[i];
+		b[i] = tmp;
+	}
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+qsort                       <SYS.LIB>
+
+SYNTAX: int qsort(char *base, unsigned n, unsigned s, int (*cmp) ());
+
+KEYWORDS: sort
+
+DESCRIPTION:   
+			 Quicksort with center pivot, stack control,
+			 and easy-to-change comparison method.
+
+			 This version sorts fixed-length data items.
+			 It is ideal for integers, longs, floats and
+			 packed string data without delimiters.
+				
+Notes:
+			 o Qsort() can sort raw integers, longs, floats or
+			   strings. However, the string sort is not efficient.
+			 o Use quick() to sort string pointer arrays.
+			 o Use cmpi(), cmpl(), cmpf(), cmps() to compare integers,
+			   longs, floats and strings, respectively.
+Example:     Sort an array of integers.
+
+ #use stdio.lib
+ int mycmp(p,q) int *p,*q; { return (*p - *q);}
+ int q[10] = {12,1,3,-2,16,7,9,34,-90,10};
+ int p[10] = {12,1,3,-2,16,7,9,34,-90,10};
+ main()
+  {
+  int i;
+		  qsort(p,10,2,mycmp);
+		  for(i=0;i<10;++i) printf("%d. %d, %d\n",i,p[i],q[i]);
+  }
+
+ Output from the above sample program:
+
+ 0. -90, 12
+ 1. -2, 1
+ 2. 1, 3
+ 3. 3, -2
+ 4. 7, 16
+ 5. 9, 7
+ 6. 10, 9
+ 7. 12, 34
+ 8. 16, -90
+ 9. 34, 10
+
+ References: BYTE Oct-84, p 369      The Unix Book, p 200
+			 By William M. Raike     by Banahan & Rutter
+			 B*Y*T*E J*A*P*A*N       John Wiley & Sons, NY (1983)
+
+
+PARAMETER1: Base address of the raw string data
+PARAMETER2: Number of blocks to sort
+PARAMETER3: Number of bytes in each block
+PARAMETER4: Compare routine for two block pointers
+			p,q that returns an integer with the
+			same rules used by Unix strcmp(p,q):
+ 
+			= 0     Blocks p,q are equal
+			< 0     p < q
+			> 0     p > q
+ 
+Beware of using ordinary strcmp() - it
+requires a NULL at the end of each string.
+
+RETURN VALUE:  Zero if the operation is successful.
+END DESCRIPTION **********************************************************/
+nodebug int qsort(char *base, unsigned n, unsigned s, int (*CMP) ())
+{
+	auto int i, j, piv, lo, hi;
+	auto char *pivot;
+
+#define cmp (*CMP)
+	lo = 0;
+	hi = n - 1;
+	if (lo < hi)
+	{
+		piv = (lo + hi) / 2; // center pivot
+		i = lo;
+		j = hi;
+		pivot = &base[s * piv];
+		while (i < j)
+		{
+			while (i < j && cmp(&base[s * i], pivot) <= 0)
+				++i;
+			while (i < j && cmp(&base[s * j], pivot) >= 0)
+				--j;
+			if (i < j)
+				swap(&base[s * i], &base[s * j], s);
+		}
+		if (piv < i && cmp(&base[s * i], pivot) > 0)
+			--i;
+		swap(&base[s * i], &base[s * piv], s);
+		if (i - lo <= hi - i)
+		{                    // control stack
+			qsort(&base[s * lo], i - lo, s, CMP);
+			qsort(&base[s * (i + 1)], hi - i, s, CMP);
+		}
+		else
+		{
+			qsort(&base[s * (i + 1)], hi - i, s, CMP);
+			qsort(&base[s * lo], i - lo, s, CMP);
+		}
+	}
+	return 0;
+}
+
+/*** BeginHeader rad */
+
+float rad(float x);
+
+/*** EndHeader   rad */
+
+/*
+ * RAD
+ *
+ * Purpose:
+ *              Changes FLOAT x degrees to radians
+ * Returns:
+ *              angle in radians (a FLOAT)
+ * Method:
+ *              angle = (PI/180.0)*x;
+ */
+
+/* START FUNCTION DESCRIPTION ********************************************
+rad                          <SYS.LIB>
+
+SYNTAX: float rad(float x);
+
+KEYWORDS: convert
+
+DESCRIPTION:   Convert degrees (360 for one rotation) to radians (2pi
+for a rotation).
+
+PARAMETER1: degree value to convert
+
+RETURN VALUE:  The radians equivalent to the passed in degree.
+END DESCRIPTION **********************************************************/
+nodebug FLOAT rad(FLOAT x)
+{
+	return (x * (PIby180));
+}
+
+/*** BeginHeader realloc */
+
+char *realloc(void *ptr, unsigned size);
+
+/*** EndHeader   realloc */
+
+/***************************************************************************\
+	ANSI Memory Reallocation
+
+		 void    *realloc ( void *ptr, size_t size )
+\***************************************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+realloc                      <SYS.LIB>
+
+SYNTAX: char *realloc(void *ptr, unsigned size);
+
+KEYWORDS: memory
+
+DESCRIPTION:   Reallocates memory.  First, dynamically allocate memory
+of the new size "size", then moves "size" many bytes from "ptr" to the
+new location.
+
+PARAMETER1: pointer to source from which to copy into new memory block
+
+PARAMETER2: size to allocate and copy.
+
+RETURN VALUE:  The address of the new block of memory if reallocation was
+successful, otherwise returns NULL.
+END DESCRIPTION **********************************************************/
+nodebug char *realloc(void *ptr, unsigned size)
+{
+	auto void *p;
+
+	if ((p = malloc(size)) == NULL)
+		return (NULL);
+	memmove(p, ptr, size);
+	free(ptr);
+	return (p);
+}
+
+/*** BeginHeader getvect,setvect */
+typedef void (*isr_ptr)();
+isr_ptr getvect(unsigned intrno);
+void setvect(unsigned intrno, isr_ptr isr);
+/*** EndHeader   getvect,setvect */
+/* START FUNCTION DESCRIPTION ********************************************
+getvect                      <SYS.LIB>
+
+SYNTAX: isr_ptr getvect(unsigned intrno);
+
+KEYWORDS: interrupt
+
+DESCRIPTION:   Get the address of the handler of interrupt number
+"intrno".
+
+PARAMETER1: vector number
+
+RETURN VALUE:  Returns the address of the handler.
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+setvect                      <SYS.LIB>
+
+SYNTAX: void setvect(unsigned intrno, isr_ptr isr);
+
+KEYWORDS: interrupt
+
+DESCRIPTION:   Sets a new handler "isr" for interrupt number "intrno".
+isr_ptr is a typedef for a pointer to a function that returns void and
+takes no arguments.
+
+PARAMETER1: interrupt number
+
+PARAMETER2: new handler
+
+RETURN VALUE:  None.
+END DESCRIPTION **********************************************************/
+
+
+#asm nodebug fast
+
+; Borland Compatible
+; void interrupt (* getvect ( unsigned intrno ))
+
+getvect::
+		ld       h,0               ; Intrno Must be Even and Less than 255
+		res      0,l
+		ld       a,i               ; Get Current Table Location
+		ld       d,a
+		ld       e,0
+		add      hl,de             ; HL = Address of Vector
+		ld       e,(hl)
+		inc      hl
+		ld       d,(hl)
+		ex       de,hl             ; HL = Address of Handler
+		ret                        ; Done
+
+#endasm
+
+#asm nodebug fast
+
+; Borland Compatible
+; void setvect ( unsigned intrno, void interrupt (*isr)() )
+
+setvect::
+		call     .param2           ; Get Parameters
+		ld       h,0               ; Intrno Must be Even and Less than 255
+		res      0,l
+		ld       a,i               ; Get Current Table Location
+											; Save IFF1 in P/V Flag
+		ld       b,a
+		ld       c,0
+		add      hl,bc             ; HL = Address of Vector
+		di                         ; Stop Interrupts to Avoid Crashes
+		ld       (hl),e
+		inc      hl
+		ld       (hl),d
+		ret      po                ; Return if Interrupts to be Left Off
+		ei                         ; Interrupts Restored
+		ret                        ; Done
+
+#endasm
+
+/*** BeginHeader iff */
+
+int iff(void);
+
+/*** EndHeader   iff */
+
+/* START FUNCTION DESCRIPTION ********************************************
+iff                          <SYS.LIB>
+
+SYNTAX: int iff(void);
+
+KEYWORDS: interrupt
+
+DESCRIPTION:   Checks if the interrupt flag is on.
+
+RETURN VALUE:  Returns 1 if the interrupt flag is on, 0 otherwise.
+END DESCRIPTION **********************************************************/
+#asm nodebug fast
+
+; Return States of Interrupt Enable Flip Flop
+;
+; int iff ( void )
+
+iff::
+		ld       hl,0              ; Set Return Value False ( Interrupts Off )
+		ld       a,i               ; Save IFF1 in P/V Flag
+		ret      po                ; Return if Interrupts Off
+		inc      hl                ; Return True for Interupts On
+		ret                        ; Done
+
+#endasm
+
+/*** Beginheader F_not  */
+
+/*** Endheader  */
+
+#asm fast
+F_not::
+	ld hl,1
+	ld a,b
+	or c
+	or d
+	or e
+	ret   z
+	dec   l
+	ret
+#endasm
+
+/*** BeginHeader setireg */
+
+void setireg(char i);
+char readireg();
+
+/*** EndHeader setireg */
+
+/* START FUNCTION DESCRIPTION ********************************************
+setireg                      <SYS.LIB>
+
+SYNTAX: void setireg(char i);
+
+KEYWORDS:
+
+DESCRIPTION:   Set the interrupt register to "i".
+
+PARAMETER1: value to put in interrupt register. This sets the interrupt table
+location to i<<8.
+
+RETURN VALUE:  None.
+
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+readireg                     <SYS.LIB>
+
+SYNTAX: char readireg(void);
+
+KEYWORDS:
+
+DESCRIPTION:   Read the interrupt register.
+
+RETURN VALUE:  The interrupt register. Shift this value left 8 bits for the
+location of the interrupt vector table.
+
+END DESCRIPTION **********************************************************/
+
+#asm nodebug fast
+setireg::
+		ld      a,l
+		ld i,a
+		ret
+#endasm
+
+/*** BeginHeader hl0 */
+
+/*
+
+STOPPED && INIT: task is "dead" not active
+STOPPED && !INIT: task is waiting for something, but is "active"
+!STOPPED && INIT: "restart" from beginning, reset the flag
+!STOPPED && !INIT: use current PC field
+
+*/
+
+//
+// 07/03/97 jjb - _CS_INITB is the bit that is set by |= _CS_INIT
+//
+#define _CS_STOPPED 0x01
+#define _CS_INIT 0x02
+#define _CS_NORESET 0x04
+#define _CS_INITB 1
+
+typedef struct _CoData
+{
+	char CSState;            // +0
+		// CSState is assumed to be
+		// the first byte of the structure,
+		// if moved, must change the
+		// rest of the costatement support
+		// code!
+	unsigned lastlocADDR;    // +1
+	char lastlocCBR;         // +3
+	char ChkSum;             // +4
+	char firsttime;          //
+	union
+	{
+		unsigned long ul;
+		struct
+		{
+			unsigned u1;
+			unsigned u2;
+		} us;
+	} content;
+	char ChkSum2;
+} CoData;
+
+/*** EndHeader */
+
+#asm fast
+
+hl0::
+		ld      a,0
+		cp      l
+		jr      nz,c1
+		cp      h
+c1:
+		ret
+
+#endasm
+
+/*** BeginHeader funcblk_entry, funcblk_exit, funcblk_init,CoBegin,CoReset */
+
+#define EFUNCBLK 243
+void CoBegin( CoData *p);
+void CoReset( CoData *p);
+void TaskBegin( CoData *p);
+void TaskReset( CoData *p);
+void TaskPause( CoData *p);
+void CoPause( CoData *p);
+int isCoRunning( CoData *p);
+int isCoDone( CoData *p);
+int isTaskRunning( CoData *p);
+int isTaskDone( CoData *p);
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION ********************************************
+CoBegin                      <SYS.LIB>
+
+SYNTAX: void CoBegin(CoData *p);
+
+KEYWORDS: funcblk, costate
+
+DESCRIPTION:   Initialize a costatement structure so the costatement will
+be executed next time it is encountered.
+
+PARAMETER1: address of costatement
+
+RETURN VALUE:  None.
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+CoReset                      <SYS.LIB>
+
+SYNTAX: void CoReset(CoData *p)
+
+KEYWORDS: funcblk, costate
+
+DESCRIPTION:   Initializes a costatement structure so the costatement will
+not be executed next time it is encountered.  (unless the costatement is
+declared always_on).
+
+PARAMETER1: address of costatement
+
+RETURN VALUE:  None.
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+CoPause                      <SYS.LIB>
+
+SYNTAX: void CoPause(CoData *p)
+
+KEYWORDS: costate
+
+DESCRIPTION:   pause execution of a costatement so that it will not run
+the next time it is encountered unless and until CoResume(p) or CoBegin(p)
+are called.
+
+PARAMETER1: address of costatement
+
+RETURN VALUE:  None.
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+CoResume                      <SYS.LIB>
+
+SYNTAX: void CoResume(CoData *p)
+
+KEYWORDS: costate
+
+DESCRIPTION:   Resume execution of a costatement that has been paused.
+
+PARAMETER1: address of costatement
+
+RETURN VALUE:  None.
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+isCoDone                      <SYS.LIB>
+
+SYNTAX: int isCoDone(CoData *p)
+
+KEYWORDS: costate
+
+DESCRIPTION: Determine if costatement is initialized and not running  
+
+PARAMETER1: address of costatement
+
+RETURN VALUE:  1 if costatement is initialized and not running else 0
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+isCoRunning                      <SYS.LIB>
+
+SYNTAX: int isCoRunning(CoData *p)
+
+KEYWORDS: costate
+
+PARAMETER1: address of costatement
+
+DESCRIPTION: Determine if costatement is stopped or running  
+
+RETURN VALUE:  1 if costatement is running else 0
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+TaskBegin                      <SYS.LIB>
+
+SYNTAX: void TaskBegin(CoData *p);
+
+KEYWORDS: funcblk, costate
+
+DESCRIPTION:   Initialize a costatement structure so the costatement will
+be executed next time it is encountered.
+
+PARAMETER1: address of costatement
+
+RETURN VALUE:  None.
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+TaskReset                      <SYS.LIB>
+
+SYNTAX: void TaskReset(CoData *p)
+
+KEYWORDS: task, costate
+
+DESCRIPTION:   Initializes a task so the task will
+not be executed next time it is encountered.  
+
+PARAMETER1: address of task
+
+RETURN VALUE:  None.
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+TaskPause                      <SYS.LIB>
+
+SYNTAX: void TaskPause(CoData *p)
+
+KEYWORDS: task
+
+DESCRIPTION:   pause execution of a task so that it will not run
+the next time it is encountered unless and until TaskResume(p) or TaskBegin(p)
+are called.
+
+PARAMETER1: address of task
+
+RETURN VALUE:  None.
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+TaskResume                      <SYS.LIB>
+
+SYNTAX: void TaskResume(CoData *p)
+
+KEYWORDS: task, costate
+
+DESCRIPTION:   Resume execution of a task that has been paused.
+
+PARAMETER1: address of task
+
+RETURN VALUE:  None.
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+isTaskDone                      <SYS.LIB>
+
+SYNTAX: void isTaskDone(CoData *p)
+
+KEYWORDS: task, costate
+
+DESCRIPTION: Determine if task is initialized and not running  
+
+PARAMETER1: address of task
+
+RETURN VALUE:  1 if task is initialized and not running else 0
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+isTaskRunning                      <SYS.LIB>
+
+SYNTAX: void isTaskRunning(CoData *p)
+
+KEYWORDS: task, costate
+
+PARAMETER1: address of task
+
+DESCRIPTION: Determine if task is stopped or running  
+
+RETURN VALUE:  1 if task is running else 0
+END DESCRIPTION **********************************************************/
+
+#asm fast
+
+; modified 3-Dec-94 to fix up handling of start conditions
+; and to speed execution NLR
+; if 16 bit address is zero function block is inactive
+; if 16 bit address is zero and start flag is non zero
+;  then a start is done and the start flag is cleared
+; if the 16 bit address is non zero the fb is active
+;  and a jump tot he 24 bit address is performed
+; 53 clocks to jump around inactive function block
+; 107 clocks to jump into function block
+; 98 clocks to start function block
+;; on entry hl = address of structure
+;; returns zero flag to skip past function block if at start
+;; non zero flag to enter into block
+;; 
+funcblk_entry::
+		ld    a,(hl)   ; get status flag
+		and ~_CS_NORESET
+		ld      (hl),a
+		and   _CS_STOPPED | _CS_INIT
+		jr    nz,f050
+		inc   hl
+		ld    e,(hl)
+		inc   hl
+		ld    d,(hl)
+		jr    fblk_on  ; if function block already started
+f050:
+;
+; changed 07/02/97 jjb - since a already contains (hl) & (_CS_STOPPED | _CS_INIT)
+;                        these instructions change for the next one.
+;
+;       ld    a,_CS_STOPPED  ;  check if stopped
+;       and   (hl)
+		and   _CS_STOPPED   ; check if stopped
+		jr    z,f100
+		xor   a        ;  clears a and set Z flag
+		ret            ;  and return immediately
+f100:
+		;  CS_INIT
+;
+; changed 07/02/97 jjb - the following instructions reset a the _CS_INIT bit in
+;                        (hl) this can be done faster with the Z80 res operation
+;
+;       ld    a,(hl)
+;       and   ~_CS_INIT
+;       ld    (hl),a
+		res _CS_INITB,(hl)
+		
+; now a start has been requested
+		inc   hl
+		pop   de       ; set the start to the return initially
+		ld    (hl),e   ; put de in struct
+		inc   hl
+		ld    (hl),d
+		ld    a,0xdf   ;  e0 - 1 because e0 should set m flag
+		cp    d
+		jr    nc,fblk_noCBR
+		inc   hl
+		in0   a,(CBR)  ; use current CBR
+		ld    (hl),a
+fblk_noCBR:
+		xor   d        ; compute checksum
+		xor   e
+		inc   hl
+		ld    (hl),a   ; checksum
+		ex    de,hl
+		or    1        ; must be no zero flag on return to start
+		jp    (hl)     ; return
+; jump into middle of function block
+fblk_on:
+		inc   hl
+		ld    b,(hl)   ; new cbr
+		inc   hl
+		ld    a,(hl)   ; checksum
+		xor   d
+		xor   e
+		xor   b
+		jr    nz,fblk_error  ; if bad checksum
+		pop   hl       ;toss return
+		ex    de,hl
+		ld    a,h
+		cp    0xe0
+		jr    c,fblk_on_noCBR
+		out0  (CBR),b  ;new cbr
+fblk_on_noCBR:
+		or    1  ; must be nz case still at entry to fb
+		jp (hl)  ; 107 clocks to exit from here
+;
+; error handling
+fblk_error:
+		ld      hl,EFUNCBLK
+		push    hl
+		call    exception
+
+;;body of funcblk
+; fixup 12-3.94 fix up first instruction
+; fixump 9-jan-94 start flag not longer set by exit
+; enter with hl pointing to structure
+funcblk_exit::
+		ld    a,(hl)
+		and _CS_NORESET             ;   flags already set by a routine, do not reset
+											;   by defaults
+		ret nz
+		ld      a,(hl)
+		and   ~(_CS_STOPPED | _CS_INIT)
+		or    b
+		ld    (hl),a
+funcblk_begin::
+		inc     hl              ;pass start flag
+		ld      b,0
+		ld      (hl),b  ; clear lastloc
+		inc     hl
+		ld      (hl),b
+		inc     hl
+		ld      (hl),b  ; clear cbr
+		inc     hl
+		ld      (hl),b  ; check sum
+;       inc     hl              ;
+		ret
+
+;; function block initialization
+funcblk_init::
+		pop     hl              ; return address = address of data
+f1:
+		ld              e,(hl)
+		inc     hl
+		ld              d,(hl)
+		inc     hl
+		ld              b,(hl)
+		inc     hl
+		ld              a,d
+		or              e
+		jr              z,      f0
+		ld              a,b
+		ex              de,hl
+		ld              (hl),a          ; start
+		inc     hl
+		ld              b,0
+		ld              (hl),b          ; addr
+		inc     hl
+		ld              (hl),b
+		inc     hl
+		ld              (hl),b          ; cbr
+		inc     hl
+		ld              (hl),b          ; chksum
+		ex              de,hl
+		jr              f1
+f0:
+		jp              (hl)
+;
+TaskBegin::
+CoBegin::         ; reset coroutine to on state
+	ld    de,_CoData+CSState    ; start up at beginning
+	add   hl,de
+;   ld      a,(hl)
+;   or      _CS_INIT | _CS_NORESET
+	ld      a, _CS_INIT | _CS_NORESET
+	ld      (hl),a
+	jp    funcblk_begin
+
+TaskReset::
+CoReset::
+	ld    de,_CoData+CSState        ; disabled, skips over
+	add   hl,de
+;   ld      a,(hl)
+;   or      _CS_INIT | _CS_STOPPED | _CS_NORESET
+	ld      a,_CS_INIT | _CS_STOPPED | _CS_NORESET
+	ld      (hl),a
+	jp    funcblk_begin
+
+TaskPause::
+CoPause::   
+	ld    a,(hl)
+	or    _CS_STOPPED | _CS_NORESET
+	ld    (hl),a
+	ret
+TaskResume::
+CoResume::
+	ld    a,(hl)
+	and   ~_CS_STOPPED | _CS_NORESET
+	ld    (hl),a
+	ret
+
+isTaskRunning:: 
+isCoRunning::
+	ld    a,(hl)
+	and   _CS_STOPPED   ; task is paused test
+	jr    z,icr01
+	xor   a
+	ld    hl,0
+	ret
+icr01:
+	ld    hl,1
+	or    l
+	ret
+
+isTaskDone::
+isCoDone::
+	ld    a,(hl)
+	and   _CS_INIT | _CS_STOPPED        ; task exited bottom brace test
+	cp      _CS_INIT | _CS_STOPPED
+	jr    z,icr01a
+	xor   a
+	ld    hl,0
+	ret
+icr01a:
+	ld    hl,1
+	or    l
+	ret    
+#endasm
+
+/*** BeginHeader */
+#if CC_VER >= 0x600
+nodebug Typed useix void ReturnWatchValue(WatchExpr *ResultBuffer, ...);
+nodebug Typed useix void ReturnWatchValue(WatchExpr *ResultBuffer, WatchExpr ResultValue)
+{
+	*ResultBuffer = ResultValue;
+}
+#endif
+/*** EndHeader */
+
+/*** BeginHeader Watch */
+#if ROM==0
+#if CC_VER < 0x600
+
+//  nodebug Typed useix void Watch(WatchExpr *ResultBuffer, ...);
+
+#KILL Watch
+#asm fast
+; WATCH  : Load Value from Watch Expression and Return to User
+;
+; INPUT  :
+;          Stack : (Ret Addr)
+;                  (Count) = 2
+;                  (Size/Type) for Buffer Pointer
+;                  (Mods)
+;                  (Value)
+;                  (Size/Type) for Watch Value
+;                  (Mods)
+;                  (Value)
+; OUTPUT :
+;          Stack : (Ret Addr)
+;                  Stack Size the Same, Value may be Garbaged
+;
+;          Values returned in Register Buffer
+;
+;                  DE' = Count
+;                  BC' = Size/Type
+;                  HL' = Modifier String
+;
+;                  HL   = 16 Bit
+;                  or
+;                  BCDE = 32 Bit Value
+;                  or
+;                         Value is Discarded
+
+Watch::
+	pop   iy    ; Protect Return Address
+	pop   hl    ; Parameter Count ( Equal to 2 )
+	pop   hl    ; Buffer Size/Type
+	pop   hl    ; Buffer Mods
+	pop   hl    ; Buffer Value
+	pop   bc    ; Size/Type
+	ld (hl),c
+	inc   hl
+	ld (hl),b
+	inc   hl
+	pop   bc    ; Mods
+	ld (hl),c
+	inc   hl
+	ld (hl),b
+	inc   hl
+	pop   bc    ; LSW of Value
+	ld (hl),c
+	inc   hl
+	ld (hl),b
+	inc   hl
+;;;; BUG!!! TAK 030993
+	pop   bc    ; MSW of Value (may or may not be present)
+				; if not MSW, it is the return address of someone,
+				; popping is --sp, thus the location may be overwritten by
+				; interrupt routines and change the return address of the
+				; caller of watch.
+	push  bc    ; so we push it back to the stack right away to
+				; make sure the last 2 bytes is preserved, just in
+				; case only 14 bytes were pushed on the stack as
+				; arguments
+	ld (hl),c
+	inc   hl
+	ld (hl),b
+	inc   hl
+	ld hl,-14   ; Restore Stack; changed from -16 to -14 because MSW is
+				; not popped TAK 030993
+	add   hl,sp
+	ld sp,hl
+	jp (iy)     ; Return
+
+#endasm
+#endif
+#endif
+/*** EndHeader */
+
+/*** beginheader _powerset, q_ss, slong_ss, _prot_init, _prot_recover,
+				 st4_ss */
+
+void _prot_init();
+void _prot_recover();
+
+/*** endheader */
+
+char _flag_prot16; int *_ptr_prot16; int _prot16_save;
+char _flag_prot32; long int *_ptr_prot32; long int _prot32_save;
+
+/* START FUNCTION DESCRIPTION ********************************************
+_prot_init                   <SYS.LIB>
+
+SYNTAX:     void _prot_init();
+
+KEYWORDS:
+
+DESCRIPTION: Super initialization. Initializes internal data needed
+				for recovery of protected variables after a crash. This function
+				should be called once per program before protected variables are
+				set in order to ensure that the protection mechanism works.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+_prot_recover                <SYS.LIB>
+
+SYNTAX:     void _prot_recover();
+
+KEYWORDS:
+
+DESCRIPTION:   Recover variables whose operations are interrupted by
+power fail.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+
+/* START _FUNCTION DESCRIPTION ********************************************
+q_ss                         <SYS.LIB>
+
+SYNTAX:
+
+KEYWORDS:
+
+DESCRIPTION:
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+
+/* START _FUNCTION DESCRIPTION ********************************************
+st4_ss                       <SYS.LIB>
+
+SYNTAX:
+
+KEYWORDS:
+
+DESCRIPTION:
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+
+/* START _FUNCTION DESCRIPTION ********************************************
+slong_ss                     <SYS.LIB>
+
+SYNTAX: 
+
+KEYWORDS: 
+
+DESCRIPTION: 
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+
+#asm nodebug
+;
+; call _prot_init only for complete reset
+;
+_prot_init::
+	ld  a,0
+	ld  (_flag_prot16),a
+	ld  (_flag_prot32),a
+	ret
+;
+; call _prot_recover on startup after power fail, reset, etc.
+;
+_prot_recover::
+	ld  a,i
+	ex  af,af'  ;save interrupt state
+	di
+	ld  a,(_flag_prot16)
+	or  a
+	jr  z,_pro_2
+	ld  hl,(_ptr_prot16)
+	ld  de,(_prot16_save)   ;data
+	ld  (hl),e
+	inc hl
+	ld  (hl),d
+;   ld  a,0
+	xor a
+	ld  (_flag_prot16),a    ;clear flag
+_pro_2:
+	ld  a,(_flag_prot32)
+	or  a
+	jr  z,_pro_3
+	ld  hl,(_ptr_prot32)    ; pointer
+	ld  de,_prot32_save
+	ld  bc,4        ;count
+	ldir            ; move 4
+;   ld  a,0
+	xor a
+	ld  (_flag_prot32),a    ;clear flag
+_pro_3:
+	ex  af,af'
+	ret po
+	ei
+	ret
+
+; store hl at address pushed on stack, without damaging hl
+q_ss::
+	ex de,hl 
+	pop   hl ;return address   
+	ex (sp),hl  ; put return back, get address to hl   
+	ld a,i   ; save iff in parity
+	di    ;interrupts off
+	ld  (_prot16_save),de   ; save backup copy
+	ld  (_ptr_prot16),hl    ; save pointer to data 
+	ld  a,1
+	ld  (_flag_prot16),a    ; set flag
+	ld (hl),e   
+	inc   hl 
+	ld (hl),d   
+	ld  a,0
+	ld  (_flag_prot16),a    ; clear the flag
+	ex de,hl
+	ret   po ; if interupts were off
+	ei
+	ret      
+; load 32 bit at address on top of stack to bc-de
+st4_ss::  ex (sp),hl  
+	call  llong.
+	ex (sp),hl  
+; store 32 bit from bc-de to address in hl
+slong_ss::
+	ld a,i   ; set parity flag with iff
+	di
+	ld  (_prot32_save),de
+	ld  (_prot32_save+2),bc ; save backup
+	ld  (_ptr_prot32),hl        ;  save pointer
+	ld  a,1
+	ld  (_flag_prot32),a        ;set flag
+	ld (hl),e   
+	inc   hl 
+	ld (hl),d   
+	inc   hl 
+	ld (hl),c   
+	inc   hl 
+	ld (hl),b   
+;   ld  a,1
+	xor a
+	ld  (_flag_prot32),a    ; clear flag
+	ret   po ; if interrupts previously off dont enable
+	ei
+	ret      
+;
+
+#endasm
+
+/*** Beginheader LockTestAndSet, LockReset */
+
+char LockTestAndSet(char *Lock, char Mask);
+void LockReset(char *Lock, char Mask);
+
+/*** EndHeader */
+
+/* START _FUNCTION DESCRIPTION ********************************************
+LockTestAndSet               <SYS.LIB>
+
+SYNTAX: char LockTestAndSet(char *Lock, char Mask);
+
+KEYWORDS: SYNC
+
+DESCRIPTION: Test and set a lock.  The function first turns off interrupt.
+If "Lock" (the char pointed to by "Lock") is reset (0), it is then assigned
+1 and the function returns one.  Otherwise returns 0.  The function always
+restore interrupt status before returns.  Mask indicates the bit(s) to be
+used as locks.
+
+RETURN VALUE: the lock value if the lock is acquired, 0 if the lock is
+					already locked.
+END DESCRIPTION **********************************************************/
+
+/* START _FUNCTION DESCRIPTION ********************************************
+LockReset                    <SYS.LIB>
+
+SYNTAX: void LockReset(char *Lock, char Mask)
+
+KEYWORDS: 
+
+DESCRIPTION: Assigns 0 to the char pointed to by "Lock".
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+
+#asm
+LockTestAndSet::
+	pop   bc ;  ret address
+	pop   hl ;  address of lock
+	pop   de ;  mask
+	push  de
+	push  hl
+	push  bc
+	ld    a,i
+	push  af
+	di
+	ld    a,(hl)
+	ld    b,a
+	and   e
+	jr    nz,tas0100
+	ld    a,b
+	or    e
+	ld    (hl),a
+	ld    l,a
+	ld    h,0
+	jr    tas0200
+tas0100:
+	ld    hl,0
+tas0200:
+	pop   af
+	jp    po,tas9000
+	ei
+tas9000:
+	ret
+
+LockReset::
+	pop   bc ;  ret address
+	pop   hl ;  address of lock
+	pop   de ;  mask
+	push  de
+	push  hl
+	push  bc
+	ld    a,e
+	xor   0ffh
+	ld    e,a
+	ld    a,(hl)
+	and   e
+	ld    (hl),a
+	ret
+#endasm
+
+/*** Beginheader reload_vec */
+
+void reload_vec(int vector, int (*function) ());
+
+/*** Endheader */
+
+#use xmem.lib
+
+/* START FUNCTION DESCRIPTION ********************************************
+reload_vec                   <SYS.LIB>  
+
+SYNTAX: void reload_vec(int vector, int (*function)() );
+
+DESCRIPTION: Loads an interrupt service routine to specified vector 
+location at runtime. 
+
+PARAMETER1: interrupt vector to be served
+
+PARAMETER2: address of the interrupt service routine
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void reload_vec(int vector, int (*function)() )
+{
+	extern char OPMODE;
+	char buf[2];
+
+#ifndef  REV_NO
+#define  REV_NO 0
+#endif
+
+#if (BOARD_TYPE==LP31xx)
+		buf[0] = (int) function & 0xff;
+		buf[1] = ((int) function >> 8) & 0xff;
+		WriteFlash(0x2000L + vector, buf, 2);    // transfer the vector
+#elif (BOARD_TYPE==MicroG)
+	if( OPMODE & 0x80)         // is it flash?
+	{
+		buf[0] = (int) function & 0xff;
+		buf[1] = ((int) function >> 8) & 0xff;
+		WriteFlash(0x2000L + vector, buf, 2);    // transfer the vector
+	}
+	else if(OPMODE & 0x30)     // is it development board?
+	{     
+		outport(MEMMAP, 0x01);  // enable ram write
+		*((int *)(0x2000+vector)) = (int) function; // transfer the vector
+		outport(MEMMAP, 0x00);  // disable ram write
+	}
+	else
+		*((int *)(0x2000+vector)) = (int) function;
+
+#elif (BOARD_TYPE==MicroG2)
+	if( OPMODE & 0x80)         // is it flash?
+	{
+		buf[0] = (int) function & 0xff;
+		buf[1] = ((int) function >> 8) & 0xff;
+		WriteFlash(0x2000L + vector, buf, 2);    // transfer the vector
+	}
+	else
+		*((int *)(0x2000+vector)) = (int) function;
+
+#elif ((BOARD_TYPE==SCoreZ1) && (REV_NO >= 2901))      // 8-23-95
+	if( OPMODE & 0x80)            // is it flash, 8-23-95
+	{
+		buf[0] = (int) function & 0xff;
+		buf[1] = ((int) function >> 8) & 0xff;
+		WriteFlash(0x2000L + vector, buf, 2);
+	}
+	else if(OPMODE & 0x30)        // is it development board?
+	{     
+		outport(MEMMAP, 0x01);  // enable ram write
+		*( (int *)(0x2000 + vector) ) = (int)function;  // transfer the vector
+		outport(MEMMAP, 0x00);  // disable ram write
+	}
+	else
+		*((int *)(0x2000+vector)) = (int) function;
+
+#elif (BOARD_TYPE==SCoreZ1)      // check for development board for the Z1
+	if(OPMODE & 0x30)        // is it development board?
+	{     
+		outport(MEMMAP, 0x01);  // enable ram write
+		*( (int *)(0x2000 + vector) ) = (int)function;  // transfer the vector
+		outport(MEMMAP, 0x00);  // disable ram write
+	}
+	else
+		*((int *)(0x2000+vector)) = (int) function;
+
+// check for flash eprom for the Little Genius
+#elif ((BOARD_TYPE==LittleG) && (REV_NO >= 2706)) 
+//effective only for versions 2706 and up 
+	if( OPMODE & 0x80)         // is it flash?
+	{
+		buf[0] = (int) function & 0xff;
+		buf[1] = ((int) function >> 8) & 0xff;
+		WriteFlash(0x2000L + vector, buf, 2);    // transfer the vector
+	}
+	else
+		*((int *)(0x2000+vector)) = (int) function;
+
+// check for flash eprom for the Rugged Giant
+#elif ((BOARD_TYPE==CPLC_BOARD) && (REV_NO >= 2420)) 
+//effective only for versions 2420 and up 
+	if( OPMODE & 0x80)         // is it flash?
+	{
+		buf[0] = (int) function & 0xff;
+		buf[1] = ((int) function >> 8) & 0xff;
+		WriteFlash(0x2000L + vector, buf, 2);    // transfer the vector
+	}
+	else
+		*((int *)(0x2000+vector)) = (int) function;
+
+// check for flash eprom for the Little Star
+#elif ((BOARD_TYPE==L_STAR) && (REV_NO >= 2608)) 
+//effective only for versions 2608 and up 
+	if( OPMODE & 0x80)         // is it flash?
+	{
+		buf[0] = (int) function & 0xff;
+		buf[1] = ((int) function >> 8) & 0xff;
+		WriteFlash(0x2000L + vector, buf, 2);    // transfer the vector
+	}
+	else
+		*((int *)(0x2000+vector)) = (int) function;
+
+#else
+	
+	*( (int *)(0x2000 + vector) ) = (int)function;
+
+#endif
+
+}
+
+/*** BeginHeader sysIsFlash */
+
+int sysIsFlash();
+
+/*** EndHeader */
+
+int sysIsFlash() {
+	return (OPMODE & 0x80) != 0;
+}
+
+/*** BeginHeader sysReloadJpVec */
+
+void sysReloadJpVec(int addr, void *whereTo);
+
+/*** EndHeader */
+
+nodebug void sysReloadJpVec(int addr, void *whereTo) {
+	auto char buf[3];
+
+	if (sysIsRunWithDC()) {
+		if (sysIsFlash()) {
+			buf[0] = 0xc3;      //  jump instruction
+			*(void**)(buf+1) = whereTo;
+			WriteFlash(addr,buf,3);
+		} else {
+			*(char*)(addr) = 0xc3;
+			*(int*)(addr+1) = (int)whereTo;
+		}
+	} else {
+	}
+}
+
+/*** BeginHeader __bitmap */
+
+extern char __bitmap[8];
+
+/*** EndHeader */
+
+char __bitmap[8] = {    '\x01', '\x02', '\x04', '\x08',
+								'\x10', '\x20', '\x40', '\x80' };
+
+
+/*** Beginheader __nibblemap */
+
+extern char *__nibblemap[16];
+
+/*** EndHeader */
+
+char *__nibblemap[16] = {
+	"0000",
+	"0001",
+	"0010",
+	"0011",
+	"0100",
+	"0101",
+	"0110",
+	"0111",
+	"1000",
+	"1001",
+	"1010",
+	"1011",
+	"1100",
+	"1101",
+	"1110",
+	"1111",
+};
+
+
+/*** BeginHeader ee_rd_w */
+
+int ee_rd_w(int addr);
+
+/*** EndHeader */
+
+nodebug
+int ee_rd_w(int addr) {
+	auto int tmp;
+	auto int res;
+	
+	*(char*)&tmp = (char)(res=ee_rd(addr));
+	if (res >= 0) {
+		*((char*)&tmp+1) = (char)(res=ee_rd(addr+1));
+		if (res >= 0) res=tmp;
+	}
+	return res;
+}
+
+/*** BeginHeader ee_rd_dw */
+
+long int ee_rd_dw(int addr);
+
+/*** EndHeader */
+
+nodebug
+long int ee_rd_dw(int addr) {
+	auto long int tmp;
+	auto int res;
+	
+	*(char*)&tmp = (char)(res=ee_rd(addr));
+	if (res >= 0) {
+		*((char*)&tmp+1) = (char)(res=ee_rd(addr+1));
+		if (res >= 0) {
+			*((char*)&tmp+2) = (char)(res=ee_rd(addr+2));
+			if (res >= 0) {
+				*((char*)&tmp+3) = (char)(res=ee_rd(addr+3));
+				if (res >= 0) return tmp;
+			}
+		}
+	}
+	return res;
+}
+
+/*** BeginHeader ee_wr_w */
+
+int ee_wr_w(int addr, int value);
+
+/*** EndHeader */
+
+int ee_wr_w(int addr, int value) {
+	if (!ee_wr(addr,*(char*)&value)) {
+		if (ee_wr(addr+1,*((char*)&value+1))) return -1;
+		else return 0;
+	} else return -1;
+}
+
+/*** BeginHeader sysForceReset */
+
+void sysForceReset();
+
+/*** EndHeader */
+
+#asm
+sysForceReset::
+	di
+l1:
+	jr  l1
+#endasm
+
+/*** BeginHeader __choices */
+
+extern char __choices[62];
+
+/*** EndHeader */
+
+char __choices[63]=
+	"0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+
+/*** BeginHeader _sysIsSuperReset, RamProgParam, sysSupRstStatus */
+
+int _sysIsSuperReset();
+extern unsigned long RamProgParam;
+extern char sysSupRstStatus;
+#makechain sysSupRstChain
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+_sysIsSuperReset
+
+SYNTAX:             int _sysIsSuperReset();
+
+DESCRIPTION:    This function determines whether this restart of the
+application program is due to a "super reset". A super reset differs from
+other reset because it indicates that everything should be reset. A
+super reset is triggered either by the application running the first time,
+SRAM being corrupted, or via a function call to sysForceSupRst(). If this
+function determines the application program is restarted due to a super
+reset, it performs the following:
+
+Call _prot_init() to initialize protected variable mechanisms. Note
+that the programmer is responsible to reset the protected variables
+should the system be super reset.
+
+Call the sysSupRstChain(). The programmer may attach additional logic
+associated to a super reset (such as resetting protected variables)
+by #funcchain-ing and segchain-ing to this chain.
+
+Set a flag to indicate a super reset has taken place.
+
+If a super reset has not taken place, this function calls _prot_recover
+to recover protected variables.
+
+Throughout the application program, sysIsSuperReset() should be called
+instead to determine whether the application was restarted by a super
+reset. _sysIsSuperReset should be called only once at the beginning of
+the application.
+
+If not all the actions to be performed are contained in the logic chained
+to sysSupRstChain(), the application should use chkSuperReset() to see
+if a super reset has happened, then perform custom actions associated with
+a super reset, then call void defClrSuperReset() to clear the super reset
+condition.
+
+This function works together with _sysIsPowerFail and _sysIsWDTO to
+determine the cause of the restart of the application program.
+
+RETURN VALUE:   Returns 0 if the application is not restarted due to a
+super reset. Returns non-zero if the application is restarted due to a
+super reset.
+
+END DESCRIPTION **********************************************************/
+
+unsigned long RamProgParam;
+
+char sysSupRstStatus;
+
+// detects a super reset and returns flag and calls sysSupRstChain chain
+// if no super reset returns zero, else 1
+int _sysIsSuperReset() {
+
+	if (*(unsigned long *)(prog_param.stkE-3) == RamProgParam) {
+		_prot_recover();
+		return sysSupRstStatus = 0;
+	} else {
+		_prot_init();               //  protected variable not recovered here
+		sysSupRstChain();
+		RamProgParam = *(unsigned long *)(prog_param.stkE-3);
+		return sysSupRstStatus = 1;
+	}
+}
+
+/*** BeginHeader chkSuperReset */
+
+int chkSuperReset();
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+chkSuperReset
+
+SYNTAX:             int chkSuperReset();
+
+DESCRIPTION:    This function determines whether this restart of the
+application program is due to a "super reset". A super reset differs from
+other reset because it indicates that everything should be reset. A
+super reset is triggered either by the application running the first time,
+SRAM being corrupted, or via a function call to sysForceSupRst().
+
+Throughout the application program, sysIsSuperReset() should be called
+instead to determine whether the application was restarted by a super
+reset. _sysIsSuperReset should be called only once at the beginning of
+the application.
+
+Note that unlike _sysIsSuperReset(), chkSuperReset() does not have side-
+effects other than setting a variable so subsequent sysIsSuperReset() calls
+returns the proper status.
+
+RETURN VALUE:   Returns 0 if the application is not restarted due to a
+super reset. Returns non-zero if the application is restarted due to a
+super reset.
+
+END DESCRIPTION **********************************************************/
+
+int chkSuperReset() {
+	if (*(unsigned long *)(prog_param.stkE-3) == RamProgParam) {
+		return sysSupRstStatus = 0;
+	} else {
+		return sysSupRstStatus = 1;
+	}
+}
+
+/*** BeginHeader defClrSuperReset */
+
+void defClrSuperReset();
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+defClrSuperReset
+
+SYNTAX:             void defClrSuperReset();
+
+DESCRIPTION:    This function performs the "default" actions to handle
+a super reset. If a super reset has taken place (indicated by a flag set
+by calling chkSuperReset()), it performs the following:
+
+Call _prot_init() to initialize protected variable mechanisms. Note
+that the programmer is responsible to reset the protected variables
+should the system be super reset.
+
+Call the sysSupRstChain(). The programmer may attach additional logic
+associated to a super reset (such as resetting protected variables)
+by #funcchain-ing and segchain-ing to this chain.
+
+Set a flag to indicate a super reset has taken place.
+
+If a super reset has not taken place, this function calls _prot_recover
+to recover protected variables.
+
+Note that defClrSuperReset() works with chkSuperReset() to allow custom
+super reset handling logic between the call to chkSuperReset() and the
+call to defClrSuperReset(). If there is no cusom super reset handling
+logic besides the code chained to sysSupRstChain(), _sysIsSuperReset()
+can be used to replace chkSuperReset(), and there is no need to call
+defClrSuperReset().
+
+RETURN VALUE:   N/A
+
+END DESCRIPTION **********************************************************/
+
+void defClrSuperReset() {
+	if (sysSupRstStatus) {
+		_prot_init();               //  protected variable not recovered here
+		sysSupRstChain();
+		RamProgParam = *(unsigned long *)(prog_param.stkE-3);
+	} else {
+		_prot_recover();
+	}
+}
+
+/*** BeginHeader sysIsSuperReset */
+
+int sysIsSuperReset();
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+sysIsSuperReset
+
+SYNTAX:             int sysIsSuperReset();
+
+DESCRIPTION:    This functions works with _sysIsSuperReset to indicate whether
+the application program is restarted due to a super reset. Call
+_sysIsSuperReset exactly ONCE at the beginning of the application program,
+then use this function throughout the application program to check whether
+the application was restarted because of a super-reset.
+
+RETURN VALUE:   Returns 0 if the application is not restarted due to a
+super reset. Returns non-zero if the application is restarted due to a
+super reset.
+
+END DESCRIPTION **********************************************************/
+
+int sysIsSuperReset() {
+	return sysSupRstStatus;
+}
+
+/*** BeginHeader sysForceSupRst */
+
+void sysForceSupRst();
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+sysForceSupRst
+
+SYNTAX:             void sysForceSupRst();
+
+DESCRIPTION:    This function forces a super reset. Once called, this
+function will not return and will cause the controller to reset. This
+function relies on the hardware watchdog to generate the reset. When
+the application restarts after the reset, the functions _sysIsSuperReset()
+or chkSuperReset() can be used to see if a super reset has taken place.
+
+RETURN VALUE:   N/A
+
+END DESCRIPTION **********************************************************/
+
+void sysForceSupRst() {
+	*(long*)&RamProgParam = ~*(unsigned long*)(prog_param.stkE-3);
+	DI();
+	for(;;);
+}
+
+/*** BeginHeader nmi_stack */
+
+extern char nmi_stack[24];
+
+/*** EndHeader */
+
+char nmi_stack[24];
+
+/*** BeginHeader sysIsPwrFail, sysPwrFailStatus, _sysIsPwrFail */
+
+int sysIsPwrFail();
+int _sysIsPwrFail();
+extern char sysPwrFailStatus;
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+_sysIsPwrFail
+
+SYNTAX:             int _sysIsPwrFail();
+
+DESCRIPTION:    This function determines whether this restart of the
+application program is due to a previous power fail. Call this function
+only once at the beginning of the application, it resets a flag, causing
+subsequent calls to always indicate there is no power fail. If you need
+to know whether a power fail occured in the rest of the application
+program, call sysIsPwrFail() instead. Note that linking in this function
+causes the NMI_VEC to point to a library defined routine. This function
+works together with _sysIsSuperReset and _sysIsWDTO to determine the
+cause of the restart of the application program.
+
+RETURN VALUE:   Returns 0 if the application is not restarted due to a
+power fail. Returns non-zero if the application is restarted due to a
+pwoer fail.
+
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+sysIsPwrFail
+
+SYNTAX:             int sysIsPwrFail();
+
+DESCRIPTION:    This functions works with _sysIsPwrFail to indicate whether
+the application program is restarted due to a power fail. Call
+_sysIsPwrFail exactly ONCE at the beginning of the application program,
+then use this function throughout the application program to check whether
+the application was restarted because of a power fail. Note that linking in
+this function causes the NMI_VEC to point to a library defined routine.
+
+RETURN VALUE:   Returns 0 if the application is not restarted due to a
+power fail. Returns non-zero if the application is restarted due to a
+pwoer fail.
+
+END DESCRIPTION **********************************************************/
+
+char sysPwrFailStatus;
+
+int sysIsPwrFail() {
+	return sysPwrFailStatus;
+}
+
+void easystrt_nmi();
+
+extern int NMI_VEC;
+
+//#if ROM
+
+#JUMP_VEC  NMI_VEC  easystrt_nmi
+
+//#else
+//
+//nodebug void __init_nmi() {
+//  sysReloadJpVec((int)&NMI_VEC,easystrt_nmi);
+//}
+//#funcchain _GLOBAL_INIT __init_nmi
+//
+//#endif
+
+int _nmi_track;
+int _sysIsPwrFail() {       // returns true if power fail happened
+	auto int tmp;
+	segchain sysSupRstChain { _nmi_track = 0; }
+	tmp = _nmi_track;
+	_nmi_track = 0;
+	return sysPwrFailStatus = (tmp != 0);
+}
+
+/*** BeginHeader _sysIsWDTO */
+
+int _sysIsWDTO();
+extern char sysWDTOStatus;
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+_sysIsWDTO
+
+SYNTAX:             int _sysIsWDTO();
+
+DESCRIPTION:    This function determines whether this restart of the
+application program is due to a previous WD timeout. Call this function
+only once at the beginning of the application, it resets a flag, causing
+subsequent calls to always indicate there is no WD timeout. If you need
+to know whether a WD timeout occured in the rest of the application
+program, call sysIsWDTO() instead.  This function works together with
+_sysIsSuperReset and _sysIsPwrFail to determine the cause of the restart
+of the application program.
+
+RETURN VALUE:   Returns 0 if the application is not restarted due to a
+WD timeout. Returns non-zero if the application is restarted due to a
+WD timeout.
+
+END DESCRIPTION **********************************************************/
+
+char sysWDTOStatus;
+int _sysIsWDTO() {
+	return sysWDTOStatus=wderror();
+}
+
+/*** BeginHeader sysIsWDTO */
+
+int sysIsWDTO();
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+sysIsWDTO
+
+SYNTAX:             int sysIsWDTO();
+
+DESCRIPTION:    This functions works with _sysIsWDTO to indicate whether
+the application program is restarted due to a WD timeout. Call
+_sysIsWDTO exactly ONCE at the beginning of the application program,
+then use this function throughout the application program to check whether
+the application was restarted because of a WD timeout. Note that linking in
+this function causes the NMI_VEC to point to a library defined routine.
+
+RETURN VALUE:   Returns 0 if the application is not restarted due to a
+WD timeout. Returns non-zero if the application is restarted due to a
+WD timeout.
+
+END DESCRIPTION **********************************************************/
+
+int sysIsWDTO() {
+	return sysWDTOStatus;
+}
+
+/*** BeginHeader IntervalMs, IntervalSec */
+
+firsttime int IntervalMs(long ms);
+firsttime int IntervalSec(long sec);
+
+/*** EndHeader ********************************************************* */
+
+/* START FUNCTION DESCRIPTION ********************************************
+IntervalMs                   <EASYSTRT.LIB>
+
+SYNTAX: int IntervalMs( long ms );
+
+KEYWORDS:
+
+DESCRIPTION: Similar to DelayMs but provides a periodic delay based
+on the time from the previous call. Intended for use with waitfor.
+
+RETURN VALUE: 0 if not finished, 1 if delay has expired.
+END DESCRIPTION **********************************************************/
+
+extern shared unsigned long MS_TIMER;
+firsttime nodebug int IntervalMs(CoData *data, long ms) {
+	if (data->firsttime) {
+		if (!ms) {
+			return 1;
+		} else {
+			data->content.ul = MS_TIMER;
+			data->content.ul += ms - (data->content.ul % ms);
+			data->firsttime = 0;
+		}
+	}
+	else if (MS_TIMER >= data->content.ul)
+		return 1;
+	return 0;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+IntervalSec                  <EASYSTRT.LIB>
+
+SYNTAX: int IntervalSec( long sec );
+
+KEYWORDS:
+
+DESCRIPTION: Similar to DelaySec but provides a periodic delay based
+on the time from the previous call. Intended for use with waitfor.
+
+RETURN VALUE: 0 if not finished, 1 if delay has expired.
+END DESCRIPTION **********************************************************/
+
+extern shared unsigned long SEC_TIMER;
+firsttime nodebug int IntervalSec(CoData *data, long sec) {
+	if (data->firsttime) {
+		if (!sec) {
+			return 1;
+		} else {
+			data->content.ul = SEC_TIMER;
+			data->content.ul += ((unsigned long)sec) - (data->content.ul % sec);
+			data->firsttime = 0;
+		}
+	}
+	else if ((long)(SEC_TIMER - data->content.ul) >= 0)
+		return 1;
+	return 0;
+}
+
+/*** BeginHeader easystrt_nmi */
+
+void easystrt_nmi();
+extern int _nmi_track;
+extern char sysPwrFailStatus;
+void _sysZIfPwrFail();
+
+/*** EndHeader */
+
+#JUMP_VEC NMI_VEC easystrt_nmi
+
+#asm
+easystrt_nmi::
+			ld    sp, nmi_stack+24      ; reset stack pointer to top of dummy array
+			ld      hl,0x0001
+			ld      (_nmi_track),hl
+											; to prevent overwrite of user code/data
+											
+			; do whatever service within the allowable execution time
+
+loop:
+			call  hitwd             ; make sure no watchdog reset is generated
+											; at low power
+timeout:
+			call    _sysZIfPwrFail
+			jr    z, loop           ; waitout the brown out condition
+			jp    timeout           ; use the watchdog timeout to debounce
+											; the power fail state
+
+#endasm
+
+/*** BeginHeader sysPRT1_781 */
+
+void sysPRT1_781();
+
+/*** EndHeader */
+
+void sysPRT1_781() {
+	auto unsigned k;
+	
+#if BOARD_TYPE == CPLC_BOARD
+#define vd_sysoffset 1
+#else
+#define vd_sysoffset 0
+#endif
+
+	switch(sysclock()+vd_sysoffset)
+	{
+		case 0x0A00: k=120-1; break;    // 120x20/3.072mhz =    0.00078125           
+		case 0x1400: k=240-1; break;    // 240x20/6.144mhz =    0.00078125           
+		case 0x1401: k=120-1; break;  // cplc 6.144 mhz
+		case 0x1e00: k=360-1; break;    // 360x20/9.216mhz =    0.00078125
+		case 0x1e01: k=180-1; break;    // cplc 9.216 mhz      
+		case 0x2800: k=480-1; break;    // 480x20/12.288mhz =   0.00078125   
+		case 0x3c00: k=720-1; break;    // 720x20/18.432mhz =   0.00078125
+		case 0x5000:    k=960-1; break; // 960x20/ 24.576 mhz
+					
+		default: k=360-1;   break;      // error assume 9MHZ
+	}
+	sysInitTimer1(k);                     // initialize timer correctly 
+}
+
+/*** beginHeader sysInitTimer1 */
+
+void sysInitTimer1(unsigned count);
+
+extern char sysTimer1x2;
+
+/*** endHeader */
+
+char _sys25MsCounter;
+//char _sys100MsCounter;
+
+char sysTimer1x2;
+
+void sysInitTimer1(unsigned count) {
+	sysTimer1x2 = 0;    
+	IRES(TCR, 1);
+	IRES(TCR, 5);
+	IRES(TCR, 7);
+	outport(RLDR1L, count);
+	outport(RLDR1H, count >> 8); // set reload reg
+	outport(TMDR1L, count);
+	outport(TMDR1L, count >> 8); // set data reg
+	ISET(TCR, 1);
+	ISET(TCR, 5);                // enable interrupts
+	_sys25MsCounter = 32;
+//  _sys100MsCounter = 4;
+}
+
+#ifdef PRT1_VEC_USED
+#warns "PRT1_VEC is redefined"
+#else
+#define PRT1_VEC_USED
+#endif
+
+#makechain _sys_390
+#makechain _sys_781
+#makechain _sys_25ms
+//#makechain _sys_100ms
+#makechain _sys_781PostEI
+#makechain _sys_25msPostEI
+
+#INT_VEC PRT1_VEC _sysTimer1ISR
+#asm root
+_sysTimer1ISR::
+	push    af
+	in0     a,(CBR)
+	push    af
+	push    hl
+	push    bc
+	push    de
+	ex      af,af'
+	push    af
+	exx
+	push    hl
+	push    de
+	push    bc
+	push    iy
+	push    ix
+
+	in0     a,(TCR)
+	in0     a,(TMDR1L)              ; reset timer
+
+#if BOARD_TYPE == CPLC_BOARD
+	call    _sys_390                            ;   call the x2 routine
+	
+	ld      a,(sysTimer1x2)
+;   bit 1,a
+;   jr      z, _normal
+	bit 0,a
+	jr      z,_even
+	res 0,a
+	ld      (sysTimer1x2),a
+	ei
+	jr      endISR
+
+_even:
+	set 0,a
+	ld      (sysTimer1x2),a
+
+_normal:
+#endif
+
+	call    _sys_781        ;   call custom chain for 0.78125ms intervals
+	ld      hl,_sys25MsCounter
+	dec (hl)
+	jr      nz,not25MsInterval
+	; otherwise this is a 25ms interval
+
+	call    _sys_25ms   ;   call chain for 25ms intervals
+	ld      a,32
+	ld      (_sys25MsCounter),a ;   reload 25ms interval counter
+	ei
+	call    _sys_781PostEI
+	call    _sys_25msPostEI
+	jr      endISR
+	
+not25MsInterval:
+	ei
+	call        _sys_781PostEI
+
+	
+endISR:
+	pop     ix
+	pop     iy
+	pop     bc
+	pop     de
+	pop     hl
+	exx
+	pop      af
+	ex      af,af'
+	pop     de
+	pop     bc
+	pop     hl
+	pop     af
+	out0    (CBR),a
+	pop     af
+	ret
+#endasm
+
+/*** BeginHeader MS_TIMER, SEC_TIMER, TICK_TIMER */
+
+extern shared unsigned long MS_TIMER, SEC_TIMER,
+		SEC_TIMEL, SEC_TIMEI;
+extern shared unsigned TICK_TIMER;
+extern char MS_TIMEL;
+
+/*** EndHeader */
+
+#funcchain _sys_781 _sysMsISR
+//#funcchain _sys_25ms _sysMsISR
+#funcchain _sys_25ms _sysSecISR
+
+shared unsigned long SEC_TIMER,MS_TIMER;
+char MS_TIMEL;                  // low part of ms timer
+shared unsigned long SEC_TIMEL, SEC_TIMEI;
+shared unsigned TICK_TIMER;
+
+
+#asm
+_sysMsISR::
+	ld      hl,(TICK_TIMER)     
+	inc hl
+	ld      (TICK_TIMER),hl
+	
+	ld      hl,MS_TIMEL
+	ld      a,(hl)
+	add     a,0c8h                  ; 50/64 for 1/2560 sec
+	ld      (hl),a
+	jr      nc,timer1x
+	ld      hl,(MS_TIMER)
+	inc     hl
+	ld      (MS_TIMER),hl
+	ld      a,l
+	or      h
+	jr      nz,timer1x
+	ld      hl,(MS_TIMER+2)
+	inc     hl
+	ld      (MS_TIMER+2),hl
+timer1x:
+	ret
+
+_sysSecISR::
+	ld      hl,(SEC_TIMEL)
+	di
+	ld      de,(SEC_TIMEI)
+	add     hl,de
+	ld      (SEC_TIMEL),hl
+	ld      hl,(SEC_TIMEL+2)
+	ld      de,(SEC_TIMEI+2)
+	ei
+	adc     hl,de
+	ld      (SEC_TIMEL+2),hl
+	jr      nc,st_clk
+	di
+	ld      hl,(SEC_TIMER)
+	inc     hl
+	ld      (SEC_TIMER),hl
+	ld      a,l
+	or      h
+	jr      nz,st_clk
+	ld      hl,(SEC_TIMER+2)
+	inc     hl
+	ld      (SEC_TIMER+2),hl
+st_clk:
+	ret
+#endasm
+
+/*** Beginheader sysAdjClk */
+
+void sysAdjClk();
+
+/*** Endheader */
+
+/* START FUNCTION DESCRIPTION ***********************************************
+sysAdjClk            <sys.lib>
+
+SYNTAX: void sysAdjClk();
+
+KEYWORDS: virtual driver, clock
+
+DESCRIPTION: Synchronize the software second timer used by DelaySec with the
+				 real-time clock. This phase locks the SEC_TIMER to the
+				 real time clock, adjusting the rate of count once a day on
+				 SEC_TIMER to catch up or slow down. There is never any
+				 unsmooth change in the duration of the ticks of SEC_TIMER.
+				 Call from the main scan loop. Has not effect if real time
+				 clock is not installed.
+	
+RETURN VALUE: n/a
+END DESCRIPTION *************************************************************/
+
+
+
+void sysAdjClk(){
+
+	struct tm s;
+	int j;
+	unsigned long int e2,e1;   
+	#GLOBAL_INIT{ j=0;e2=0L;}
+	costate {
+
+		waitfor(DelaySec(86400L));  // wait one day
+		if(j<0) abort;
+		j = tm_rd(&s);
+		if(j<0) abort;  // if clock not present 
+
+		e1 = SEC_TIMER-mktime(&s);   // compute error seconds fast
+		SEC_TIMEI = SEC_TIMEI - 621L*(e1+e1-e2);// 1242 is 1 sec/day rate
+		e2=e1;
+		if(SEC_TIMEI < 106000000L || SEC_TIMEI > 108800000L)
+			SEC_TIMEI=107374182L; // double protection against clock fail
+		}
+}   
+
+/*** BeginHeader sysSyncTimer */
+
+int sysSyncTimer(void);
+
+/*** Endheader */
+
+/* _START FUNCTION DESCRIPTION ********************************************
+sysSynctimer                 <sys.lib>
+
+SYNTAX: int sysSynctimer(void);
+
+KEYWORDS: clock
+
+DESCRIPTION: Synchronize the virtual SEC_TIMER with the RTC.
+
+RETURN VALUE: 0, if RTC is read properly; else -1.
+END DESCRIPTION **********************************************************/
+nodebug int sysSyncTimer(void)
+{
+	int           i, j;
+	unsigned long k;
+	struct tm     synctm;
+
+	// Read time until it ticks or there's an error
+	i = 0;
+	
+	tm_rd(&synctm);
+
+	i = synctm.tm_sec;
+	k = SEC_TIMER;
+	while ((SEC_TIMER - k) < 2)
+	{
+		j = tm_rd(&synctm);
+		hitwd();
+
+		if (i != synctm.tm_sec)
+		{
+			SEC_TIMER = mktime(&synctm);
+			return 0;
+		}
+		if (j < 0)
+			break;
+	}
+	return -1;
+}
+
+/*** BeginHeader sysHalt */
+
+void sysHalt();
+
+/*** EndHeader */
+
+#asm
+sysHalt::
+	halt
+	ret
+#endasm
+
+/*** BeginHeader sysSleep */
+
+void sysSleep();
+
+/*** EndHeader */
+
+#ifndef CCR
+#define CCR 0x1f
+#endif
+
+#asm
+sysSleep::
+	in0 a,(CCR)
+	res 3,a
+	res 6,a
+	out0    (CCR),a
+	slp
+	ret
+#endasm
+
+/*** BeginHeader sysStandby */
+
+void sysStandBy();
+
+/*** EndHeader */
+
+#ifndef CCR
+#define CCR 0x1f
+#endif
+
+#ifndef ICR
+#define ICR 0x3f
+#endif
+
+#asm
+sysStandby::
+	in0 a,(ICR)
+	set 5,a
+	out0    (ICR),a
+	in0 a,(CCR)
+	push    af
+	res 7,a
+	out0    (CCR),a
+	in0 a,(CCR)
+	set 6,a
+	set 3,a
+	out0    (CCR),a
+	slp
+	
+	ld      b,16
+loop:
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	djnz    loop
+	
+	pop af
+	out0    (CCR),a
+	ret
+#endasm
+
+/*** BeginHeader sysStdSpeed */
+
+unsigned int sysStdSpeed();
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+sysStdSpeed
+
+SYNTAX:         unsigned int sysStdSpeed();
+
+DESCRIPTION:    This function sets the system clock to divide by two mode.
+All operations of the Z180 operates twice as slow compared to divide by
+one (see sysHiSpeed) after this call. It affects the PRTs, ASCIs
+and other peripherals on the Z180. CLOCKSPEED is divided by two by this
+function to reflect the true system clock speed.
+
+It is best to call this function before calling any function that will set
+up the PRT, ASCI or other on-chip peripherals of the Z180. If the PRT,
+ASCI or other clock speed dependent feature is already being used, the
+application program must reinitialize the devices to use the new
+clockspeed.
+
+Note that calling this function when Dynamic C is running may cause
+communication problems.
+
+This function supersedes sysClkx2, which does not half CLOCKSPEED.
+
+RETURN VALUE:   If the speed is indeed changed, The current clock speed in
+units of 1200Hz. Otherwise returns 0 (if the clock speed is not changed)
+
+END DESCRIPTION **********************************************************/
+
+#ifndef CCR
+#define CCR 0x1f
+#endif
+
+extern unsigned CLOCKSPEED;
+
+#asm
+sysStdSpeed::
+	ld      hl,0
+	in0 a,(CCR)
+	bit 7,a
+	ret z                       ;   already at standard speed
+	
+	res 7,a
+	out0    (CCR),a
+
+	ld      hl,(CLOCKSPEED)
+	srl h
+	rr      l
+	ld      (CLOCKSPEED),hl ;   divide clock speed by 2
+	ret
+#endasm
+
+/*** BeginHeader sysHiSpeed */
+
+unsigned int sysHiSpeed();
+
+/*** EndHeader */
+
+#ifndef CCR
+#define CCR 0x1f
+#endif
+
+/* START FUNCTION DESCRIPTION ********************************************
+sysHiSpeed
+
+SYNTAX:         unsigned int sysHiSpeed()
+
+DESCRIPTION:    This function sets the system clock to divide by one mode
+(versus the power-up/reset state of divide by two). All operations of the
+Z180 operates twice as fast after this call. It affects the PRTs, ASCIs
+and other peripherals on the Z180. This function doubles CLOCKSPEED to
+reflect the true system clock rate.
+
+It is best to call this function before calling any function that will set
+up the PRT, ASCI or other on-chip peripherals of the Z180. If the PRT,
+ASCI or other clock speed dependent feature is already being used, the
+application program must reinitialize the devices to use the new
+clockspeed.
+
+Note that calling this function when Dynamic C is running may cause
+communication problems.
+
+This function supersedes sysClkx1, which does not double CLOCKSPEED.
+
+RETURN VALUE:   If the speed is indeed changed, The current clock speed in
+units of 1200Hz. Otherwise returns 0 (if the clock speed is not changed)
+
+END DESCRIPTION **********************************************************/
+
+extern unsigned CLOCKSPEED;
+
+#asm
+sysHiSpeed::
+	ld      hl,0
+	in0 a,(CCR)
+	bit 7,a
+	ret nz              ;   already at high speed (clock/1)
+	
+	set 7,a
+	out0    (CCR),a
+
+	ld      hl,(CLOCKSPEED)
+	add hl,hl
+	ld      (CLOCKSPEED),hl     ;   multiply clockspeed by 2
+
+	ret
+#endasm
+
+/*** BeginHeader sysClkx2 */
+
+void sysClkx2();
+
+/*** EndHeader */
+
+#ifndef CCR
+#define CCR 0x1f
+#endif
+
+extern int CLOCKSPEED;
+
+#asm
+sysClkx2::
+	in0 a,(CCR)
+	res 7,a
+	out0    (CCR),a
+	ret
+#endasm
+
+/*** BeginHeader sysClkx1 */
+
+void sysClkx1();
+
+/*** EndHeader */
+
+#ifndef CCR
+#define CCR 0x1f
+#endif
+
+extern int CLOCKSPEED;
+
+#asm
+sysClkx1::
+	in0 a,(CCR)
+	set 7,a
+	out0    (CCR),a
+	ret
+#endasm
+
+/*** BeginHeader sysDI */
+
+char sysDI(void);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+sysDI
+
+SYNTAX:         char sysDI(void)
+
+DESCRIPTION:    This function checks the current interrupt enable status,
+turns off interrupt, and returns the previous status. Store the returned
+value into a variable. When interrupt should be restored to the previous
+state, call sysRestoreI with this variable.
+
+RETURN VALUE:   the previous interrupt enable status.
+
+END DESCRIPTION **********************************************************/
+
+#asm
+sysDI::
+	ld      a,i
+	di
+	ld      l,a
+	ld      h,0
+	ret
+#endasm
+
+/*** beginHeader sysRestoreI */
+
+void sysRestoreI(char x);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+sysRestoreI
+
+SYNTAX:             void sysRestoreI(char x);
+
+DESCRIPTION:    This function restores the interrupt enable status based
+on the parameter. The parameter should be the returned value of sysDI()
+called earlier to disable the interrupt.
+
+PARAMETER1:     This should be the returned value of a previous call to
+sysDI() that returns the original interrupt enable status before interrupt
+is turned off.
+
+RETURN VALUE:   n/a.
+
+END DESCRIPTION **********************************************************/
+
+#asm
+sysRestoreI::
+	ld      a,l
+	ret po
+	ei
+	ret
+#endasm
+
+/*** BeginHeader sysFlash256Open */
+
+/*** EndHeader */
+
+#asm
+sysFlash256Open::
+	ld      bc,0x3734
+
+sysFlashOpen::
+	in0 a,(CBR)
+	push    af
+	ld      hl,0xe555
+	ld      de,0xeaaa
+	ld      a,0xaa
+	out0    (CBR),b
+	ld      (hl),a
+	ld      a,0x55
+	out0    (CBR),c
+	ld      (de),a
+	ld      a,0xa0
+	out0    (CBR),b
+	ld      (hl),a
+	pop af
+	out0    (CBR),a
+	ret
+#endasm
+
+/*** BeginHeader sysFlashWETO */
+
+/*** EndHeader */
+
+#asm
+;   register b should contain the number of times to delay
+;   total number of states per loop is 3+3+8==14 states
+
+sysFlashWETO::
+	nop                 ;   3
+	nop                 ;   3
+	djnz sysFlashWETO   ;   8/6
+	ret
+	
+#endasm
+
+/*** BeginHeader sysFlashWaitProg */
+
+/*** EndHeader */
+
+#asm
+;   register bc should contain the number of times to retry
+;   each loop around is 50 states
+
+sysFlashWaitProg::
+	ld      hl,0xe000
+	bit 6,(hl)
+	jr      z,is0
+is1:
+	bit 6,(hl)      ;   9
+	jr      nz,done     ;   6
+is0:
+	bit 6,(hl)      ;   9
+	jr      z,done      ;   6
+	dec bc              ;   4
+	ld      a,b         ;   4
+	or      c               ;   4
+	jr      nz,is1      ;   8
+	ld      hl,-1
+	ret
+done:
+	ld      hl,0
+	ret
+#endasm
+
+/*** BeginHeader */
+
+struct _flashInfo {
+	unsigned sectorSize;
+	unsigned numSector;
+	char WEDelay;
+	unsigned int ProgTO;
+};
+
+/*** EndHeader */
+
+/*** BeginHeader sysChk2ndFlash */
+
+int sysChk2ndFlash(struct _flashInfo *pInfo);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+sysChk2ndFlash          SYS.LIB
+
+SYNTAX:             int sysChk2ndFlash(struct _flashInfo *pInfo);
+
+DESCRIPTION:    This function checks the existence and configuration of the
+2nd flash mapped to memory space.
+
+PARAMETER1:     This is a pointer to a struct _flashInfo that stores the
+configuration of the flash.
+
+RETURN VALUE:   If the second flash exists and the configuration is valid,
+0 is returned. Otherwise, a negative number is returned.
+
+END DESCRIPTION **********************************************************/
+
+root int sysChk2ndFlash(struct _flashInfo *pInfo) {
+	auto char buffer[256];
+	auto char *x;
+	auto char oldCBR;
+	auto int result;
+	auto unsigned long beg2ndFlash;
+	auto int i;
+
+	beg2ndFlash = 0x40000;
+	oldCBR = inport(CBR);
+	sysSetFlashTime(pInfo);
+	for (i = 0; i < 256; ++i) buffer[i] = i;
+	hitwd();
+//  memset(buffer,0,sizeof(buffer));
+	x = x_makadr(beg2ndFlash);
+	if (sysWrite2ndFlash(pInfo,beg2ndFlash, buffer, 256)) {
+		result = -1;
+	} else if (memcmp(buffer+128,x+128,128) == 0) {
+		//  can be 128 byte sector or 256 byte sector
+		pInfo->sectorSize = 256;
+		pInfo->numSector = 1024;
+		if (*x != 0) pInfo->sectorSize = 128;
+		for (i = 0; i < 256; ++i) buffer[i] = ~i;
+		hitwd();
+		if (sysWrite2ndFlash(pInfo,beg2ndFlash+128, buffer, 64)) {
+			result = -4;
+		} else {
+			if (*(x+128) == 0xff) {
+				result = 0;
+				if (*x == 0xff) pInfo->sectorSize = 256;
+				else if (*(x+192) == 0xff) pInfo->sectorSize = 128;
+				else result = -3;
+			} else {
+				result = -2;
+			}
+		}
+	} else {
+		result = -1;
+	}
+	outport(CBR, oldCBR);
+	return result;
+}
+
+/*** BeginHeader sysWrite2ndFlash */
+
+int sysWrite2ndFlash(   struct _flashInfo *pInfo,
+								unsigned long address,
+								void *content,
+								unsigned count);
+
+/*** EndHeader */
+
+root int sysWrite2ndFlash(  struct _flashInfo *pInfo,
+									unsigned long address,
+									void *content,
+									unsigned count) {
+#asm
+	in0 a,(CBR)
+	push    af
+	call    sysFlash256Open ;   open flash for writing
+	
+	ld      hl,@SP+address+2
+	add hl,sp
+	ld      e,(hl)
+	inc hl
+	ld      d,(hl)
+	inc hl
+	ld      c,(hl)
+	inc hl
+	ld      b,(hl)
+	push    de
+	push    bc
+	call    x_makadr
+	pop bc
+	pop de                      ;   cbr updated, hl has address
+	push    hl                      ;   hl is now pushed
+	ld      hl,@SP+content+4
+	add hl,sp
+	ld      e,(hl)
+	inc hl
+	ld      d,(hl)              ;   de has source address
+	ld      hl,@SP+count+4
+	add hl,sp
+	ld      c,(hl)
+	inc hl
+	ld      b,(hl)              ;   bc has count
+	pop hl
+	ex      de,hl
+	ldir                            ;   write to flash here!
+	
+	ld      hl,@SP+pInfo+2
+	add hl,sp
+	ld      a,(hl)
+	inc hl
+	ld      h,(hl)
+	ld      l,a
+	push    hl
+	ld      de,_flashInfo+WEDelay
+	add hl,de
+	ld      b,(hl)
+	call    sysFlashWETO        ;   wait for 150us to begin program
+	
+	pop hl
+	ld      de,_flashInfo+ProgTO
+	add hl,de
+	ld      c,(hl)
+	inc hl
+	ld      b,(hl)
+	call    sysFlashWaitProg    ;   wait for up to 10ms to program
+	
+	pop af
+	out0    (CBR),a
+#endasm
+}
+
+/*** BeginHeader sysSetFlashTime */
+
+void sysSetFlashTime(struct _flashInfo *pInfo);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+sysSetFlashTime         SYS.LIB
+
+SYNTAX:             void sysSetFlashTime(struct _flashInfo *pInfo);
+
+DESCRIPTION:    This function computes the timing constants required by
+the flash routines to initiate the flash write sequence and to timeout
+an improper flash write.
+
+PARAMETER1:     This is a pointer to a struct _flashInfo. Certain fields
+in the structure pointed to by this argument is filled by this function.
+
+RETURN VALUE:   N/A
+
+END DESCRIPTION **********************************************************/
+
+void sysSetFlashTime(struct _flashInfo *pInfo) {
+	pInfo->WEDelay = (char)(150e-6 * (float)sysclock() * 1200.0 / 14);
+	pInfo->ProgTO = (unsigned)(10e-3 * (float)sysclock() * 1200.0 / 50);
+}
+
+/*** BeginHeader sysRoot2FXmem*/
+
+void sysRoot2FXmem(struct _flashInfo *pInfo,
+	void *src, unsigned long int dest, unsigned int len);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+sysRoot2FXmem           SYS.LIB
+
+SYNTAX:             void sysRoot2FXmem(struct _flashInfo *pInfo,
+						void *src, unsigned long int dest, unsigned int len);
+
+DESCRIPTION:    This function copys memory content from the root memory
+space to the second flash mapped to memory space.
+
+PARAMETER1:     This is a pointer to a struct _flashInfo (initialized by
+sysChk2ndFlash).
+
+PARAMETER2:     This points to the beginning of the block in root memory
+to be copied to the second flash.
+
+PARAMETER3:     This (a physical address) points to the beginning of the
+block in the second flash mapped to memory space.
+
+PARAMETER4:     This is the length of the block to be copied.
+
+RETURN VALUE:   N/A
+
+END DESCRIPTION **********************************************************/
+
+nodebug root void sysRoot2FXmem(struct _flashInfo *pInfo,
+		void *src, unsigned long int dest, unsigned int len) {
+	auto char buf[256];
+	auto unsigned int stepSize;
+	auto char *pXmem;
+	auto unsigned int remainder;
+	auto char savedCBR;
+
+	savedCBR = inport(CBR);
+	while (len > 0) {
+		if (remainder = (unsigned)(dest & (pInfo->sectorSize-1))) {
+			//  not aligned with sector
+			pXmem = x_makadr(dest);
+			memcpy(
+				buf,
+				(char*)((unsigned)pXmem & ~(pInfo->sectorSize-1)),
+				pInfo->sectorSize);
+			memcpy(
+				buf+remainder,
+				src,
+				stepSize=(remainder+len > pInfo->sectorSize)?pInfo->sectorSize-remainder:len);
+			if (memcmp(buf,(char*)((unsigned)pXmem&~(pInfo->sectorSize-1)),pInfo->sectorSize)) {
+				sysWrite2ndFlash(pInfo,dest&~((unsigned long)pInfo->sectorSize-1),buf,pInfo->sectorSize);
+			}
+			len -= stepSize;
+			dest += stepSize;
+			src = (char*)src + stepSize;
+		} else {
+			//  aligned with sector
+			pXmem = x_makadr(dest);
+			if (len < pInfo->sectorSize) {
+				//  partial
+				memcpy(buf,pXmem,pInfo->sectorSize);
+				memcpy(buf,src,len);
+				stepSize = len;
+			} else {
+				//  whole
+				memcpy(buf,src,pInfo->sectorSize);
+				stepSize = pInfo->sectorSize;
+			}
+			if (memcmp(buf,pXmem,pInfo->sectorSize)) {
+				sysWrite2ndFlash(pInfo,dest,buf,pInfo->sectorSize);
+			}
+			len -= stepSize;
+			dest += stepSize;
+			src = (char*)src + stepSize;
+		}
+	}
+	outport(CBR,savedCBR);
+}
+
+/*** BeginHeader sysINT1 */
+
+void sysINT1(char enb);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+sysINT1         SYS.LIB
+
+SYNTAX:             void sysINT1(char enb);
+
+DESCRIPTION:    This function enables or disables INT1 (interrupt 1) on
+the Z180.
+
+PARAMETER1:     If this flag is non-zero, the interrupt is turned on.
+Otherwise the interrupt is disabled.
+
+RETURN VALUE:   N/A
+
+END DESCRIPTION **********************************************************/
+
+void sysINT1(char enb) {
+	if (enb) ISET(ITC,1);
+	else IRES(ITC,1);
+}
+
+/*** BeginHeader sysINT2 */
+
+void sysINT2(char enb);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+sysINT2         SYS.LIB
+
+SYNTAX:             void sysINT2(char enb);
+
+DESCRIPTION:    This function enables or disables INT2 (interrupt 2) on
+the Z180.
+
+PARAMETER1:     If this flag is non-zero, the interrupt is turned on.
+Otherwise the interrupt is disabled.
+
+RETURN VALUE:   N/A
+
+END DESCRIPTION **********************************************************/
+
+void sysINT2(char enb) {
+	if (enb) ISET(ITC,2);
+	else IRES(ITC,2);
+}
+
+/*** BeginHeader */
+
+/*** EndHeader */
+
+/*** BeginHeader */
+
+#endif
+
+/*** EndHeader */
+
+/* END OF FILE */

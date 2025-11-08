@@ -1,0 +1,3257 @@
+// 8-24-95 Appended drivers for the EXP-ADC4 board. 
+
+/* START LIBRARY DESCRIPTION *********************************************
+PLC_EXP.LIB
+	 Copyright (c) 1994, Z-World.
+
+DESCRIPTION: Board-specific functions relating to all PLCBus expansion 
+boards driven from a PLC.  Different libraries are to be used for driving 
+these boards from other micro-controllers.  Includes software drivers for 
+the expansion cards RELAY6, RELAY8, ADC and DAC2.
+
+SUPPORT LIB'S: Drivers.lib.
+END DESCRIPTION **********************************************************/
+
+/*=========================================================================
+					START OF A/D EXPANSION BOARD DRIVERS
+==========================================================================*/
+
+/*** BeginHeader */
+
+#define RDBUS  0x00c0
+#define PRESET 0x00c6
+#define BREG   0x0200   // add to bd_addr to address reg S3B
+#define SCLK   0x03
+#define ADI    0x00
+#define ADCS   0x02
+#define SDA    0x01     // eeprom data line keep high during AD operation
+#define ADO    0x00
+#define ST     0x02
+#define RST8   0x00c6
+
+#define BIPOLAR  0
+#define UNIPOLAR 1
+
+
+struct signal_rec
+{
+	 int   address;
+	 char  zero_offset, 
+			 input_ch, 
+			 ad_ch, 
+			 comp_flag;
+	 float cal_coef;
+};
+
+int i_adex_shadow;
+int adchan;
+
+/*** EndHeader */
+
+
+/*** BeginHeader plad_rd12 */
+
+int plad_rd12(int channel);  // Fast A/D read
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+plad_rd12                    <PLC_EXP.LIB>
+
+SYNTAX: int plad_rd12(int channel);
+
+KEYWORDS: plcbus, analog, input
+
+DESCRIPTION: Reads a 12-bit value from the LT1294 12-bit sample and hold 
+A/D.  The A/D has 8 input channels.  This function allows reading any of 
+these as single-ended inputs or channels 0-1 together as a differential 
+input pair. Also, each can be read as a unipolar or bipolar value.
+
+RETURN VALUE: A 12 bit number representing the voltage read.  For bipolar 
+mode, the range is -2048 to +2047 representing -2.5v to 2.5v. For unipolar 
+mode, the range is 0 to 4095 representing 0v to +2.5v.  Returns 0x8000 for 
+error in reading the A/D.
+END DESCRIPTION **********************************************************/
+
+
+/* START NOTE ************************************************************
+
+	CHANNEL SELECTION
+	-----------------
+	The channel to read, input mode, and polarity are all determined
+	by the channel number passed in as a parameter:
+
+		A/D Ch   Polarity    Input                         Gain Stage ?
+		------   --------    -------------------------     ------------
+			 0:   Bipolar     ANx+ w/respect to A/D gnd          No
+			 1:   Bipolar     ANx- w/respect to A/D gnd          No
+		  2-7:   Bipolar     ANx+/- differential           Yes (2 to 202)
+			 8:   Unipolar    ANx+ w/respect to A/D gnd          No
+			 9:   Unipolar    ANx- w/respect to A/D gnd          No
+		10-15:   Unipolar    ANx+/- differential           Yes (2 to 202)
+			16:   Bipolar     ANx+/- differential                No
+			17:   Unipolar    ANx+/- differential                No
+
+	* ANx refers to the input mux pair selection AN0 through AN7
+	* Channels 2-7, 10-15 have gains of 2,202,22,42,102,6 respectively.
+
+	
+	HARDWARE NOTE
+	-------------
+	On the analog expansion board, the 8 incoming signal (+/-) pairs
+	are routed through an analog mux pair.  The output of this mux
+	runs through different amplifier stages in parallel which all
+	appear at the input channels of the A/D.  Thus the A/D has 8
+	differenly conditioned inputs of the same signal at it's input
+	at once. The signal gain of each channel is as follows:
+
+	The first two channels can be used as unity gain single ended
+	inputs or as a unity gain differential pair (they bypass the gain
+	conditioning)
+
+		ch0: Unity Gain of + input signal
+		ch1  Unity Gain of - input signal
+
+	The six other channels are read as single-ended inputs at the A/D
+	with a specified gain (although they come into the board as a
+	differential pair:
+
+		ch2   Gain=2   of (+/-) input pair
+		ch3   Gain=202 of (+/-) input pair
+		ch4   Gain=22  of (+/-) input pair
+		ch5   Gain=42  of (+/-) input pair
+		ch6   Gain=102 of (+/-) input pair
+		ch7   Gain=6   of (+/-) input pair
+
+	SETUP
+	-----
+	To use this function, the PLCBus address must have been set up to
+	address this board and PAL register S3B must be enabled.  See manual
+	for details.  Also the analog mux must be set up to route the
+	proper input signal to the A/D
+
+	EXECUTION TIME
+	-------------
+	Execution time for this function is appx. 165 us.  plus a delay time
+	necessary for settling of the internal switching of th LT1294. (see
+	below)  With in-line calls, multiple readings of the same channel can
+	occur at about 175us each.  A simple C for-loop reading into an array
+	takes about 200us/read (with gain=1).
+	LT1294 Sample/Hold Nose
+	(See 1992 Linear Technology Linear Databook Supplement pg 6-130)
+	-----------------------
+	The LT1294 switches twice internally during sampling.  This creates
+	RC surges on the input signal of duration related to the impedence
+	of the signal.  The LT1294 has an internal impedence of 500 ohms in
+	series with a 100pf capacitor on this switch.  On the A/D channels
+	with gain, the time constant related to this is determined by the
+	feedback resistor and capacitor on the related op-amps.  An adequate
+	delay (9 time-constants) is inserted in this function to allow
+	settling at the proper times.
+
+	DROOP DUE TO INTERRUPTS
+	-----------------------
+	The A/D performs a sample-and-hold of the input signal.  Interrupts
+	can reduce the accuracy of the A/D due to droop of the held input
+	while servicing occurs. The LTC 1294 will droop 1/10 lsb after 160us,
+	approx. the time it takes for execution of this function.  If possible,
+	disable interrupts while calling this function.
+
+END DESCRIPTION **********************************************************/
+
+
+#ifndef AN_OUTRES
+#define AN_OUTRES 0
+#endif
+#ifndef AN_OUTCAP
+#define AN_OUTCAP 0
+#endif
+
+#asm nodebug
+;       **** A/D Control word table for each channel 0-17 ****
+adtbl:  db  0c3h,0c7h,0d3h,0d7h,0cbh,0cfh,0dbh,0dfh   ; single mode -bipolar
+		  db  0e3h,0e7h,0f3h,0f7h,0ebh,0efh,0fbh,0ffh   ; sm - uni
+		  db  0c1h,0e1h                                 ; diff mode uni, bi
+
+plad_rd12::
+			ld (adchan),hl
+			ld de,adtbl         ; de=table addr
+			add hl,de           ;
+			ld a,(hl)           ; get control word
+			push    af          ; save code
+
+			ld    l,a
+			ld    bc,00ceh
+nullclk:
+			ld    a,02h         ; SCLK=0 ADCS=0 SDA=1 ADI=0
+			out   (c),a         ; /ADCS high
+			ld    a,06h         ; SCLK=0 ADCS=1 SDA=1 ADI=0
+			out   (c),a         ; /ADCS hi
+			ld    a,0eh         ; SCLK high with ADI=0
+			out   (c),a         ; /ADCS low
+
+			ld    d,0feh         ;for AND
+			ld    e,0            ;for ADC
+
+; Send Control word to A/D
+;START BIT = ad0
+ad0:     and   d              ;for ADI bit clear
+			rr    l              ;shift right first bit to carry
+			adc   a,e            ;
+			res   SCLK,a         ;SCLK low
+			out   (c),a          ;/ADCS SCLK low ADI=control bit
+			set   SCLK,a         ;SCLK high
+			out   (c),a          ;
+
+;SGL/DIFF bit = ad1
+ad1:     and   d              ;for ADI bit clear in a
+			rr    l              ;shift right first bit to carry
+			adc   a,e            ;
+			res   SCLK,a         ;SCLK low
+			out   (c),a          ;/ADCS SCLK low ADI=control bit
+			set   SCLK,a         ;SCLK high
+			out   (c),a
+
+;ODD/SIGN = ad2
+ad2:     and   d              ;for ADI bit clear
+			rr    l              ;shift right first bit to carry
+			adc   a,e            ;
+			res   SCLK,a         ;SCLK low
+			out   (c),a          ;/ADCS SCLK low ADI=control bit
+			set   SCLK,a         ;SCLK high
+			out   (c),a
+
+;SEL1 = ad3
+ad3:     and   d              ;for ADI bit clear
+			rr    l              ;shift right first bit to carry
+			adc   a,e            ;
+			res   SCLK,a         ;SCLK low
+			out   (c),a          ;/ADCS SCLK low ADI=control bit
+			set   SCLK,a         ;SCLK high
+			out   (c),a          ;
+
+;SEL0 = ad4
+ad4:     and   d              ;for ADI bit clear
+			rr    l              ;shift right first bit to carry
+			adc   a,e            ;
+			res   SCLK,a         ;SCLK low
+			out   (c),a          ;/ADCS SCLK low ADI=control bit
+			set   SCLK,a         ;SCLK high
+			out   (c),a          ;
+
+; Sample and hold happens after input channel is selected
+; disable interrupts now to avoid errors due to droop
+; droop is 1/10 lsb after 160 us
+#ifndef NODISADINT
+			ex  af,af'
+			ld  a,i              ;save interrupt state
+			ex  af,af'
+			di                   ;disable interrupts
+#endif
+
+;UNI/BIP = ad5
+ad5:     and   d              ;for ADI bit clear
+			rr    l              ;shift right first bit to carry
+			adc   a,e            ;
+			res   SCLK,a         ;SCLK low
+			out   (c),a          ;/ADCS SCLK low ADI=control bit
+			set   SCLK,a         ;SCLK high
+			out   (c),a          ;
+
+			push hl
+			ld hl,(adchan)
+			call  adcdel         ;Allow internal A/D + input noise settle
+			pop hl
+
+;MSBF = ad6
+ad6:     and   d              ;for ADI bit clear
+			rr    l              ;shift right first bit to carry
+			adc   a,e            ;
+			res   SCLK,a         ;SCLK low
+			out   (c),a          ;/ADCS SCLK low ADI=control bit
+			set   SCLK,a         ;SCLK high
+			out   (c),a          ;
+
+;PS = ad7
+ad7:     and   d              ;for ADI bit clear
+			rr    l              ;shift right first bit to carry
+			adc   a,e            ;
+			res   SCLK,a         ;SCLK low
+			out   (c),a          ;/ADCS SCLK low ADI=control bit
+			set   SCLK,a         ;SCLK high
+			out   (c),a          ;
+
+			push hl
+			ld hl,(adchan)
+			call  adcdel         ;Allow internal A/D + input noise settle
+			pop hl
+
+; Read in the serial data now on ADI (analog serial data output).
+; Each bit is read in to the a-register LSB, shifted to carry flag,
+; and then shifted into hl-register pair.  Shifting is delayed until
+; next read operation is in process to relax serial timing constraints.
+; LTC1294 serial clock freq: 1Mhz - .1Mhz range allowed.
+;
+; cycle count: adat11= 41  adat10-4= 51 each  adat3-0= 58 each   (647-17)
+;              overhead=
+
+			ld    hl,0       ;h will contain d11-d8 of A/D read value
+								  ;l will contain d7-d0
+			ld    bc,00ceh   ;bc = PLCBus write address
+			ld    de,060eh   ;d=mask for hi-clock:  SCLK=0 ADCS=1 SDA=1 ADI=0
+								  ;e=mask for low-clock: SCLK=1 ADCS=1 SDA=1 ADI=0
+			out   (c),d      ;SCLK low, /ADCS low, SDA high, ADI low
+			out   (c),e      ;SCLK hi, /ADCS low, SDA high, ADI low
+
+adat11:
+			out   (c),d          ;SCLK low, /ADCS low, SDA high, ADI low
+			out   (c),e          ;SCLK low, /ADCS low, SDA high, ADI low
+			in0    a,(0c0h)      ;read in ADI to bit 0
+adat10:
+			out   (c),d          ;SCLK low, /ADCS low, SDA high, ADI low
+			rra                  ;last read bit to carry
+			out   (c),e          ;SCLK low, /ADCS low, SDA high, ADI low
+			rl    l              ;shift bit  from last read into L
+			in0    a,(0c0h)      ;read in ADI to bit 0
+adat9:
+			out   (c),d          ;SCLK low, /ADCS low, SDA high, ADI low
+			rra                  ;last read bit to carry
+			out   (c),e          ;SCLK low, /ADCS low, SDA high, ADI low
+			rl    l              ;shift bit  from last read into L
+			in0    a,(0c0h)      ;read in ADI to bit 0
+adat8:
+			out   (c),d          ;SCLK low, /ADCS low, SDA high, ADI low
+			rra                  ;last read bit to carry
+			out   (c),e          ;SCLK low, /ADCS low, SDA high, ADI low
+			rl    l              ;shift bit  from last read into L
+			in0    a,(0c0h)      ;read in ADI to bit 0
+adat7:
+			out   (c),d          ;SCLK low, /ADCS low, SDA high, ADI low
+			rra                  ;last read bit to carry
+			out   (c),e          ;SCLK low, /ADCS low, SDA high, ADI low
+			rl    l              ;shift bit  from last read into L
+			in0    a,(0c0h)      ;read in ADI to bit 0
+adat6:
+			out   (c),d          ;SCLK low, /ADCS low, SDA high, ADI low
+			rra                  ;last read bit to carry
+			out   (c),e          ;SCLK low, /ADCS low, SDA high, ADI low
+			rl    l              ;shift bit  from last read into L
+			in0    a,(0c0h)      ;read in ADI to bit 0
+adat5:
+			out   (c),d          ;SCLK low, /ADCS low, SDA high, ADI low
+			rra                  ;last read bit to carry
+			out   (c),e          ;SCLK low, /ADCS low, SDA high, ADI low
+			rl    l              ;shift bit  from last read into L
+			in0    a,(0c0h)      ;read in ADI to bit 0
+adat4:
+			out   (c),d          ;SCLK low, /ADCS low, SDA high, ADI low
+			rra                  ;last read bit to carry
+			out   (c),e          ;SCLK low, /ADCS low, SDA high, ADI low
+			rl    l              ;shift bit  from last read into L
+			in0    a,(0c0h)      ;read in ADI to bit 0
+adat3:
+			out   (c),d          ;SCLK low, /ADCS low, SDA high, ADI low
+			rra                  ;last read bit to carry
+			out   (c),e          ;SCLK low, /ADCS low, SDA high, ADI low
+			rl    l              ;shift bit  from last read into L
+			rl    h              ;shift bit l hi-bit into h
+			in0    a,(0c0h)      ;read in ADI to bit 0
+adat2:
+			out   (c),d          ;SCLK low, /ADCS low, SDA high, ADI low
+			rra                  ;last read bit to carry
+			out   (c),e          ;SCLK low, /ADCS low, SDA high, ADI low
+			rl    l              ;shift bit  from last read into L
+			rl    h              ;shift bit l hi-bit into h
+			in0    a,(0c0h)      ;read in ADI to bit 0
+adat1:
+			out   (c),d          ;SCLK low, /ADCS low, SDA high, ADI low
+			rra                  ;last read bit to carry
+			out   (c),e          ;SCLK low, /ADCS low, SDA high, ADI low
+			rl    l              ;shift bit  from last read into L
+			rl    h              ;shift bit l hi-bit into h
+			in0    a,(0c0h)      ;read in ADI to bit 0
+adat0:
+			out   (c),d          ;SCLK low, /ADCS low, SDA high, ADI low
+			rra                  ;last read bit to carry
+			out   (c),e          ;SCLK low, /ADCS low, SDA high, ADI low
+			rl    l              ;shift bit  from last read into L
+			rl    h              ;shift bit l hi-bit into h
+			in0    a,(0c0h)      ;read in ADI to bit 0
+
+			rra                  ;AD bit to carry                          3
+			rl    l              ;shift in L                               7
+			rl    h              ;shift bit l hi-bit into h                7
+
+			ei
+; restore interrupts if disabled
+#ifndef NODISADINT
+			ex  af,af'
+			jp  po,skipei        ;if interrupts were off
+			ei
+#endif
+skipei:
+
+; hl now has 12 bit value - Do sign extension for bipolar mode
+signex:
+			pop     af              ; Restore Flags                        9
+			and     20h             ; Check if biopolr operation           6
+			jr      nz,donead       ; Skip Sign extension                  6-8
+			bit     3,h             ; Check if Sign Extension Required     6
+			jr      z,donead        ; Skip Sign extension                  6-8
+			ld      a,0F0h          ; Do sign extension                    6
+			or      h               ;                                      4
+			ld      h,a             ;                                      4
+											;                                     ---
+donead:
+			xor     a               ;                                      4
+			out     (c),a           ;                                     13
+											;                                    ---
+			ret                     ;                                     17
+#endasm
+
+/*** BeginHeader adcdel */
+
+void adcdel(int ch);
+
+/*** EndHeader */
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+adcdel                       <PLC_EXP.LIB>
+
+SYNTAX: void adcdel(int ch);
+
+KEYWORDS: delay
+
+DESCRIPTION: Cycle delay count for A/D latch time constant (9 time
+constant = 0.012%).
+
+RETURN VALUE: None
+END DESCRIPTION **********************************************************/
+#ifndef  ADCSPD
+#define ADCSPD 12
+#endif
+
+#asm fast nodebug
+; GAIN      6Mhz     9Mhz   18Mhz      TC (uS)
+;    1         7       10      20          1
+;    2        43       65     130          7
+;    6        56       83     166          9
+;   22       387      578    1156         63
+;   42       553      826    1652         90
+;  102      1381     2065    4130        225
+;  202      2761     4129    8258        450
+
+;     total cycl = 46 + 44 + 16 - 2 + (18*loop_count) = 104 + (18 * LC)
+
+deltbl:
+		  dw  1,1,1,148,16,25, 71,1, 1,1,1,148,16,25, 71,1, 1,1      ;6Mhz
+		  dw  1,1,1,224,27,41,109,1, 1,1,1,224,27,41,109,1, 1,1      ;9Mhz
+		  dw  1,1,2,453,59,86,224,4, 1,1,2,453,59,86,224,4, 1,1      ;18Mhz
+
+adcdel::
+			push hl              ;11
+			exx                  ;3 cyc
+			pop hl               ;9
+			ex af,af'            ;4
+
+			ld de,deltbl         ;9   de=table addr
+			sla l                ;7
+			add hl,de            ;10  add table addr to channel #
+										;=46
+; Enter additional table offset based on CPU speed
+#if ADCSPD == 12
+			ld de,0
+#endif
+#if ADCSPD == 18
+			ld de,36            ;
+#endif
+#if ADCSPD == 36
+			ld de,72            ;9
+#endif
+
+			add hl,de           ;7 cyc
+			ld e,(hl)           ;6 cyc
+			inc hl              ;4 cyc
+			ld d,(hl)           ;6 cyc     58 cyc to here (+16 cleanup)
+			ex de,hl            ;3
+			ld bc,1             ;9
+lp:                          ;=44
+			sbc hl,bc           ;10
+			jr nz,lp            ;8 cycl on jmp, 6 on no jmp
+
+			ex af,af'           ;3
+			exx                 ;4
+			ret                 ;9
+									  ;=16
+#endasm
+
+/*** BeginHeader an_input_ch */
+
+int an_input_ch(int bd_addr, int channel);// Set Analog Mux
+
+/*** EndHeader */
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+an_input_ch                  <PLC_EXP.LIB>
+
+SYNTAX: int an_input_ch(int bd_addr, int channel);
+
+KEYWORDS: plcbus, analog, SELECT CHANNEL.
+
+DESCRIPTION: Selects the input pair AN+/AN- from the two input muxes
+on the currently selected analog board. Only one MUX(U11 or U12) can be
+turned on at a time.  They are controlled by the A-register (U13-74HC174)
+on the A/D board.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+
+/* START NOTE ************************************************************
+
+			  Control bits off A-Register
+  an(+/-)     ON2   ON1   AC1   AC0    Wr. to A-reg to sel.
+	 0          0     1     0     0            0x04
+	 1          0     1     0     1            0x05
+	 2          0     1     1     0            0x06
+	 3          0     1     1     1            0x07
+	 4          1     0     0     0            0x08
+	 5          1     0     0     1            0x09
+	 6          1     0     1     0            0x0a
+	 7          1     0     1     1            0x0b
+
+END DESCRIPTION **********************************************************/
+nodebug int an_input_ch(int bd_addr, int channel)
+{
+	 set12adr(bd_addr);       // set address to analog board, A-Register
+	 outport(BUSWR, (char) (channel + 4)); // S3A=1: ON2 ON1 AC1 AC0
+	 set4adr(bd_addr | BREG); // Set back to b-reg, for A/D reading
+}
+
+/*** BeginHeader plcad_addr */
+
+int plcad_addr(int bdnum);   // Calc. board address
+
+/*** EndHeader */
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+plcad_addr                   <PLC_EXP.LIB>
+
+SYNTAX: int plcad_addr(int bdnum);
+
+KEYWORDS: plcbus, analog, BUS ADDRESS.
+
+DESCRIPTION: Converts logical board address 0-63 to 12-bit (3-nybble) 
+PLCBus analog address. Returns integer value in hl.
+
+RETURN VALUE: 12 bit plcbus address.
+END DESCRIPTION **********************************************************/
+
+/* START NOTE ************************************************************
+
+	address format: 000p 10pj pp0j
+				 pppp: 4-bit Pal identifier from number: 46P0 P=pppp
+					jj: analog board jumpers bd0, bd1 (address 0-3)
+
+	equivalent C function:
+	  int plcad_addr(int bdnum)
+	  { return ((bdnum&0x22)<<3) + ((bdnum&0x10)<<1) + (bdnum&0x0d) + 0x80;}
+
+	execution time:
+		Clock Cycles:    Max: 97        Min: 87
+		Time @ 9.216Mhz: Max: 10.5us    Min: 9.41us
+
+END DESCRIPTION **********************************************************/
+#asm nodebug
+plcad_addr::                                                     ;cycle count
+	  ld  a,l        ;construct mid & lo nybbles in a                   4
+	  ld  h,0h       ;h contains high nybble - 0000 or 0001             6
+hinybl:
+	  bit 5,a        ;Hi-nybble = 0000 for boards 0-31, 0001 for 32-63  6
+	  jr  z,lonybl                                                     ;6-8
+	  inc h                                                            ;4
+lonybl:
+	  and 0dh        ;low nybble same, except d1=0                      6
+midnybl:
+	  bit 1,l        ;bit 0 of mid nybble = bit 1 of board addr         6
+	  jr  z,bit1                                                       ;6-8
+	  or  10h                                                          ;6
+bit1:
+	  bit 4,l        ;bit 1 of mid nybble = bit 4 of board addr         6
+	  jr  z,bit3                                                       ;6-8
+	  or  20h                                                          ;6
+bit3:
+	  or  80h        ;bit3=1                                            6
+	  ld  l,a        ;move back to l reg, hl = physical address         4
+
+	  ;Switch nybbles around
+	  ld  a,h
+	  and 0fh
+	  ld  c,a    ;c = 0 , hi-nybble
+
+	  ld  a,l
+	  and 0fh
+	  ld  h,a    ;h=0 , lo nybb
+
+	  ld  a,l    ;a = mid, lo
+	  and 0f0h   ;a = mid , 0
+	  or  c      ;a = mid, hi
+	  ld  l,a    ;l = mid, hi
+	  ret
+#endasm
+
+/*** BeginHeader slow_plad12 */
+
+float slow_plad12(int table_entry);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+slow_plad12                  <PLC_EXP.LIB>
+
+SYNTAX: float slow_plad12(int table_entry);
+
+KEYWORDS: analog, input
+
+DESCRIPTION:  Reads A/D for given signal. Handles all overhead involved
+in reading a voltage: setting the mux, waiting for it to settle, reading
+the A/D, and converting the reading to a voltage.  Requires setup of the
+analog signal table for use. ** Very slow (400ms), but easy to use.
+
+RETURN VALUE: 12 bit A/D data read from channel specified in table_entry.
+END DESCRIPTION **********************************************************/
+nodebug float slow_plad12(int table_entry)
+{
+	 int read, ch;
+
+	 set_mux(table_entry);    // Set mux for signal #0
+	 mxdel18();               // Analog mux requires settle time
+	 read = plad_rd12(ch = adch(table_entry)); // read A/D
+	 return (ad_conv(table_entry, read));      // convert to volts
+}
+
+/*** BeginHeader polarity */
+
+int polarity(int ad_ch);
+
+/*** EndHeader */
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+polarity                     <PLC_EXP.LIB>
+
+SYNTAX: int polarity(int ad_ch);
+
+KEYWORDS: plcbus, analog, input
+
+DESCRIPTION: Checks polarity of an A/D channel.
+
+RETURN VALUE: BIPOLAR for channels 0-7, 16; else UNIPOLAR for channels 
+8-15, 17.
+END DESCRIPTION **********************************************************/
+nodebug int polarity(int ad_ch)
+{
+	 if (ad_ch < 8 || ad_ch == 16)
+		  return BIPOLAR;
+	 else
+		  return UNIPOLAR;
+}
+
+
+/*** BeginHeader add_sig_table */
+
+int add_sig_table(int sig, int bd_addr, int in_ch, int ad_ch, 
+	 int comp_flag);
+
+/*** EndHeader */
+
+/* START NOTE ************************************************************
+ANALOG SIGNAL TABLE FORMAT - defined by structure "signal_rec"
+Name            Size        Description
+-------------------------------------------------------------------------
+address         integer    12-bit PLCBus address of analog board for signal.
+zero_offset     char       # of A/D counts read at 0v (sign extended).
+input_ch        char       Input mux channel pair to select
+									0=AN0 +/- , 1=AN1 +/-, etc.
+ad_ch           char       Selects A/D ch to read, mode, and polarity
+comp_flag       char       Compensation flag: 0=no comp.  1=do comp.
+cal_coef        float      Calibration coefficient for analog gain channel
+									selected. Multiply this number by the actual
+									reading from the A/D to obtain the actual
+									voltage of the signal.
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+add_sig_table                <PLC_EXP.LIB>
+
+SYNTAX: int add_sig_table(int sig,int bd_addr,int in_ch,int ad_ch,
+				int comp_flag);
+
+KEYWORDS: plcbus, analog TABLE ENTRY.
+
+DESCRIPTION: Adds a signal to the entry table.
+ add_table - adds a signal to the entry table. See table format for more
+				 details.
+
+  sig:       Signal number in the table to write to.
+  bd_addr:   12-bit PLCBus address of A/D board for signal.
+  in_ch:     Input channel pair 0-7 for signal. Channel set for input muxs.
+  ad_ch:     Gain channel 0-17 to read signal from. See below desc.
+  comp:      Compensation flag when using ad_volts. 1=use EE comp, 0=dont use
+
+	Gain Channels
+	--------------
+	  0-7:  Bipolar Channels, single-ended  (A/D channels 0-7)
+	 8-15:  Unipolar Channels, single-ended (A/D channels 0-7)
+		16:  Bipolar, Differental pair (A/D ch 0(+)/1(-) )
+		17:  Unipolar, Differental pair (A/D ch 0(+)/1(-) )
+
+RETURN VALUE: 0, if entry is added to the eprom; else -1, if eeprom 
+hardware error; else -2, if eeprom write protect error; else -3, if 
+invalid parameter passed.
+END DESCRIPTION **********************************************************/
+nodebug int add_sig_table(int sig, int bd_addr, int in_ch, int ad_ch, 
+				int comp_flag)
+{
+	 float cal_coef;
+	 int   gain_frac;
+	 unsigned int gf1, gf2, gain_int;
+
+
+	 /* Check input parameters for correctness
+		 -----------------------------------------*/
+	 if (ad_ch < 0 || ad_ch > 17)
+		  return -3;
+	 if (in_ch < 0 || in_ch > 23)
+		  return -3;
+	 if (comp_flag < 0 || comp_flag > 1)
+		  return -3;
+
+	 /* Get Board Address
+		 --------------------                     */
+	 if ((adtab[sig].address = bd_addr) == -3)
+		  return -1;
+
+	 set12adr(bd_addr + BREG);
+
+	 adtab[sig].input_ch = in_ch;
+	 adtab[sig].ad_ch = ad_ch;
+
+	 /* Get calibration coefficients from A/D eeprom
+		 -----------------------------------------------*/
+	 adtab[sig].zero_offset = (char)adee_rd(bd_addr, ad_ch * 4);
+
+	 if ((gain_int = adee_rd(bd_addr, ad_ch * 4 + 1)) < 0)
+		  return gain_int;
+	 if ((gf1 = adee_rd(bd_addr, ad_ch * 4 + 2)) < 0)
+		  return gf1;
+	 if ((gf2 = adee_rd(bd_addr, ad_ch * 4 + 3)) < 0)
+		  return gf2;
+
+	 /* invert actual gain and adjust for 2.5 volt scale and polarity
+		 --------------------------------------------------------------------*/
+	 cal_coef = 1. / (gain_int + ((float)((gf1 << 8) + gf2) / (float)0xffff));
+
+	 if (polarity(ad_ch) == BIPOLAR)  // if bipolar
+		  cal_coef *= .001221299;      // bipolar: 2.5/2047 = .001221299
+	 else                             // if unipolar
+		  cal_coef *= .0006105006;     // unipolar 2.5/4095 = .0006105006
+
+	 adtab[sig].cal_coef  = cal_coef;
+	 adtab[sig].comp_flag = comp_flag;
+
+	 return 0;
+}
+
+/*** BeginHeader csign_ext */
+
+int csign_ext(int ich);
+
+/*** EndHeader */
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+csign_ext                    <PLC_EXP.LIB>
+
+SYNTAX: int csign_ext(int ich);
+
+KEYWORDS: SIGN EXTENSION.
+
+DESCRIPTION: Checks bit 7 of ich and extends the sign bit.
+
+RETURN VALUE: ich | 0xff00 if ich's bit 7 is 1; else ich.
+END DESCRIPTION **********************************************************/
+nodebug int csign_ext(int ich)
+{
+	 if (bit(&ich, 7))
+		  return (ich | 0xff00);
+	 else
+		  return ich;
+}
+
+
+/*** BeginHeader set_mux */
+
+set_mux(int sig);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+int                          <PLC_EXP.LIB>
+
+SYNTAX: set_mux(int sig);
+
+KEYWORDS: plcbus, analog, mux
+
+DESCRIPTION:  Sets the mux on the analog board for a given table entry.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug int set_mux(int sig)
+{
+	 int ch;
+
+	 an_input_ch(adtab[sig].address, ch = (int)adtab[sig].input_ch);
+	 return ch;
+}
+
+/****************************************************************************
+  mxdel9, mxdel18, mxdel20 - 400us mux settle time delay loops.
+****************************************************************************/
+/*** BeginHeader mxdel20, mxdel18, mxdel9 */
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+mxdel                        <PLC_EXP.LIB>
+
+SYNTAX: mxdel9(void); mxdel18(void); mxdel20(void).
+
+KEYWORDS: plcbus, delay
+
+DESCRIPTION: MUX Settle time delay loops. 400us for mxdel20().
+
+RETURN VALUE:
+END DESCRIPTION **********************************************************/
+
+#asm nodebug
+mxdel20::
+	 ld h,8           ;6
+c0:
+	 call cycl100     ;100 cycles
+	 dec h            ;4
+	 jp  nz,c0        ;6-9
+
+mxdel18::
+	 ld h,36          ;6
+c1:
+	 call cycl100     ;100 cycles
+	 dec h            ;4
+	 jp  nz,c1        ;6-9
+
+mxdel9::
+	 ld h,36          ;6
+c2:
+	 call cycl100     ;100 cycles
+	 dec h            ;4
+	 jp  nz,c2        ;6-9
+	 ret              ;9
+
+; 100 cpu cycle delay loop
+; (6-1)*13 + 16 + 16 = 97 cyc (call takes 3 cyc)
+cycl100::
+	 ld e,6           ;6
+loop:
+	 dec e            ;4
+	 jp  nz,loop      ;6-9
+
+	 or e             ;4
+	 nop              ;3
+	 ret              ;9
+#endasm
+
+/*** BeginHeader ad_conv */
+float ad_conv(int sig, int adval);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+ad_conv                      <PLC_EXP.LIB>
+
+SYNTAX: float ad_conv(int sig, int adval);
+
+KEYWORDS: plcbus, analog, input, convert
+
+DESCRIPTION: Converts an integer to its voltage value. voltage = ad_value 
+* conversion factor.  Conversion factors for non-calibrated channels are 
+voltage = adval * 2.5 / (gain * 4095) for unipolar and voltage = adval * 
+2.5 / (gain * 2047) for bipolar.
+
+RETURN VALUE: Voltage equivalent of an A/D reading.
+END DESCRIPTION **********************************************************/
+nodebug float ad_conv(int sig, int adval)
+{
+	 static float ucgain[18] =
+	 {
+		  .001221299, .001221299, .000610650, .000006046,
+		  .000055514, .000029079, .000011974, .000203550,
+		  .000610203, .000610203, .000305101, .000003022,
+		  .000027736, .000014529, .000005982, .000101700,
+		  .001221299, .000610203
+	 };
+
+
+	 if (adtab[sig].comp_flag) // calibrated conversion
+		  return ((adval + csign_ext(adtab[sig].zero_offset)) * 
+		  adtab[sig].cal_coef);
+
+	 else                      // uncalibrated conversion
+		  return (adval * ucgain[ (int)adtab[sig].ad_ch]);
+}
+
+/*** BeginHeader adch */
+
+int adch(int table_entry);    // get A/D channel for sig
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+adch                         <PLC_EXP.LIB>
+
+SYNTAX: int adch(int table_entry);
+
+KEYWORDS: plcbus, analog.
+
+DESCRIPTION: Gets A/D channel from adtab specified by table_entry.
+
+RETURN VALUE: A/D channel.
+END DESCRIPTION **********************************************************/
+nodebug int adch(int table_entry)
+{
+	 return adtab[table_entry].ad_ch;
+}
+
+
+/*** BeginHeader adee_wr, adee_rd */
+
+int  adee_init(int board_addr);
+int  adee_wr(int board_addr, int byte_addr, int datum);
+int  adee_rd(int board_addr, int byte_addr);
+char adee_rdbyte(void);
+int  adee_wrbyte(int data);
+int  ad_sclk_high(void);
+int  ad_sclk_low(void);
+int  adee_sda_high(void);
+int  adee_sda_low(void);
+
+/*** EndHeader */
+
+/*************************************************************************
+  EEPROM Calibration Table Format - 18 records x 4-byte record = 72 bytes
+	  Each A/D board must have this information to use calibration.
+	  Records written by function "calrec".
+
+	4-Byte Records
+	--------------------------------------------------------------
+	  0-7:  Bipolar Channels, single-ended  (A/D channels 0-7)
+	 8-15:  Unipolar Channels, single-ended (A/D channels 0-7)
+		16:  Bipolar, Differental pair (A/D ch 0(+)/1(-) )
+		17:  Unipolar, Differental pair (A/D ch 0(+)/1(-) )
+
+  RECORD FORMAT
+  ---------------------------------------------------------------
+  Zero offset:     1-byte  - Channel Zero offset in A/D counts (sign extended)
+  Gain Integer:    1-byte  - integer value of gain 0-255
+  Gain Fraction:   2-bytes - Fractional value of gain / 64K.
+*****************************************************************************/
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+adee_init                    <PLC_EXP.LIB>
+
+SYNTAX: int adee_init(int board_addr);
+
+KEYWORDS: adc, eeprom, init
+
+DESCRIPTION: Prepares the A/D expansion board addressed for eeprom 
+operations.  It sets the PLCBus addresses and points to the B PAL register 
+on the board.  SCLK is assumed low on entry.
+
+RETURN VALUE: 0, if initialization is okay; else -1.
+END DESCRIPTION **********************************************************/
+nodebug int adee_init(int board_addr)
+{
+	 int i;
+
+	 i_adex_shadow = 0x02;
+	 ad_sclk_low();
+
+	 /* Perform start command to eeprom
+		 ---------------------------------        */
+	 ad_sclk_high();
+	 adee_sda_high();
+	 adee_sda_low();
+	 ad_sclk_low();
+
+	 // Wait for sda release to high before proceeding
+	 i = 1000;
+	 while (! IBIT(RDBUS, SDA) && i--)
+		  ;
+	 if (i)
+		  return 0;
+
+	 return (-1);             // error return
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+adee_wr                      <PLC_EXP.LIB>
+
+SYNTAX: int adee_wr(int board_addr,int byte_addr, int datum);
+
+KEYWORDS: plcbus, eeprom, write, analog
+
+DESCRIPTION: Executes a full eeprom byte-write cycle.  The following
+operations must be performed: 1) Initialize with adee_init; 2) Start
+Cmd; 3) Slave Address Write Cmd (ee ack); 4) Byte Address (ee ack);
+5) Data Write (ee ack); 6) Stop Cmd. On Entry:  SCLK:Low, SDA:Low.
+Start cmd to EEPROM sent by ee_init. Execution Time: Scoped at approx.
+1.90 ms.
+
+RETURN VALUE: 0, if write okay; else -1, if no response; else, -2 if write
+protect error.
+END DESCRIPTION **********************************************************/
+nodebug int adee_wr(int board_addr, int byte_addr, int datum)
+{
+	 if (adee_init(board_addr))
+		  return -1;
+
+
+	 /* Transmit slave address = 1010aaad for write aaa=A2,A1,A0  d = R/*W
+		 -------------------------------------------------------------------*/
+	 if (adee_wrbyte(0xa0))
+		  return -1;          // -1 = no ack from eeprom
+	 if (adee_wrbyte(byte_addr))
+		  return -1;          // -1 = no ack from eeprom
+	 if (adee_wrbyte(datum))
+		  return -2;          // -2 = write protect on
+
+	 ad_sclk_low();
+	 adee_sda_low();          // Send STOP Command
+	 ad_sclk_high();
+	 adee_sda_high();
+	 Stall(2);
+	 return 0;
+}
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+adee_rd                      <PLC_EXP.LIB>
+
+SYNTAX: int adee_rd(int board_addr,int byte_addr);
+
+KEYWORDS: eeprom, plcbus, analog, eeprom
+
+DESCRIPTION:  Executes a full eeprom byte-read cycle.  The following
+operations must be performed:  1) Initialize with adee_init; 2) Start Cmd;
+3) Slave Address Write Cmd ; 4) Byte Address ; 5) Start Cmd; 6) Slave
+Address Read Cmd ; 7) Read in Data; 8) Stop Cmd. On Entry:  SCLK:Low,
+SDA:Low.  Start cmd to EEPROM sent by ee_init. Execution Time: Scoped at
+approx. 2.5 ms.
+
+RETURN VALUE: EEPROM data from the specified byte_addr of the specified
+board_addr.
+END DESCRIPTION **********************************************************/
+nodebug int adee_rd(int board_addr, int byte_addr)
+{
+	 char inbyte;
+
+	 if (adee_init(board_addr))
+		  return -1;
+
+	 /* Transmit slave address = 1010aaad for write aaa=A2,A1,A0  d = R/*W
+		 ------------------------------------------------------------------*/
+	 if (adee_wrbyte(0xa0))   // Step 3
+		  return -1;           // -1 = no ack from eeprom
+
+	 if (adee_wrbyte(byte_addr))// Step 4
+		  return -1;           // -1 = no ack from eeprom
+
+	 ad_sclk_low();
+	 ad_sclk_high();
+	 adee_sda_high();
+	 adee_sda_low();          // Step 5 - Start Command
+	 ad_sclk_low();
+
+	 if (adee_wrbyte(0xa1))   // Step 6
+		  return -1;           // -1 = no ack from eeprom
+
+	 if ((inbyte = adee_rdbyte()) == -1)// Step 7
+		  return -1;
+
+	 ad_sclk_low();
+	 adee_sda_low();
+	 ad_sclk_high();
+	 adee_sda_high();
+
+	 return (int) inbyte;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+adee_rdbyte                  <PLC_EXP.LIB>
+
+SYNTAX: char adee_rdbyte(void);
+
+KEYWORDS: plcbus, analog, eeprom, read
+
+DESCRIPTION: Reads 1 byte from the A/D expansion board eeprom.  Assumes
+that the eeprom has been initialized for a read operation.
+
+RETURN VALUE: Byte data read.
+END DESCRIPTION **********************************************************/
+nodebug char adee_rdbyte(void)
+{
+	 int  i;
+	 char inbyte;
+
+	 adee_sda_high();
+
+	 for (i = 7; i >= 0; i--)
+	 {
+		  ad_sclk_low();
+		  ad_sclk_high();
+
+		  if (IBIT(RDBUS, SDA))
+				SET(&inbyte, i);
+		  else
+				RES(&inbyte, i);
+	 }
+	 return inbyte;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+adee_wrbyte                  <PLC_EXP.LIB>
+
+SYNTAX: int adee_wrbyte(int data);
+
+KEYWORDS:  plcbus, analog, eeprom.
+
+DESCRIPTION:  Writes 1 byte to the A/D expansion board eeprom.  Assumes
+that the eeprom has been initialized and the start command has been given
+(use adee_init).
+
+RETURN VALUE: EEPROM acknowledge bit.
+END DESCRIPTION **********************************************************/
+nodebug int adee_wrbyte(int data)
+{
+	 int bit;
+
+	 for (bit = 7; bit >= 0; bit--)
+	 {
+		  ad_sclk_low();
+
+		  if (BIT(&data, bit))
+				adee_sda_high();
+		  else
+				adee_sda_low();
+
+		  ad_sclk_high();
+	 }
+	 ad_sclk_low();
+	 adee_sda_high();
+	 ad_sclk_high();
+	 return (IBIT(RDBUS, SDA)); // return eeprom acknowledge bit
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+ad_sclk_high                 <PLC_EXP.LIB>
+
+SYNTAX: int ad_sclk_high(void);
+
+KEYWORDS: 
+
+DESCRIPTION: Sets clock data bit high for the EEPROM.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug int ad_sclk_high(void)
+{
+	 SET(&i_adex_shadow, SCLK);
+	 outport(BUSWR, i_adex_shadow);
+}
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+ad_sclk_low                  <PLC_EXP.LIB>
+
+SYNTAX: int ad_sclk_low(void);
+
+KEYWORDS: plcbus, analog, eeprom.
+
+DESCRIPTION: Sets clock bit low for the EEPROM.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug int ad_sclk_low(void)
+{
+	 RES(&i_adex_shadow, SCLK);
+	 outport(BUSWR, i_adex_shadow);
+}
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+adee_sda_high                <PLC_EXP.LIB>
+
+SYNTAX: int adee_sda_high(void);
+
+KEYWORDS: plcbus, analog, eeprom.
+
+DESCRIPTION: Sets data bit high for the EEPROM.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug int adee_sda_high(void)
+{
+	 SET(&i_adex_shadow, SDA);
+	 outport(BUSWR, i_adex_shadow);
+}
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+adee_sda_low                 <PLC_EXP.LIB>
+
+SYNTAX: int adee_sda_low(void);
+
+KEYWORDS: plcbus, analog, eeprom.
+
+DESCRIPTION: Sets data bit low for the EEPROM.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug int adee_sda_low(void)
+{
+	 RES(&i_adex_shadow, SDA);
+	 outport(BUSWR, i_adex_shadow);
+}
+
+/*=========================================================================
+					END OF A/D EXPANSION BOARD DRIVERS
+==========================================================================*/
+
+
+/*=========================================================================
+					START OF RELAY EXPANSION BOARD DRIVERS
+==========================================================================*/
+
+/*** BeginHeader plcrel_addr, plc_set_relay */
+
+int  plcrel_addr(int board);
+void plc_set_relay(int board, int relay, int state);
+
+/*** EndHeader */
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+plcrel_addr                  <PLC_EXP.LIB>
+
+SYNTAX: int plcrel_addr(int board);
+
+KEYWORDS:
+
+DESCRIPTION: Constructs the address for a relay board on the PLCBus. See 
+Relay board schematics for address format. board: 0-63; boards 0-7 use PAL 
+FPO4500, 8-15 use 4510, etc.
+
+RETURN VALUE: 12 bit plcbus address for the relay board.
+END DESCRIPTION **********************************************************/
+nodebug int plcrel_addr(int board)
+{
+	 int  group, bdnum;
+
+	 group = board / 8;
+	 bdnum = board % 8;
+	 return ((bdnum & 4) >> 2) + 
+			  ((bdnum & 2) << 3) + (((bdnum & 1) + (group << 1)) << 8);
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+plc_set_relay                <PLC_EXP.LIB>
+
+SYNTAX: void plc_set_relay(int board,int relay,int state);
+
+KEYWORDS: plcbus, relay
+
+DESCRIPTION: Controls relay on board to specified state. Assumes PAL FP04500,
+boards 0-7; relays 0-7; state 1 (on) or 0 (off).
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void plc_set_relay(int board, int relay, int state)
+{
+	 write12data(plcrel_addr(board), (relay << 1) + state);
+}
+
+/*=========================================================================
+					END OF RELAY EXPANSION BOARD DRIVERS
+==========================================================================*/
+
+
+/*=========================================================================
+					START OF D/A EXPANSION BOARD DRIVERS
+==========================================================================*/
+/***********************************************************************
+ plc_fdac1(int dac_value) &
+ plc_sdac1(int dac_value) - Write to DAC expansion board DAC #1, A reg.
+
+ plc_fdac2(int dac_value) &
+ plc_sdac2(int dac_value) - Write to DAC expansion board DAC #1, A reg.
+
+	* Loads A-register on DAC #1 or #2 with 12-bit value.
+	* Use dac_latch1() or dac_latch2() to load B-register.
+	  B-reg. value is what is output from DAC.
+	* Board must be currently addressed on PLCBus with set12adr().
+	* "fdac" and "sdac" functions are functionally equivalent.
+	  each "fdac" function is appx. 11us faster but 130 bytes larger than
+	  it's "sdac" counterpart.
+
+ Execution Times:
+ ----------------
+  plc_fdac1 & 2 = 77.908us + 3.906us * (# of io wait states)
+  plc_sdac1 & 2 = 88.759us + 3.906us * (# of io wait states) (10.851us more)
+
+  fdac cycles:
+	 Setup + Cleanup: 46 cycles
+	 Data: 672+(36*wt) cycles
+	 Total: 718+(36*wt) cycles ==  77.908us + (3.906us*wt) @ 9.216Mhz
+
+ Sizes:
+ ------
+  plc_fdac1 & 2 = 180 bytes
+  plc_sdac1 & 2 =  50 bytes
+
+
+***********************************************************************/
+
+
+/*** BeginHeader plc_fdac1 */
+
+void plc_fdac1(int dac_value);
+
+/*** Endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+plc_fdac1                    <PLC_EXP.LIB>
+
+SYNTAX: void plc_fdac1(int dac_value);
+
+KEYWORDS: plcbus, dac
+
+DESCRIPTION: Writes data to DAC1 of the currently addressed DAC board.
+This function has to be preceded by a call to dac_latch1() or equivalent
+to initiate the digital to analog conversion.
+
+RETURN VALUE: None
+END DESCRIPTION **********************************************************/
+#asm nodebug
+plc_fdac1::
+
+  ; Setup
+  ; -----
+	ld  bc,00ceh  ; bc = PLCBus expansion port address          9
+	rl h          ; move hi 4 bits to left in h:                7
+	rl h          ; 0000dddd --> dddd0000                       7
+	rl h          ;                                             7
+	rl h          ;                                             7
+					  ;                                            --
+					  ;                                            37
+d11:
+	; Get Serial bit MSB and assert at DAC data pin
+	; ---------------------------------------------
+	xor a      ; clr a                                          4
+	sla h      ; shift bit into carry                           7
+	rla        ; shift back to a                                3
+	out (c),a  ; write SDI bit - serial data bit to DAC        10+wt
+
+	; Clock serial bit in
+	; -------------------
+	ld a,07h   ; a= 0000 0111 to set STB1 - latch data bit      6
+	out (c),a  ; write STB1 low to clock in data               10+wt
+	and 06h    ; a= 0000 0110 to reset STB1                     6
+	out (c),a  ; set STB1 back low                             10+wt
+				  ;                                               --
+				  ;                                               56+(3*wt)
+d10:
+	xor a      ; clr a
+	sla h      ; shift bit into carry
+	rla        ; shift back to a
+	out (c),a  ; write SDI bit - serial data bit to dac
+	ld a,07h   ; a= 0000 0111 to set STB1 - latch data bit
+	out (c),a  ; write STB1 low to clock in data
+	and 06h    ; a= 0000 0110 to reset STB1
+	out (c),a  ; set STB1 back low
+d9:
+	xor a      ; clr a
+	sla h      ; shift bit into carry
+	rla        ; shift back to a
+	out (c),a  ; write SDI bit - serial data bit to D/A
+	ld a,07h   ; a= 0000 0111 to set STB1 - latch data bit
+	out (c),a  ; write STB1 low to clock in data
+	and 06h    ; a= 0000 0110 to reset STB1
+	out (c),a  ; set STB1 back low
+d8:
+	xor a      ; clr a
+	sla h      ; shift bit into carry
+	rla        ; shift back to a
+	out (c),a  ; write SDI bit - serial data bit to DAC
+	ld a,07h   ; a= 0000 0111 to set STB1 - latch data bit
+	out (c),a  ; write STB1 low to clock in data
+	and 06h    ; a= 0000 0110 to reset STB1
+	out (c),a  ; set STB1 back low
+d7:
+	xor a      ; clr a
+	sla l      ; shift bit into carry
+	rla        ; shift back to a
+	out (c),a  ; write SDI bit - serial data bit to DAC
+	ld a,07h   ; a= 0000 0111 to set STB1 - latch data bit
+	out (c),a  ; write STB1 low to clock in data
+	and 06h    ; a= 0000 0110 to reset STB1
+	out (c),a  ; set STB1 back low
+d6:
+	xor a      ; clr a
+	sla l      ; shift bit into carry
+	rla        ; shift back to a
+	out (c),a  ; write SDI bit - serial data bit to DAC
+	ld a,07h   ; a= 0000 0111 to set STB1 - latch data bit
+	out (c),a  ; write STB1 low to clock in data
+	and 06h    ; a= 0000 0110 to reset STB1
+	out (c),a  ; set STB1 back low
+d5:
+	xor a      ; clr a
+	sla l      ; shift bit into carry
+	rla        ; shift back to a
+	out (c),a  ; write SDI bit - serial data bit to DAC
+	ld a,07h   ; a= 0000 0111 to set STB1 - latch data bit
+	out (c),a  ; write STB1 low to clock in data
+	and 06h    ; a= 0000 0110 to reset STB1
+	out (c),a  ; set STB1 back low
+d4:
+	xor a      ; clr a
+	sla l      ; shift bit into carry
+	rla        ; shift back to a
+	out (c),a  ; write SDI bit - serial data bit to DAC
+	ld a,07h   ; a= 0000 0111 to set STB1 - latch data bit
+	out (c),a  ; write STB1 low to clock in data
+	and 06h    ; a= 0000 0110 to reset STB1
+	out (c),a  ; set STB1 back low
+d3:
+	xor a      ; clr a
+	sla l      ; shift bit into carry
+	rla        ; shift back to a
+	out (c),a  ; write SDI bit - serial data bit to DAC
+	ld a,07h   ; a= 0000 0111 to set STB1 - latch data bit
+	out (c),a  ; write STB1 low to clock in data
+	and 06h    ; a= 0000 0110 to reset STB1
+	out (c),a  ; set STB1 back low
+d2:
+	xor a      ; clr a
+	sla l      ; shift bit into carry
+	rla        ; shift back to a
+	out (c),a  ; write SDI bit - serial data bit to DAC
+	ld a,07h   ; a= 0000 0111 to set STB1 - latch data bit
+	out (c),a  ; write STB1 low to clock in data
+	and 06h    ; a= 0000 0110 to reset STB1
+	out (c),a  ; set STB1 back low
+d1:
+	xor a      ; clr a
+	sla l      ; shift bit into carry
+	rla        ; shift back to a
+	out (c),a  ; write SDI bit - serial data bit to DAC
+	ld a,07h   ; a= 0000 0111 to set STB1 - latch data bit
+	out (c),a  ; write STB1 low to clock in data
+	and 06h    ; a= 0000 0110 to reset STB1
+	out (c),a  ; set STB1 back low
+d0:
+	xor a      ; clr a
+	sla l      ; shift bit into carry
+	rla        ; shift back to a
+	out (c),a  ; write SDI bit - serial data bit to DAC
+	ld a,07h   ; a= 0000 0111 to set STB1 - latch data bit
+	out (c),a  ; write STB1 low to clock in data
+	and 06h    ; a= 0000 0110 to reset STB1
+	out (c),a  ; set STB1 back low
+	ret
+#endasm
+
+/*** BeginHeader plc_sdac1 */
+
+void plc_sdac1(int dac_value);
+
+/*** Endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+plc_sdac1                    <PLC_EXP.LIB>
+
+SYNTAX: void plc_sdac1(int dac_value);
+
+KEYWORDS: plcbus, dac
+
+DESCRIPTION: Writes data to DAC1 of the currently addressed DAC board.
+This function has to be preceded by a call to dac_latch1() or equivalent
+to initiate the digital to analog conversion. Same as plc_fdac1() but for
+11 us slower.
+
+RETURN VALUE: None
+END DESCRIPTION **********************************************************/
+#asm nodebug
+plc_sdac1::
+	ld  bc,00ceh  ; bc = PLCBus expansion port address          9
+	rl h          ; move hi 4 bits to left in h:                7
+	rl h          ; 0000dddd --> dddd0000                       7
+	rl h          ;                                             7
+	rl h          ;                                             7
+
+	ld e,4h       ; 6
+hi_d:
+	xor a      ; clr a
+	sla h      ; shift bit into carry
+	rla        ; shift back to a
+	out (c),a  ; write SDI bit - serial data bit to dac
+	ld a,07h   ; a= 0000 0111 to set STB1 - latch data bit
+	out (c),a  ; write STB1 low to clock in data
+	and 06h    ; a= 0000 0110 to reset STB1
+	out (c),a  ; set STB1 back low
+	dec e      ; 4
+	jr nz,hi_d ; 6/8
+
+	ld e,8h    ; 6
+lo_d:
+	xor a      ; clr a
+	sla l      ; shift bit into carry
+	rla        ; shift back to a
+	out (c),a  ; write SD1 bit - serial data bit to dac
+	ld a,07h   ; a= 0000 0111 to set STB1 - latch data bit
+	out (c),a  ; write STB1 low to clock in data
+	and 06h    ; a= 0000 0110 to reset STB1
+	out (c),a  ; set STB1 back low
+	dec e      ; 4
+	jr nz,lo_d ; 6/8
+	ret
+#endasm
+
+/*** BeginHeader plc_fdac2 */
+
+void plc_fdac2(int dac_value);
+
+/*** Endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+plc_fdac2                    <PLC_EXP.LIB>
+
+SYNTAX: void plc_fdac2(int dac_value);
+
+KEYWORDS: plcbus, dac
+
+DESCRIPTION: Writes data to DAC2 of the currently addressed DAC board.
+This function has to be preceded by a call to dac_latch2() or equivalent
+to initiate the digital to analog conversion.
+
+RETURN VALUE: None
+END DESCRIPTION **********************************************************/
+#asm nodebug
+plc_fdac2::
+	ld  bc,00ceh  ; bc = PLCBus expansion port address
+	rl h          ; move hi 4 bits to left in h:
+	rl h          ; 0000dddd --> dddd0000
+	rl h          ;
+	rl h          ;
+
+d11:
+	xor a      ; clr a
+	sla h      ; shift bit into carry
+	rla        ; shift back to a
+	out (c),a  ; write SDI bit - serial data bit to DAC
+	ld a,03h   ; a= 0000 0111 to set STB2 - latch data bit
+	out (c),a  ; write STB2 low to clock in data
+	and 02h    ; a= 0000 0110 to reset STB2
+	out (c),a  ; set STB2 back low
+d10:
+	xor a      ; clr a
+	sla h      ; shift bit into carry
+	rla        ; shift back to a
+	out (c),a  ; write SDI bit - serial data bit to dac
+	ld a,03h   ; a= 0000 0111 to set STB2 - latch data bit
+	out (c),a  ; write STB2 low to clock in data        10 + wt
+	and 02h    ; a= 0000 0110 to reset STB2
+	out (c),a  ; set STB2 back low
+d9:
+	xor a      ; clr a
+	sla h      ; shift bit into carry
+	rla        ; shift back to a
+	out (c),a  ; write SDI bit - serial data bit to D/A
+	ld a,03h   ; a= 0000 0111 to set STB2 - latch data bit
+	out (c),a  ; write STB2 low to clock in data        10 + wt
+	and 02h    ; a= 0000 0110 to reset STB2
+	out (c),a  ; set STB2 back low
+d8:
+	xor a      ; clr a
+	sla h      ; shift bit into carry
+	rla        ; shift back to a
+	out (c),a  ; write SDI bit - serial data bit to DAC
+	ld a,03h   ; a= 0000 0111 to set STB2 - latch data bit
+	out (c),a  ; write STB2 low to clock in data
+	and 02h    ; a= 0000 0110 to reset STB2
+	out (c),a  ; set STB2 back low
+d7:
+	xor a      ; clr a
+	sla l      ; shift bit into carry
+	rla        ; shift back to a
+	out (c),a  ; write SDI bit - serial data bit to DAC
+	ld a,03h   ; a= 0000 0111 to set STB2 - latch data bit
+	out (c),a  ; write STB2 low to clock in data
+	and 02h    ; a= 0000 0110 to reset STB2
+	out (c),a  ; set STB2 back low
+d6:
+	xor a      ; clr a
+	sla l      ; shift bit into carry
+	rla        ; shift back to a
+	out (c),a  ; write SDI bit - serial data bit to DAC
+	ld a,03h   ; a= 0000 0111 to set STB2 - latch data bit
+	out (c),a  ; write STB2 low to clock in data
+	and 02h    ; a= 0000 0110 to reset STB2
+	out (c),a  ; set STB2 back low
+d5:
+	xor a      ; clr a
+	sla l      ; shift bit into carry
+	rla        ; shift back to a
+	out (c),a  ; write SDI bit - serial data bit to DAC
+	ld a,03h   ; a= 0000 0111 to set STB2 - latch data bit
+	out (c),a  ; write STB2 low to clock in data
+	and 02h    ; a= 0000 0110 to reset STB2
+	out (c),a  ; set STB2 back low
+d4:
+	xor a      ; clr a
+	sla l      ; shift bit into carry
+	rla        ; shift back to a
+	out (c),a  ; write SDI bit - serial data bit to DAC
+	ld a,03h   ; a= 0000 0111 to set STB2 - latch data bit
+	out (c),a  ; write STB2 low to clock in data
+	and 02h    ; a= 0000 0110 to reset STB2
+	out (c),a  ; set STB2 back low
+d3:
+	xor a      ; clr a
+	sla l      ; shift bit into carry
+	rla        ; shift back to a
+	out (c),a  ; write SDI bit - serial data bit to DAC
+	ld a,03h   ; a= 0000 0111 to set STB2 - latch data bit
+	out (c),a  ; write STB2 low to clock in data
+	and 02h    ; a= 0000 0110 to reset STB2
+	out (c),a  ; set STB2 back low
+d2:
+	xor a      ; clr a
+	sla l      ; shift bit into carry
+	rla        ; shift back to a
+	out (c),a  ; write SDI bit - serial data bit to DAC
+	ld a,03h   ; a= 0000 0111 to set STB2 - latch data bit
+	out (c),a  ; write STB2 low to clock in data
+	and 02h    ; a= 0000 0110 to reset STB2
+	out (c),a  ; set STB2 back low
+d1:
+	xor a      ; clr a
+	sla l      ; shift bit into carry
+	rla        ; shift back to a
+	out (c),a  ; write SDI bit - serial data bit to DAC
+	ld a,03h   ; a= 0000 0111 to set STB2 - latch data bit
+	out (c),a  ; write STB2 low to clock in data
+	and 02h    ; a= 0000 0110 to reset STB2
+	out (c),a  ; set STB2 back low
+d0:
+	xor a      ; clr a
+	sla l      ; shift bit into carry
+	rla        ; shift back to a
+	out (c),a  ; write SDI bit - serial data bit to DAC
+	ld a,03h   ; a= 0000 0111 to set STB2 - latch data bit
+	out (c),a  ; write STB2 low to clock in data
+	and 02h    ; a= 0000 0110 to reset STB2
+	out (c),a  ; set STB2 back low
+	ret
+#endasm
+
+/*** BeginHeader plc_sdac2 */
+
+void plc_sdac2(int dac_value);
+
+/*** Endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+plc_sdac2                    <PLC_EXP.LIB>
+
+SYNTAX: void plc_sdac2(int dac_value);
+
+KEYWORDS:  plcbus, dac, write
+
+DESCRIPTION: Writes data to DAC2 of the currently addressed DAC board.
+This function has to be preceded by a call to dac_latch2() or equivalent
+to initiate the digital to analog conversion. Same as plc_fdac2() but for
+11 us slower.
+
+RETURN VALUE: None
+END DESCRIPTION **********************************************************/
+#asm nodebug
+plc_sdac2::
+	ld  bc,00ceh  ; bc = PLCBus expansion port address
+	rl h          ; move hi 4 bits to left in h:
+	rl h          ; 0000dddd --> dddd0000
+	rl h          ;
+	rl h          ;
+
+	ld e,4h
+hi_d:
+	xor a      ; clr a
+	sla h      ; shift bit into carry
+	rla        ; shift back to a
+	out (c),a  ; write SDI bit - serial data bit to dac
+	ld a,03h   ; a= 0000 0011 to set STB2 - latch data bit
+	out (c),a  ; write STB2 low to clock in data
+	and 02h    ; a= 0000 0010 to reset STB2
+	out (c),a  ; set STB2 back low
+	dec e      ; 4
+	jr nz,hi_d ; 6/8
+
+	ld e,8h    ; 6
+lo_d:
+	xor a      ; clr a
+	sla l      ; shift bit into carry
+	rla        ; shift back to a
+	out (c),a  ; write SD1 bit - serial data bit to dac
+	ld a,03h   ; a= 0000 0011 to set STB2 - latch data bit
+	out (c),a  ; write STB2 low to clock in data
+	and 02h    ; a= 0000 0010 to reset STB2
+	out (c),a  ; set STB2 back low
+	dec e
+	jr nz,lo_d
+	ret
+#endasm
+
+/*** BeginHeader dac_latch1 */
+
+void dac_latch1(void);
+
+/*** Endheader */
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+dac_latch1                   <PLC_EXP.LIB>
+
+SYNTAX: void dac_latch1(void);
+
+KEYWORDS: plcbus, dac
+
+DESCRIPTION: Transfers A-reg. value to reg. B on DAC #1.  Loads B-reg on 
+DAC #1 or #2 with 12-bit value in A-reg.  Value in B-reg is used to assert 
+analog output.  Use plc_fdac1 & plc_fdac2 to load A-reg.  Board must be 
+currently addressed on PLCBus with set12adr().
+
+RETURN VALUE: None
+END DESCRIPTION **********************************************************/
+
+/* START NOTE ************************************************************   
+Execution Time:
+ ---------------
+  50 + (2*wt) cycles  == 5.425us @ 9.216Mhz CPU
+								 (add .217us * wt)
+
+  wt = # of I/O wait states (0-3)
+END DESCRIPTION **********************************************************/
+#asm nodebug
+dac_latch1::
+  ld  bc,00ceh  ; bc = PLCBus expansion port address              9
+  ld a,08h      ; a=00001000: Set LD1 low                         6
+  out (c),a     ; latch to DACs A-register (asserts output)      10+wt
+  or 01h        ; a=00001001: Set LD1 Hi                          6
+  out (c),a     ; Bring back LD1                                 10+wt
+  ret           ;                                                 9
+#endasm
+
+/*** BeginHeader dac_latch2 */
+
+void dac_latch2(void);
+
+/*** Endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+dac_latch2                   <PLC_EXP.LIB>
+
+SYNTAX: void dac_latch2(void);
+
+KEYWORDS: plcbus, dac
+
+DESCRIPTION:  Transfer A-reg. value to reg. B on DAC #2.  Loads B-reg on 
+DAC #1 or #2 with 12-bit value in A-reg.  Value in B-reg is used to assert 
+analog output.  Use plc_fdac1 & plc_fdac2 to load A-reg.  Board must be 
+currently addressed on PLCBus with set12adr().
+
+RETURN VALUE: None
+END DESCRIPTION **********************************************************/
+
+/* START NOTE ************************************************************   
+ Execution Time:
+ ---------------
+  50 + (2*wait) cycles  == 5.425us @ 9.216Mhz CPU
+									(add .217us * wait)
+
+  wait = # of I/O wait states (0-3)
+END DESCRIPTION **********************************************************/
+#asm nodebug
+dac_latch2::
+  ld  bc,00ceh  ; bc = PLCBus expansion port address
+  ld a,04h      ; a=00000100: Set LD2 low
+  out (c),a     ; latch to DACs A-register (asserts output)
+  or 01h        ; a=00000101: Set LD2 Hi
+  out (c),a     ; Bring back LD2
+  ret
+#endasm
+
+/*** BeginHeader plcdac_addr */
+
+int plcdac_addr(int bd);
+
+/*** Endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+plcdac_addr                  <PLC_EXP.LIB>
+
+SYNTAX: int plcdac_addr(int bd);
+
+KEYWORDS: plcbus, analog
+
+DESCRIPTION: Converts logical board address 0-63 to 12-bit (3-nybble) 
+PLCBus analog address. Returns integer value in hl.
+
+RETURN VALUE: 12 bit PLCBUS address for the DAC.
+END DESCRIPTION **********************************************************/
+
+/* START NOTE ************************************************************   
+	Address format: 000j 001j pppj
+				  ppp: 4-bit Pal identifier from number: 46P0 P=0ppp
+				  jjj: analog board jumpers bd0, bd1, bd2 (address 0-7)
+	Equivalent C function:
+	int plcad_addr(int bd)
+	{ 
+		return ((bd&4)>>2) + (((bd&2)+4)<<3) + ((((bd/8)<<1) + (bd&1))<<8); 
+	}
+END DESCRIPTION **********************************************************/
+
+#asm nodebug
+plcdac_addr::                                                     ;cycle count
+	  ld  a,l         ;construct mid & lo nybbles in a                   4
+	  ld  h,0h        ;h contains high nybble - 0000 or 0001             6
+hinybl:
+	  bit 2,a        ;Hi-nybble = 0000 for boards 0-3, 0001 for 4-7      6
+	  jr  z,lonybl                                                      ;6-8
+	  inc h                                                             ;4
+lonybl:
+	  and 38h        ;low-nybble= pppj  ppp=pal#  j=bd0                 6
+	  srl a          ;shift pal # to bits 1-3
+	  srl a
+	  bit 0,l        ;chek bd0
+	  jr z,midnybl
+	  inc a
+midnybl:
+	  bit 1,l        ;bit 0 of mid nybble = bit 1 of board addr          6
+	  jr  z,bit1                                                        ;6-8
+	  or  10h        ;set bit 4 of a if bd1=1                           ;6
+bit1:
+	  set 5,a
+	  ld  l,a        ;move back to l reg, hl = physical address          4
+
+	  ;Switch nybbles around
+	  ld  a,h
+	  and 0fh
+	  ld  c,a    ;c = 0 , hi-nybble
+
+	  ld  a,l
+	  and 0fh
+	  ld  h,a    ;h=0 , lo nybb
+
+	  ld  a,l    ;a = mid, lo
+	  and 0f0h   ;a = mid , 0
+	  or  c      ;a = mid, hi
+	  ld  l,a    ;l = mid, hi
+	  ret
+#endasm
+
+
+/*** BeginHeader dac_init */
+
+void dac_init(void);
+
+/*** Endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+dac_init                     <PLC_EXP.LIB>
+
+SYNTAX: void dac_init(void);
+
+KEYWORDS: plcbus, dac, init
+
+DESCRIPTION: Initializes DAC expansion board.  Sets all output values to 0.
+Board must be currently addressed on PLCBus with set12adr().
+
+RETURN VALUE: None
+END DESCRIPTION **********************************************************/
+nodebug void dac_init(void)
+{
+	 outport(BUSWR, 0x09);    // Set LD1 High
+	 outport(BUSWR, 0x05);    // Set LD2 High
+	 outport(BUSWR, 0x0c);    // Set T1 Low
+	 outport(BUSWR, 0x0d);    // Set T1 High
+	 outport(BUSWR, 0x0e);    // Set T2 Low
+	 outport(BUSWR, 0x0f);    // Set T2 High
+}
+
+/*** BeginHeader dac_switch_on, dac_switch_off */
+
+void dac_switch_on(void);
+void dac_switch_off(void);
+
+/*** Endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+dac_switch_on                <PLC_EXP.LIB>
+
+SYNTAX: void dac_switch_on(void);
+
+KEYWORDS: plcbus, dac
+
+DESCRIPTION: Turns on LT1188 high-side switch (U10 - optional part).
+Board must be currently addressed on PLCBus wirh set12adr().
+
+RETURN VALUE: None
+END DESCRIPTION **********************************************************/
+nodebug void dac_switch_on(void)
+{
+	 outport(BUSWR, 0x0b);
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+dac_switch_off               <PLC_EXP.LIB>
+
+SYNTAX: void dac_switch_off(void);
+
+KEYWORDS: plcbus, dac
+
+DESCRIPTION: Turn off LT1188 high-side switch (U10 - optional part).
+Board must be currently addressed on PLCBus wirh set12adr().
+
+RETURN VALUE: None
+END DESCRIPTION **********************************************************/
+nodebug void dac_switch_off(void)
+{
+	 outport(BUSWR, 0x0a);
+}
+
+
+/*** BeginHeader find_dac */
+
+int find_dac(logical_board);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+find_dac                     <PLC_EXP.LIB>
+
+SYNTAX: int find_dac(logical_board);
+
+KEYWORDS: plcbus, dac
+
+DESCRIPTION:  Checks for presence of a DAC board.
+
+RETURN VALUE: 1, if board replies; else 0.
+END DESCRIPTION **********************************************************/
+nodebug int find_dac(logical_board)
+{
+	 int paddr;
+	 paddr = plcdac_addr(logical_board);
+	 return plc_poll_node(paddr);
+}
+
+/*=========================================================================
+					END OF D/A EXPANSION BOARD DRIVERS
+==========================================================================*/
+
+
+/*=========================================================================
+					START OF UART EXPANSION BOARD DRIVERS
+==========================================================================*/
+
+/*=========================================================================
+					END OF UART EXPANSION BOARD DRIVERS
+==========================================================================*/
+
+
+/*=========================================================================
+					START OF GENERAL EXPANSION BOARD DRIVERS
+==========================================================================*/
+
+
+/*** BeginHeader reset_pbus, plc_poll_node */
+
+int reset_pbus(void);
+int plc_poll_node(int addr);
+
+/*** EndHeader */
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+reset_pbus                   <PLC_EXP.LIB>
+
+SYNTAX: int reset_pbus(void);
+
+KEYWORDS: plcbus, reset
+
+DESCRIPTION: Send a reset command to all PLC expansion boards.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+int reset_pbus(void)
+{
+	 inport(RST8);
+}
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+plc_poll_node                <PLC_EXP.LIB>
+
+SYNTAX: int plc_poll_node(int addr);
+
+KEYWORDS: plcbus
+
+DESCRIPTION: Checks PLCBUS expansion board with the specified addr.
+
+RETURN VALUE: 1, if node answers; else 0.
+END DESCRIPTION **********************************************************/
+int plc_poll_node(int addr)
+{
+	 if (read12data(addr) & 1)
+		  return 0;
+	 else
+		  return 1;
+}
+
+/*** BeginHeader reset_pbus_wait */
+
+void reset_pbus_wait(void);
+
+/*** EndHeader  */
+
+/* START FUNCTION DESCRIPTION ********************************************
+reset_pbus_wait              <PLC_EXP.LIB>
+
+SYNTAX: void reset_pbus_wait(void);
+
+KEYWORDS: plcbus, delay
+
+DESCRIPTION: Provides necessary delay for PLCBus expansion Boards after a 
+bus reset.  Provides minimum delay for 9Mhz CPU.  Increase outer loop 
+counter accrordingly for faster CPU. (i.e. for 12 Mhz use 6000 instead of 
+4500).
+
+RETURN VALUE: None
+END DESCRIPTION **********************************************************/
+nodebug void reset_pbus_wait(void)
+{
+	 int i, k, N;
+
+#if (BOARD_TYPE==PLC_BOARD)
+	 N = 12;
+#else
+	 N = 10;
+#endif
+		
+	 for (i = 4500; i; --i)
+		  for (k = 0; k < N; ++k) hitwd();
+}
+
+/*=========================================================================
+					END OF GENERAL EXPANSION BOARD DRIVERS
+==========================================================================*/
+
+/*=========================================================================
+					START OF DRIVERS FOR THE EXP-ADC4 BOARDS
+==========================================================================*/
+/*** BeginHeader */
+#define ADC4_CLK0    0x00
+#define ADC4_CLK1    0x01
+#define ADC4_DAT0    0x02
+#define ADC4_DAT1    0x03
+#define ADC4_CS0     0x04
+#define ADC4_CS1     0x05
+#define ADC4_SDA0    0x06
+#define ADC4_SDA1    0x07
+#define ADC4_SCL0    0x08
+#define ADC4_SCL1    0x09
+#define ADC4_EOC     0x03  // bit position of ADC4 end of conversion
+#define ADC4_ID      0x00  // bit position to detect board presence
+
+struct adc4coeff
+		{
+			int zero_offset;
+			float invgain;
+		};
+
+/*** EndHeader */
+
+/*** BeginHeader adc4_initPAddr */
+
+int adc4_initPAddr();
+
+/*** EndHeader */
+
+#asm
+adc4_initPAddr::
+	ld		bc,BUSRD0
+	in		a,(c)
+	bit	ADC4_ID,a
+	jr		z,brdFound
+	ld		hl,0
+	ret
+brdFound:
+	ld		bc,BUSWR
+	ld		a,ADC4_CLK0
+	out	(c),a
+	ld		a,ADC4_CS0
+	out	(c),a
+	ld		a,ADC4_CS1
+	out	(c),a
+	ld		a,ADC4_CS0
+	out	(c),a
+	ld		hl,1
+	ret
+#endasm
+
+/*** BeginHeader adc4_init */
+int adc4_init( unsigned int board_adr);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ***************************************************
+adc4_init               <PLC_EXP.LIB>
+
+SYNTAX: int adc4_init(unsigned int board_adr);
+
+DESCRIPTION: Determines if an ADC4 board is on the PLCBUS. "Board_adr"
+is the physical address of the board defined as: 0000 1100 PPJJ. If the
+board is found, the A/D chip TLC2543 is initialized by enabling its
+chip select line. The chip select line remains enabled until the board
+is powered down.
+
+RETURN VALUE: 1 if the specified ADC4 board is on the PLCBUS; 0 if the
+ADC4 board is not found. 
+END DESCRIPTION *******************************************************/
+nodebug
+int adc4_init(unsigned int board_adr)
+{
+		set12adr(((board_adr << 8) & 0x0f00) | (board_adr & 0x0f0) |
+					((board_adr >> 8) & 0x00f));  // set the plcbus
+		return adc4_initPAddr();
+}
+
+/*** BeginHeader adc4_read, adc4_readPAddr */
+int adc4_read(unsigned int board_adr, int chan);
+int adc4_readPAddr(int chan);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ***************************************************
+adc4_read               <PLC_EXP.LIB>
+
+SYNTAX: int adc4_read(unsigned int board_adr, int chan);
+
+DESCRIPTION: Sets and reads the A/D data conversion for the specified
+"chan". "Board_adr" is the physical address of the ADC4 board defined as:
+0000 1100 PPJJ. "Chan" is 0-10 for the 11 A/D channels; "Chan" is 11 for
+(Vref+ - Vref-)/2; "Chan" is 12 for Vref-; "Chan" is 13 for Vref+. All
+data defaults to 12 bits unipolar mode with MSB first. The nominal zero
+point is 4095 for unipolar input and 2047 for bipolar input.
+
+RETURN VALUE: 0 to 4095 as converted for the chosen A/D "chan"; -1 if
+the specified ADC4 board is not found.
+END DESCRIPTION *******************************************************/
+#asm nodebug
+adc4_read::
+		pop   bc       ; 9, pop return address
+		pop   hl       ; 9, pop the board_id
+		pop   de       ; 9, pop the chan to read
+		push  de       ; 11
+		push  hl       ; 11
+		push  bc       ; 11, restore the stack
+
+		push  de       ; 11, save the command data
+
+		
+		ld    e, l     ; 4, switch third nibble and first nibble
+		ld    a, l     ; 4,  
+		and   0xf0     ; 6, zero first nibble
+		ld    l, a     ; 4, 
+		ld    a, h     ; 4, get third nibble
+		and   0x0f     ; 6, zero fourth nibble
+		or    l        ; 4, mask third nibble to first nibble
+		ld    l, a     ; 4, copy result to l
+		ld    a, e     ; 4, get first byte
+		and   0x0f     ; 6, mask out second nibble
+		ld    h, a     ; 4, copy first nibble to third nibble
+
+					
+		push  hl       ; 11, pass the board address
+		call  set12adr ; 121, set the plcbus
+		pop   bc       ; 9
+
+		pop   de       ; 9, pop the command data
+adc4_c_entry:
+		call	adc4_initPAddr
+		ld		l,a
+		or		h
+		ld		hl,0xffff
+		ret	z
+;		in0   a, (BUSRD0)       ; 12
+;		bit   ADC4_ID, a        ; 6
+;		ld    hl, 0xffff        ; 9, return -1 if board is not found
+;		ret   nz                ; 5 or 10
+										; total = 303
+wait_eoc1:
+		in0   a, (BUSRD0)    ; 12,  make sure board is not in
+		bit   ADC4_EOC, a    ; 6, conversion mode
+		jr    z, wait_eoc1   ; 6 or 8
+		
+		ld    a, e           ; 4
+		and   0x0f           ; 6, make sure only the 4 channel select
+									;  bits has 1's ,12 bit data = 00,
+									;  LSBF = 0 (MSB), BIP = 0(Unipolar)  
+		ld    b, 12          ; 4
+		ld    d, ADC4_DAT0   ; 4   
+		ld    e, ADC4_DAT1   ; 4   
+		ld    h, ADC4_CLK0   ; 4
+		ld    l, ADC4_CLK1   ; 4
+									; total = 357
+									
+									
+loop1:                     ; clock out 12 bits of command
+		bit   3, a           ; 6
+		jp    z, data_lo1    ; 6 or 9
+data_hi1:
+		out0  (BUSWR), e     ; 13
+		jr    next_clk1      ; 8
+data_lo1:   
+		out0  (BUSWR), d     ; 13
+next_clk1:                 
+		rlca                 ; 3, 1 left shift for command
+		out0  (BUSWR), l     ; 13
+		out0  (BUSWR), h     ; 13
+		djnz  loop1          ; 9 to loop back           
+									; 12 x ~71 = 852
+									; total = 1209
+wait_eoc2:
+		in0   a, (BUSRD0)    ; 12, make sure board is not in     
+		bit   ADC4_EOC, a    ; 6, conversion mode
+		jp    z, wait_eoc2   ; 6 or 9
+
+		ld    b, 12          ; 4
+		ld    c, 0           ; 4, zero c
+
+		ld    a, 0x00        ; 4, 
+									; total = 1245
+	
+		out0  (BUSWR), d     ; 13, set A_D data to low                                      
+									; total = 1258
+loop2:                     ; clock out 12 bits of command
+		out0  (BUSWR), l     ; 13, clock high
+									; clock in 12 bits of A_to_D data
+		or    a              ; 4, clear carry flag
+		rla                  ; 4, rotate left by 1
+		rl    c              ; 7, rotate carry to reg c
+		in0   e, (BUSRD0)    ; 12 
+		bit   1, e           ; 6 
+		jp    z, data_low    ; 6 or 9    
+		or    a, 0x01        ; 6
+data_low:
+		out0  (BUSWR), h     ; 13, clock low
+		djnz  loop2          ; 9, to loop back       
+									; 12 x 80 = 960
+									; total = 2218
+									
+		ld    l, a           ; 4, transfer data to hl register for return
+		ld    h, c           ; 4
+		ret                  ; 9
+									; total = 2235
+									; compensate for io wait cycles
+									;  total = 2235 + 6 * nwaits * 12
+									; For example, with 4 IO wait states,
+									; total = 2235 + 288 = 2523
+									; at 9Mhz this is ~275us.
+									; at 6Mhz this is ~410us
+									; Some boards, like the Little Star has additional
+									; wait states generated thru the EPLD. In this case,
+									; the 9Mhz board may even have more IO wait states.  
+									; For other than 0 memory wait states, each opcode
+									; has to be examine for number of memory wait states
+									; inserted.
+
+adc4_readPAddr::
+	ex		de,hl
+	jp		adc4_c_entry
+#endasm
+
+/*** BeginHeader adc4_set */
+int adc4_set(unsigned int board_adr, int chan);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ***************************************************
+adc4_set               <PLC_EXP.LIB>
+
+SYNTAX: int adc4_set(unsigned int board_adr, int chan);
+
+DESCRIPTION: Sets the A/D to start conversion on the specified "chan".
+"Board_adr" is the physical address of the board defined as:
+0000 1100 PPJJ. "Chan" is 0-10 for the 11 A/D channels; "Chan" is 11
+for (Vref+ - Vref-)/2; "Chan" is 12 for Vref-; "Chan" is 13 for Vref+;
+"Chan" is 14 to put the A/D chip TLC2543 into software power down mode.
+All data defaults to 12 bits unipolar mode with MSB first. The A/D
+conversion data can be read with another call to this function. The
+nominal zero point is 4095 for unipolar conversion and 2047 for bipolar
+conversion.
+
+RETURN VALUE: 0 to 4095 of the last A/D conversion (Caller should be
+aware of what A/D channel was set previously); -1 if the specified
+ADC4 board is not found.
+END DESCRIPTION ********************************************************/
+#asm nodebug
+adc4_set::
+		pop   bc       ; 9, pop return address
+		pop   hl       ; 9, pop the board_id
+		pop   de       ; 9, pop the chan to read
+		push  de       ; 11
+		push  hl       ; 11
+		push  bc       ; 11, restore the stack
+
+		push  de       ; 11, save the command data
+
+		ld    e, l     ; switch third nibble and first nibble
+				
+		ld    a, l     ; 
+		and   0xf0     ; zero first nibble
+		ld    l, a     
+		ld    a, h     ; get third nibble
+		and   0x0f     ; zero fourth nibble
+		or    l        ; mask third nibble to first nibble
+		ld    l, a     ; copy result to l
+		ld    a, e     ; get first byte
+		and   0x0f     ; mask out second nibble
+		ld    h, a     ; copy first nibble to third nibble
+				
+		push  hl       ; 11, pass the board address
+		call  set12adr ; 121, set the plcbus
+		pop   bc       ; 9
+
+		pop   de       ; 9, pop the command data
+
+		in0   a, (BUSRD0)       ; 12
+		bit   ADC4_ID, a        ; 6
+		ld    hl, 0xffff        ; 9, return -1 if board is not found
+		ret   nz                ; 5 or 10
+										; total = 253
+wait_eoc1:
+		in0   a, (BUSRD0)    ; 12,  make sure board is not in
+		bit   ADC4_EOC, a    ; 6, conversion mode
+		jr    z, wait_eoc1   ; 6 or 8
+				
+		ld    a, e           ; 4
+		and   0x0f           ; 6, make sure lower nibble is set for 12 bit, MSB,
+									; unipolar mode
+		ld    b, 12          ; 4
+		ld    d, ADC4_DAT0   ; 4   
+		ld    e, ADC4_DAT1   ; 4   
+		ld    h, ADC4_CLK0   ; 4
+		ld    l, ADC4_CLK1   ; 4
+		
+		ld    c, 0           ; 4, zero c
+
+		ex    af, af'        ; 4, set up alternate
+		ld    a, 0x00        ; 4, 
+		ex    af, af'        ; 4, back to regular
+									; total = 323
+													
+loop2:                     ; clock out 12 bits of command
+		bit   3, a           ; 6
+		jp    z, data_lo2    ; 6 or 9
+data_hi2:
+		out0  (BUSWR), e     ; 13
+		jr    next_clk2      ; 8
+data_lo2:
+		out0  (BUSWR), d     ; 13 
+next_clk2:
+		rlca                 ; 4, 1 left shift for command
+		out0  (BUSWR), l     ; 13, clock high
+
+									; clock in 12 bits of A_to_D data
+		ex    af, af'        ; 4, use alternate
+		or    a              ; 4, clear carry flag
+		rla                  ; 4, rotate left by 1
+		rl    c              ; 7, rotate carry to reg c
+		exx                  ; 3, use alternate
+		in0   b, (BUSRD0)    ; 12 
+		bit   1, b           ; 6 
+		exx                  ; 3, back to regular
+		jp    z, data_low    ; 6 or 9    
+		or    a, 0x01        ; 6
+data_low:
+		ex    af, af'        ; 4, restore to regular
+				
+		out0  (BUSWR), h     ; 13, clock low
+		djnz  loop2          ;  9 to loop back       
+									; 12 x ~131 = 1572
+									; total = 1895
+									
+		ex    af, af'        ; 4, get data from alternate a
+		ld    l, a           ; 4, transfer data to hl register for return
+		ld    h, c           ; 4
+		ret                  ; 9
+									; total = 1916
+									; compensate for io wait cycles
+									;  total = 1916 + 3 * nwaits * 12
+									; For example, with 4 IO wait states,
+									; total = ~1916 + 144  = 2060
+									; at 9Mhz this is ~225us.
+									; at 6Mhz this is ~335us
+									; Some boards, like the Little Star has additional
+									; wait states generated thru the EPLD. In this case,
+									; the 9Mhz board may even have more IO wait states.
+									; For other than 0 memory wait states, each opcode
+									; has to be examine for number of memory wait states
+									; inserted.
+  
+#endasm
+
+/*** BeginHeader adc4_convert */
+float adc4_convert(int data, struct adc4coeff *cnvrsn);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ***************************************************
+adc4_convert               <PLC_EXP.LIB>
+
+SYNTAX: float adc4_convert(int data, struct adc4coeff *cnvrsn);
+
+DESCRIPTION: Converts A/D "data" read with function adc4_read(...)
+or adc4_set(...) into its voltage equivalent. Conversion constants are
+stored in an adc4coeff structure pointed to by "cnvrsn". The voltage is
+computed as: voltage = cnvrsn->invgain * ( cnvrsn->zero_offset - data).   
+
+RETURN VALUE: Voltage equivalent of raw A_to_D data.
+END DESCRIPTION *******************************************************/
+nodebug
+float adc4_convert(int data, struct adc4coeff *cnvrsn)
+{
+	return ( cnvrsn->invgain * (cnvrsn->zero_offset - data));
+}
+
+/*** BeginHeader adc4_writecoeff */
+int adc4_writecoeff(unsigned int board_adr, int chan, 
+					struct adc4coeff *cnvrsn);
+/*** EndHeader */
+/* START FUNCTION DESCRIPTION ***************************************************
+adc4_writecoeff               <PLC_EXP.LIB>
+
+SYNTAX: int adc4_writecoeff(unsigned int board_adr, int chan,
+						struct adc4coeff *cnvrsn );
+
+DESCRIPTION: Stores the constants for converting A/D data to voltages.
+"Board_adr" is the physical address of the board defined as:
+0000 1100 PPJJ. "Chan" is 0-10 for the 11 A/D channels. "Cnvrsn" is a
+pointer to a adc4coeff structure that stores the constant "zero_offset"
+and the data to voltage conversion constant "invgain". The constants are
+stored as 6 continuous bytes in reserved spaces of the ADC4 board's
+eeprom.
+
+RETURN VALUE: 0 if the data is successfully stored in the eeprom. -1 if
+the ADC4 board is not found; -2 if there is problem in accessing the
+eeprom; -3 if the upper 256 bytes of the eeprom is write protected.
+END DESCRIPTION ********************************************************/
+nodebug
+int adc4_writecoeff(unsigned int board_adr, int chan,
+							struct adc4coeff *cnvrsn)
+{
+	char *pdata;
+	int ee_address;
+	int ercode;
+
+	ee_address = 446 + chan * 6;
+
+	pdata = (char *)(cnvrsn);
+
+	if((ercode = adc4_eewr(board_adr, ee_address++,    *(pdata++))) < 0)
+			return ercode;
+	if((ercode = adc4_eewr(board_adr, ee_address++,    *(pdata++))) < 0)
+			return ercode;
+	if((ercode = adc4_eewr(board_adr, ee_address++,    *(pdata++))) < 0)
+			return ercode;
+	if((ercode = adc4_eewr(board_adr, ee_address++,    *(pdata++))) < 0)
+			return ercode; 
+	if((ercode = adc4_eewr(board_adr, ee_address++,    *(pdata++))) < 0)
+			return ercode;
+	if((ercode = adc4_eewr(board_adr, ee_address,      *(pdata))) < 0)
+			return ercode;
+	return 0;
+}  
+
+/*** BeginHeader adc4_readcoeff */
+int adc4_readcoeff(unsigned int board_adr, int chan, 
+						struct adc4coeff *cnvrsn);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ***************************************************
+adc4_readcoeff               <PLC_EXP.LIB>
+
+SYNTAX: int adc4_readcoeff(unsigned int board_adr, int chan,
+					struct adc4coeff *cnvrsn );
+
+DESCRIPTION: Reads the constants for converting A/D data to voltages.
+"Board_adr" is the physical address of the board defined as:
+0000 1100 PPJJ. "Chan" is 0-10 for the 11 A/D channels. "Cnvrsn" is a
+pointer to the adc4coeff structure that stores the constant "zero_offset"
+and the data to voltage conversion constant "invgain". The constants are
+stored as 6 continuous bytes in reserved spaces of the ADC4 board's
+eeprom.
+
+RETURN VALUES: 0 if the data are successfully read from the eeprom; -1
+if the ADC4 board is not found; -2 if there is problem in accessing the 
+eeprom. 
+END DESCRIPTION ********************************************************/
+nodebug
+int adc4_readcoeff(unsigned int board_adr, int chan,
+			struct adc4coeff *cnvrsn)
+{
+	char *pdata;
+	int ee_address;
+	int ercode;
+
+	ee_address = 446 + chan * 6;
+
+	pdata = (char *)(cnvrsn);
+
+	if((ercode = adc4_eerd(board_adr, ee_address++)) < 0) return ercode;
+	*(pdata++) = ercode;  // get the data
+	if((ercode = adc4_eerd(board_adr, ee_address++)) < 0) return ercode;
+	*(pdata++) = ercode;
+	if((ercode = adc4_eerd(board_adr, ee_address++)) < 0) return ercode;
+	*(pdata++) = ercode;
+	if((ercode = adc4_eerd(board_adr, ee_address++)) < 0) return ercode;
+	*(pdata++) = ercode;
+	if((ercode = adc4_eerd(board_adr, ee_address++)) < 0) return ercode;
+	*(pdata++) = ercode;
+	if((ercode = adc4_eerd(board_adr, ee_address)) < 0) return ercode;
+	*(pdata)   = ercode;
+	return 0;         // 1-19-96
+}
+
+/*** BeginHeader adc4_sample */
+int adc4_sample(unsigned int board_adr, int chan, int count, int *buf,
+						unsigned int divider);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ***************************************************
+adc4_sample               <PLC_EXP.LIB>
+
+SYNTAX: int adc4_sample(unsigned int board_adr, int chan,
+						int count, int *buf, unsigned int divider);
+
+DESCRIPTION: Samples data from an A/D "chan" at uniform intervals in
+time. "Board_adr" is the physical address of the board defined as:
+0000 1100 PPJJ. "Chan" is 0-11 for the 11 A/D channels; "Chan" is 11
+for (Vref+ - Vref-)/2; "Chan" is 12 for Vref-; "Chan" is 13 for Vref+.
+"Count" specifies the number of samples to collect. "buf" points to
+a buffer where the samples will be stored. "Divider" specifies the
+sample rate based on the formula: rate = sysclock()/(20 * divider).
+All data defaults to 12 bits unipolar mode with MSB first.
+The minimum value for "divider" is dependent on the clock speed, number
+of IO wait states and number of memory wait states. The number of states
+can be approximated as: 12 x ( 131 + 4 * IOWait + 38 *MWait). For 9 Mhz,
+4 IO Wait, 0 Mem Wait ~192 us. With 1 Memory Wait ~240 us. For 6Mhz,
+4 IO Wait and 0 Mem Wait, ~290 us and ~357 us with 1 Mem Wait State.
+Note that the interrupts are turn off during the whole sampling period.
+
+RETURN VALUE: 0 if successful; -1 if the ADC4 board is not found; -2 if 
+the sampling rate is too fast for A/D conversion. Data are no collected if 
+the sampling rate is too fast.
+END DESCRIPTION ********************************************************/
+#asm nodebug
+adc4_sample::
+		ld    a, i
+		di                   ;  disable interrupt
+		push  af             ;  save interrupt state
+
+		ld    iy, 4
+		add   iy, sp
+
+		ld    l, (iy+0)
+		ld    h, (iy+1)
+
+		ld    e, l     ; 4, switch third nibble and first nibble
+		ld    a, l     ; 4,  
+		and   0xf0     ; 6, zero first nibble
+		ld    l, a     ; 4, 
+		ld    a, h     ; 4, get third nibble
+		and   0x0f     ; 6, zero fourth nibble
+		or    l        ; 4, mask third nibble to first nibble
+		ld    l, a     ; 4, copy result to l
+		ld    a, e     ; 4, get first byte
+		and   0x0f     ; 6, mask out second nibble
+		ld    h, a     ; 4, copy first nibble to third nibble
+
+					
+		push  hl       ; 11, pass the board address
+		call  set12adr ; 121, set the plcbus
+		pop   bc       ; 9
+
+		
+		in0   a, (BUSRD0)       ; 12
+		bit   ADC4_ID, a        ; 6
+		ld    hl, 0xffff        ; 9, return -1 if board is not found
+		jp    nz, the_end       ; 5 or 10
+		
+		in0   a, (TCR)    ; read status of timers
+		and   0x22        ; keep setting for timer1
+		out0  (TCR), a
+		ld    a, (iy+8)   ; get divider least
+		out0  (TMDR0L), a
+		out0  (RLDR0L), a
+		ld    a, (iy+9)   ; get divider most
+		out0  (TMDR0H), a
+		out0  (RLDR0H), a
+
+wait_eoc1:
+		in0   a, (BUSRD0)
+		bit   ADC4_EOC, a
+		jr    z, wait_eoc1
+		
+		ld    d, ADC4_DAT0   ;    
+		ld    e, ADC4_DAT1   ;   
+		ld    h, ADC4_CLK0   ; 
+		ld    l, ADC4_CLK1   ; 
+									; 
+		exx                  ; use alternate                           
+		ld    e, (iy+4)      ; number of count, least
+		ld    d, (iy+5)      ; number of count, most
+		ld    l, (iy+6)      ; char buffer, least
+		ld    h, (iy+7)      ; char buffer, most
+		exx                  ; back to regular                           
+
+		in0   a, (TCR)
+		and   0x22
+		or    0x01           ; enable timer0
+		out0  (TCR), a       ; start timer0
+		in0   a, (TCR)       ; reset timer0
+		in0   a, (TMDR0L)    ; reset timer0
+
+		ld    a, (iy+2)      ; 4, get channel to sample
+		and   0x0f           ; 6, make sure only the 4 channel select
+									;  bits has 1's ,12 bit data = 00,
+									;  LSBF = 0 (MSB), BIP = 0(Unipolar)  
+
+; clock out first command word
+		ld    b, 12
+loop1:                     ; clock out 12 bits of command
+		bit   3, a           ; 
+		jp    z, data_lo1    ; 
+data_hi1:
+		out0  (BUSWR), e     ; 
+		jr    next_clk1      ; 
+data_lo1:   
+		out0  (BUSWR), d     ; 
+next_clk1:                 
+		rlca                 ; 1 left shift for command
+		out0  (BUSWR), l     ; 
+		out0  (BUSWR), h     ; 
+		djnz  loop1          ;            
+
+timer_loop:
+		in0   a, (TCR)
+		bit   6, a           ; not ready
+		jr    z, not_ready
+overrun:
+		ld    hl, -2         ; return -2 if the sampling rate is too fast
+		jp    the_end
+not_ready:
+		in0   a, (TCR)
+		bit   6, a
+		jr    z, not_ready
+
+		in0   a, (TCR)       ; reset timer0
+		in0   a, (TMDR0L)    ; reset timer0
+		
+		ld    b, 12          ; 4, 12 clocks     
+		ex    af, af'        ; 4, set up alternate
+		exx                  ; 3, set up altrernate
+
+		xor   a              ; 4, alternate a is zeroed
+		ld    c, a           ; 4, copy zero to c
+		exx                  ; 3, back to regular       
+		ex    af, af'        ; 4, back to regular
+		ld    a, (iy+2)      ; 14, get command word
+		and   0x0f           ; 6, make sure other bits are 0
+
+data_loop:
+		bit   3, a           ; 6 + 2
+		jp    z, data_low    ; 6 or 9 + 2.5
+data_high:
+		out0  (BUSWR), e     ; 13 + 3, data high
+		jr    next_clk       ; 8 + 2
+data_low:
+		out0  (BUSWR), d     ; 13 + 3, data low
+next_clk:
+		rlca                 ; 4 + 1, 1 left shift for command word
+		out0  (BUSWR), l     ; 13 + 3, clock high
+		ex    af, af'        ; 4 +1 , use alternate
+		exx                  ; 3 + 1, use alternate
+		or    a              ; 4 + 0, clear carry flag
+		rla                  ; 4 + 1, rotate left by 1
+		rl    c              ; 7 + 2, rotate carry to reg c
+		in0   b, (BUSRD0)    ; 12 + 3, read A/D data
+		bit   1, b           ; 6 + 2, check for bit
+		jp    z, datain_low  ; 6 or 9 + 2.5
+		or    0x01           ; 6 + 2, mask in bit 0  
+datain_low:
+		ex    af, af'        ; 4 + 1, back to regular
+		exx                  ; 3 + 1, back to regular
+		out0  (BUSWR), h     ; 13 + 3, clock low
+		djnz  data_loop      ; 9 + 2, loop back 12 times
+									; data_loop ~ 12 x ( 131 + 4 * IOWait + 36 *MWait)
+									; For 4 IO Wait, 0 memory wait
+									; 9 Mhz: 1764/9216000 = 192 us
+									; 6 Mhz: 1764/6144000 = 287 us
+									; For 4 IO Wait , 1 Mem Wait
+									; 9 Mhz: 2196/9216000 = 238 us
+									; 6 Mhz: 2196/6144000 = 357 us
+									
+									; get the data
+		exx                  ; 3, use alternate
+		ex    af, af'        ; 4, get alternate data
+		ld    (hl), a        ; 7, copy data
+		ex    af, af'        ; 4, back to regular
+		inc   hl             ; 4, point to next location
+		ld    (hl), c        ; 7, copy data
+		inc   hl             ; 4, point to next location
+
+		dec   de             ; 4, decrement sample count
+		ld    a, e           ; 4, 
+		or    d              ; 4, do comparison
+		
+		exx                  ; 3, back to regular
+		jp    nz, timer_loop ; 9, for count number of data
+			
+		ld    hl, 0x0000
+the_end:      
+		in0   a, (TCR)
+		and   0x22           ; make sure channel 0 is off
+		out0  (TCR), a
+		in0   a, (TCR)       ; reset one last time
+		in0   a, (TMDR0L)    ; reset one last time
+		pop   af
+		jp    po, add1
+		ei
+add1:
+		ret
+#endasm
+
+/*** BeginHeader adc4_compute */
+int adc4_compute(struct adc4coeff *cnvrsn, int data1, float volt1,
+						int data2, float volt2);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ***************************************************
+adc4_compute               <PLC_EXP.LIB>
+
+SYNTAX: int adc4_compute(struct adc4coeff *cnvrsn, int data1, 
+			float volt1, int data2, float volt2);
+
+DESCRIPTION: Computes the "zero_offset" and "invgain" for the adc4coeff 
+structure pointed to by cnvrsn. The constants "zero_offset" and "invgain" 
+are used to convert A/D data to voltage using the following equation:
+volts = invgain *( zero_offset - A/D data). "data1" is the raw A/D reading 
+for known input voltage "volt1". "data2" is the raw A/D reading for the 
+known input volatge "volt2".
+
+RETURN VALUE: 0 if the constants are successfully computed; -1 if the
+data used resulted in divide the zero to compute the constannts.  
+END DESCRIPTION *******************************************************/
+nodebug
+int adc4_compute(struct adc4coeff *cnvrsn, int data1, float volt1,
+			int data2, float volt2)
+{
+	float tmp;
+	
+	if( (volt1 == volt2) || (data1 == data2) ) return -1;
+	cnvrsn->zero_offset = tmp = ( volt2*data1 - volt1*data2)/ (volt2-volt1);
+	if( cnvrsn->zero_offset == data1)
+		cnvrsn->invgain = volt2 / ( tmp - data2);
+	else
+		cnvrsn->invgain = volt1 / ( tmp - data1);
+	
+	return 0;
+}
+
+/*** BeginHeader adc4_eewr, adc4_eerd*/
+int adc4_eerd(unsigned int board_adr, int addr);
+int adc4_eewr(unsigned int board_adr, int addr,char data);
+void adc4_eedata(int data);
+int adc4_eedata_ack(int data);
+int adc4_eehdr(int address);
+int adc4_eeinit();
+/*** EndHeader*/
+
+unsigned char adc4eemap[] = {0xa0,0xa2,0xa4,0xa6,0xa8,0xaa,0xac,0xae}; 
+/* START FUNCTION DESCRIPTION ************************************************
+adc4_eewr               <PLC_EXP.LIB>
+
+SYNTAX: int adc4_eewr(unsigned int board_adr, int address, char data);
+
+DESCRIPTION: Writes byte "data" to EEPROM data "address". "Board_adr"
+is the physical address of the board defined as: 0000 1100 PPJJ.
+"Address" is 0 - 511 for the 512 bytes of eeprom memory storage. The
+top 256 bytes can also be write protected.
+
+RETURN VALUE: 0 if data write is successful; -1 if the ADC4 board is
+not found or if there is hardware problem in accessing the eeprom; -2
+if a write to the top 256 bytes of the eeprom is attempted and the
+write protect jumper is connected.
+END DESCRIPTION *******************************************************/
+nodebug
+int adc4_eewr(unsigned int board_adr, int address, char datum)
+{
+
+	set12adr(((board_adr << 8) & 0x0f00) | (board_adr & 0x0f0) |
+					((board_adr >> 8) & 0x00f));  // set the plcbus
+	if(IBIT(BUSRD0, ADC4_ID)) return -1;      // check for board presence
+	if(adc4_eeinit()) return -2;              // EEPROM busy, return error
+	if(adc4_eehdr(address)) return -2;        // EEPROM no acknowledge, return error
+	if(adc4_eedata_ack(address)) return -2;   // no acknowledge, return error
+	if(adc4_eedata_ack(datum)) return -3;     // no acknowledge, return error
+	outport(BUSWR, ADC4_SCL0);                // eeprom clock low
+	outport(BUSWR, ADC4_SDA0);                // eeprom data low
+	outport(BUSWR, ADC4_SCL1);                // eeprom clock high
+	outport(BUSWR, ADC4_SDA1);                // eeprom data high
+	return 0;                                 // data write okay
+}
+
+/* START FUNCTION DESCRIPTION ************************************************
+adc4_eerd               <PLC_EXP.LIB>
+
+SYNTAX: int adc4_eerd(unsigned int board_adr, int address);
+
+DESCRIPTION: Reads byte data from EEPROM data "address". "Board_adr"
+is the physical address of the board defined as: 0000 1100 PPJJ.
+Address is 0 - 511 for the 512 bytes of eeprom memory storage.
+
+RETURN VALUE: Non-negative value data; -1 if the ADC4 board is not
+found or there is harware problem in accessing the eeprom.
+END DESCRIPTION *******************************************************/
+nodebug
+int adc4_eerd(unsigned int board_adr, int address) 
+{
+	int ee_j, ee_k;
+	set12adr(((board_adr << 8) & 0x0f00) | (board_adr & 0x0f0) |
+				((board_adr >> 8) & 0x00f));  // set the plcbus
+	if(IBIT(BUSRD0, ADC4_ID)) return -1;   // check for board presence
+	if(adc4_eeinit())       return -2;     // EEPROM busy, return error
+	if(adc4_eehdr(address)) return -2;     // EEPROM no acknowledge,
+														// return error 
+	if(adc4_eedata_ack(address))
+		return -2;                          // no acknowledge,
+														// return error
+	outport(BUSWR, ADC4_SCL0);             // eeprom clock low
+	outport(BUSWR, ADC4_SCL1);             // eeprom clock high
+	outport(BUSWR, ADC4_SDA0);             // eeprom data low
+	outport(BUSWR, ADC4_SCL0);             // eeprom clock low
+		
+	ee_k = adc4eemap[*((char *)&address+1)&0x07] | 0x01; 
+	if(adc4_eedata_ack(ee_k))
+		return -2;                 // eeprom no acknowledge, return error
+	ee_k=0;
+
+	// start to read 8 bit data 
+	for(ee_j=0; ee_j<8; ee_j++)
+	{
+		outport(BUSWR, ADC4_SCL0);             // eeprom clock low
+		outport(BUSWR, ADC4_SCL1);             // eeprom clock high
+		if(IBIT(BUSRD0, 2))
+			ee_k = (ee_k<<1) | 0x01;       
+		else                              
+			ee_k = ee_k << 1;              
+	}
+	outport(BUSWR, ADC4_SCL0);    // eeprom clock low
+	outport(BUSWR, ADC4_SDA1);    // eeprom data high, acknowledge from master
+	outport(BUSWR, ADC4_SCL1);    // eeprom clock high
+	outport(BUSWR, ADC4_SDA1);    // eeprom data high, stop condition
+	return ee_k;
+}
+
+	
+// Clock out 8 bit of data to the EEPROM serial line of the ADC4 Board
+nodebug
+void adc4_eedata(int data)
+{
+		char ee_k, ee_j;
+		
+		for(ee_j = 0; ee_j < 8; ee_j++)
+		{
+			outport(BUSWR, ADC4_SCL0);          // eeprom clock low
+			if( data & 0x80)
+					outport(BUSWR, ADC4_SDA1);    // eeprom data high
+			else
+					outport(BUSWR, ADC4_SDA0);    // eeprom data low
+			data <<= 1;                         // rotate the data
+			outport(BUSWR, ADC4_SCL1);          // eeprom clock high       
+		}                    
+}
+		
+
+// Clock out 8 bit of data to the EEPROM serial line.
+// Returns with the ACK bit from the eeprom.
+nodebug
+int adc4_eedata_ack(int v)   
+{   
+	adc4_eedata(v);               // clock out 8 data bits
+	outport(BUSWR, ADC4_SCL0);    // eeprom clock low, clock low for ACK
+	outport(BUSWR, ADC4_SDA1);    // eeprom data high, master release data line
+	outport(BUSWR, ADC4_SCL1);    // eeprom clock high, clock high for ACK
+	return(IBIT(BUSRD0,2));       // return ACK from slave
+}
+
+// Clocks out eeprom header or slave identification data.
+// Returns with ACK low (0) from the slave EEPROM.
+// Returns with ACK high (1) or timeout is EEPROM is busy or not ready.
+nodebug
+int adc4_eehdr(int adr)
+{
+	int ee_k, ee_j;
+
+	outport(BUSWR, ADC4_SCL1);                // eeprom clock high
+	ee_k = adc4eemap[*((char *)&adr+1)&0x07];
+	for(ee_j=0; ee_j<10; ee_j++)              // try ten times  
+	{
+		outport(BUSWR, ADC4_SDA0);             // eeprom data low, start condition
+		if(!adc4_eedata_ack(ee_k))return 0;    // get EEPROM to acknowledge header
+	}
+	return 1;                                 // timeout, return error
+}
+
+
+// Waits for EEPROM data line to be clear.
+// Returns 0 if the eeprom data line is no longer busy.
+// Returns 1 if the eeprom data line remains busy after 10 attempts to
+// established communication.
+nodebug
+int adc4_eeinit()
+{
+	int ee_k;
+	for(ee_k=0; ee_k<10; ee_k++)           // try ten times 
+	{
+		outport(BUSWR, ADC4_SCL0);          // eeprom clock low
+		outport(BUSWR, ADC4_SDA1);          // eeprom data high
+		if(IBIT(BUSRD0,2)) return 0;        // busy or not, try until timeout
+		outport(BUSWR, ADC4_SCL1);          // eeprom clock high
+	}
+	return 1;                              // timeout, return 1
+}
+
+
+/************************************************************************
+
+The following routines are for easy start people, but is in general
+useful, provides a very simple interface.
+
+************************************************************************/
+
+/*** BeginHeader adc4_open, adc4_close, adc4_get,
+		adc4_setup, adc4_chaninit, adc4_getraw */
+
+int adc4_open(int phy_addr, int chan_num);
+void adc4_close(int chan);
+float adc4_get(int chan);
+int adc4_getraw(int chan);
+int adc4_setup(int , int , float , int , float );
+void adc4_chaninit();
+
+/*** EndHeader */
+
+struct adc4_chan {
+	unsigned phy_addr;
+	char chanNum;
+	struct adc4coeff data;
+	char init;
+};
+
+#ifndef MAX_ADC4CHAN
+#define MAX_ADC4CHAN 4
+#endif
+
+struct adc4_chan adc4channels[MAX_ADC4CHAN];
+
+/* START FUNCTION DESCRIPTION ************************************************
+adc4_chaninit               <PLC_EXP.LIB>
+
+SYNTAX:        void adc4_chaninit()
+
+DESCRIPTION:   this function initializes the module, zeros out everything,
+					must be called before using any channel related functions.
+
+RETURN VALUE:  N/A
+END DESCRIPTION *******************************************************/
+
+void adc4_chaninit() {
+	memset(adc4channels,0,sizeof(adc4channels));
+}
+
+/* START FUNCTION DESCRIPTION ************************************************
+adc4_open               <PLC_EXP.LIB>
+
+SYNTAX:        int adc4_open(int paddr, int port)
+
+DESCRIPTION:   this function opens a channel for the 'port' at the board
+located at 'paddr'.  Must be called before using other channel related
+functions.
+
+RETURN VALUE:  returns 0 if cannot open the channel, returns non -1 to
+indicate the channel number.
+END DESCRIPTION *******************************************************/
+
+int adc4_open(int paddr, int chan) {
+	auto unsigned i;
+	for (i=0; (i<MAX_ADC4CHAN) && adc4channels[i].init; ++i);
+	if (i==MAX_ADC4CHAN) return 0;
+	else {
+		if (adc4_init(paddr)) {
+			// found board
+			if ((chan >= 0) && (chan < 4)) {
+				adc4channels[i].init = 1;
+				adc4channels[i].phy_addr = paddr;
+				adc4channels[i].chanNum = chan;
+				adc4_readcoeff(paddr,chan,&adc4channels[i].data);
+				return i+1;
+			} else {
+				return 0;
+			}
+		} else {
+			// board not found
+			return 0;
+		}
+	}
+}
+
+nodebug fast nouseix speed
+struct adc4_chan *_adc4_addr(int chan) {
+	auto struct adc4_chan *pChan;
+
+	--chan;  
+	if ((chan >= 0) && (chan < MAX_ADC4CHAN)) {
+		pChan = &adc4channels[chan];
+		if (pChan->init) {
+			return pChan;
+		} else {
+			return NULL;
+		}
+	} else {
+		return NULL;
+	}
+}
+
+/* START FUNCTION DESCRIPTION ************************************************
+adc4_close              <PLC_EXP.LIB>
+
+SYNTAX:        void adc4_close(int chan)
+
+DESCRIPTION:   closes a channel so that another channel can reuse the
+					resources.
+
+RETURN VALUE:  N/A
+END DESCRIPTION *******************************************************/
+
+void adc4_close(int chan) {
+	auto struct adc4_chan *pChan;
+
+	pChan = _adc4_addr(chan);
+	if (pChan) pChan->init = 0;
+}
+
+/* START FUNCTION DESCRIPTION ************************************************
+adc4_get                <PLC_EXP.LIB>
+
+SYNTAX:        float adc4_get(int chan)
+
+DESCRIPTION:   gets the converted floating number representing the reading
+					of the channel.
+
+RETURN VALUE:  returns the floating point number, returns 0 if channel
+					is invalid.
+END DESCRIPTION *******************************************************/
+
+float adc4_get(int chan) {
+	auto struct adc4_chan *pChan;
+
+	pChan = _adc4_addr(chan);
+	if (pChan) {
+		return adc4_convert(
+			adc4_read(pChan->phy_addr,pChan->chanNum),
+			&pChan->data);
+	} else {
+		return 0;
+	}
+}
+
+/* START FUNCTION DESCRIPTION ************************************************
+adc4_getraw             <PLC_EXP.LIB>
+
+SYNTAX:        int adc4_getraw(int chan)
+
+DESCRIPTION:   returns the raw (12-bit unsigned int) value returned by the
+					A/D converter.
+
+RETURN VALUE:  -1 if the channel is invalid, otherwise the 12-bit unsigned
+					int.
+END DESCRIPTION *******************************************************/
+
+int adc4_getraw(int chan) {
+	auto struct adc4_chan *pChan;
+
+	pChan = _adc4_addr(chan);
+	if (pChan) {
+		return adc4_read(pChan->phy_addr,pChan->chanNum);
+	} else {
+		return -1;
+	}
+}
+
+/* START FUNCTION DESCRIPTION ************************************************
+adc4_setup              <PLC_EXP.LIB>
+
+SYNTAX:        int adc4_setup(  int chan,
+											int ad1,
+											float dat1,
+											int ad2,
+											float dat2)
+
+DESCRIPTION:   calibrates the coefficients of a channel so that a raw A/D
+					value 'ad1' will return 'dat1' (from function adc4_get), and
+					value 'ad2' will return 'dat2'.  The coefficients are also
+					stored back to the EEPROM on the adc4 board.
+
+RETURN VALUE:  -1 if the operation fails, otherwise 0.
+END DESCRIPTION *******************************************************/
+
+int adc4_setup(int chan, int ad1, float dat1, int ad2, float dat2) {
+	auto struct adc4_chan *pChan;
+
+	pChan = _adc4_addr(chan);
+	if (pChan) {
+		if (adc4_compute(&pChan->data,ad1,dat1,ad2,dat2)) {
+			adc4_writecoeff(pChan->phy_addr,pChan->chanNum,&pChan->data);
+			return 0;
+		} else {
+			return -1;
+		}
+	} else {
+		return -1;
+	}
+}
+
+/*** BeginHeader adc4_ezinit, adc4_ezget, adc4_ezgetraw, adc4_ezsetup */
+
+void adc4_ezinit();
+float adc4_ezget(int paddr, int chan);
+int adc4_ezgetraw(int paddr, int chan);
+void adc4_ezsetup(int paddr, int chan,
+	int ad1, float dat1, int ad2, float dat2);
+
+#define ADC4_BASE 0x0c0
+
+/*** EndHeader */
+
+#ifndef MAX_ADC4
+#define MAX_ADC4 4
+#endif
+
+struct adc4coeff adc4dat[MAX_ADC4][12];
+
+/* START FUNCTION DESCRIPTION ************************************************
+adc4_ezinit             <PLC_EXP.LIB>
+
+SYNTAX:        void adc4_ezinit()
+
+DESCRIPTION:   initialization for easystart programs
+
+RETURN VALUE:  N/A
+END DESCRIPTION *************************************************************/
+
+void adc4_ezinit() {
+	char i,j;
+	
+	memset(adc4dat,0,sizeof(adc4dat));
+	for (i = 0; i < MAX_ADC4; ++i) {
+		if (adc4_init(ADC4_BASE|i)) {
+			for (j = 0; j < 11; ++j) {
+				adc4_readcoeff(ADC4_BASE|i,j,&adc4dat[i][j]);
+			}
+		}
+	}
+}
+
+/* START FUNCTION DESCRIPTION ************************************************
+adc4_ezget              <PLC_EXP.LIB>
+
+SYNTAX:        float adc4_ezget(int paddr, int chan)
+
+DESCRIPTION:   Read a floating point number representing the readout at an
+					A/D pin on the ADC4 board at the physical address paddr,
+					(normally in the form of 0000 1100 ppjj, in which pp are the
+					bits controled by the PAL, and jj are the bits controled by
+					the jumpers).  Note that the convertion is based on the offset
+					and coefficients stored in the EEPROM on the ADC4 board.
+					
+RETURN VALUE:  converted A/D readout
+END DESCRIPTION *************************************************************/
+
+float adc4_ezget(int paddr, int chan) {
+	return adc4_convert(adc4_read(paddr,chan),&adc4dat[paddr&0xf][chan]);
+}
+
+/* START FUNCTION DESCRIPTION ************************************************
+adc4_ezgetraw           <PLC_EXP.LIB>
+
+SYNTAX:        int adc4_ezgetraw(int paddr, int chan)
+
+DESCRIPTION:   Similar to adc4_ezget, but reads in the raw 12-bit integer
+					from the A/D converter.
+					
+RETURN VALUE:  returns -1 if device doesn't exist, otherwise returns a 12-bit
+					positive number.
+END DESCRIPTION *************************************************************/
+
+int adc4_ezgetraw(int paddr, int chan) {
+	return adc4_read(paddr,chan);
+}
+
+/* START FUNCTION DESCRIPTION ************************************************
+adc4_ezsetup            <PLC_EXP.LIB>
+
+SYNTAX:        void adc4_ezsetup(int paddr, int chan,
+											int ad1, float dat1, int ad2, float dat2)
+											
+DESCRIPTION:   Sets up the offset and coefficient for channel 'chan' on board
+					at physical address 'paddr' based on the A/D raw readings
+					'ad1', 'ad2', and the actual values 'dat1' and 'dat2'.  The
+					result is automatically stored back to the EEPROM on the ADC4
+					board.
+					
+RETURN VALUE:  N/A
+END DESCRIPTION *************************************************************/
+
+void adc4_ezsetup(int paddr, int chan,
+		int ad1, float dat1, int ad2, float dat2) {
+	adc4_compute(&adc4dat[paddr&0xf][chan],ad1,dat1,ad2,dat2);
+	adc4_writecoeff(paddr,chan,&adc4dat[paddr&0xf][chan]);
+}

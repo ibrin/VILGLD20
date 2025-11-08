@@ -1,0 +1,2447 @@
+/* START LIBRARY DESCRIPTION *********************************************
+MATH.LIB
+	Copyright (c) 1994, 1995 Z-World.
+
+DESCRIPTION:
+	This library contains most of the math functions
+
+SUPPORT LIB'S:
+END DESCRIPTION **********************************************************/
+
+/*** BeginHeader */
+
+#ifndef __MATH_LIB
+#define __MATH_LIB
+
+/*** EndHeader */
+
+/*** beginheader G_mul, L_mul   */
+/*** endheader */
+
+#asm nodebug fast
+; long multiply bcde by stack
+; for hd64180, using mlt instruction
+; This routine does not check for overflow, use Z80 version for
+; overflow check.
+; note the sign bit of either term does not affect the result
+; since the sign bits only influence the upper 32 bits of the
+; the 64 bit product and only the lower 32 bits are returned
+G_mul::
+L_mul::
+   exx
+   pop   bc ;return address
+   exx
+   push  bc
+   push  de ;place on stack second multiplier
+   ld iy,8
+   add   iy,sp ;frame pointer
+;
+;b0:   equ   8
+;b1:   equ   7
+;b2:   equ   6
+;b3:   equ   5
+;a0:   equ   4
+;a1:   equ   3
+;a2:   equ   2
+;a3:   equ   1
+;
+;  a0*b0 + (a1*b0 + b1*a0) + (a1*b1 + a2*b0 +b2*a0) +
+; (a2*b1 +  b2*a1 + a3*b0  + b3*a0) + overflow terms
+;
+; bcde == b3 b2 b1 b0
+;  ld a,b1  ;save
+   ld d,(iy-4) ; a0
+   ex af,af'
+   ld a,d   ;a0
+   mlt   de ;a0*b0
+   ex de,hl ;least sum in hl
+   ld e,a   ;a0
+   ld d,(iy-7)     ; b1
+   mlt   de ;b1*a0
+   ld a,e
+   add   a,h
+   ld h,a
+   ld a,0
+   adc   a,d
+   exx
+   ld l,a
+   ld h,0   ;add upper to hl
+   exx
+   ld e,(iy-3)
+   ld d,(iy-8)
+   mlt   de
+   ld a,e
+   add   a,h
+   ld h,a
+   ld a,0
+   adc   a,d
+   exx
+   add   a,l
+   ld l,a
+   ld a,0
+   adc   a,h
+   ld h,a   ; a1*b0
+;   (a1*b1 + a2*b0 +b2*a0)
+   ld e,(iy-7)
+   ld d,(iy-3)
+   ld a,d   ; save a1 in a'
+   ex af,af'
+   ld a,e   ;save b1 in a
+   mlt   de
+   add   hl,de
+   ld e,(iy-2)
+   ld d,(iy-8)
+   mlt   de
+   add   hl,de
+   ld e,(iy-6)
+   ld d,(iy-4)
+   mlt   de
+   add   hl,de
+;(a2*b1 + b2*a1 + a3*b0 + b3*a0)
+   ld d,(iy-2)
+   ld e,a   ;b1
+   mlt   de    ; b1*a2
+   ld a,h
+   add   a,e
+   ex af,af'
+   ld d,a   ;a1
+   ex af,af'
+   ld e,(iy-6)   ;a1 *b2
+   mlt   de ; a1 * b2
+   add   a,e
+   ld d,(iy-1)
+   ld e,(iy-8)
+   mlt   de
+   add   a,e
+   ld d,(iy-5)
+   ld e,(iy-4)
+   mlt   de
+   add   a,e
+   ld e,c   ;return address
+   ld d,b   ;to de
+   ld b,a   ;result
+   ld c,l   ;most in bc
+   ex de,hl ;return address to hl
+   exx
+   push  hl
+   exx
+   pop   de ;least in de
+   ld sp,iy ;restore stack
+   jp (hl)  ;return to caller
+#endasm
+
+
+/*** BeginHeader L_div,L_mod,G_div,G_mod   */
+/*** Endheader */
+#asm nodebug fast
+; modified 10-sept-80 to add unsigned long "G"
+; copyright 1988, 1989 Z-World, Davis, Ca.
+
+
+; long modulus, divisor in bc-de, dividend in stack
+; 12/29/88 fix return address problem with l_mod
+
+
+; L_MOD  : Compute Modulus of Two Long Signed Integers
+;
+; INPUT  :
+;          BCDE = Divisor
+;          Stack : (Ret Addr) (Dividend MSW) (Dividend LSW)
+; OUTPUT :
+;          BCDE = Dividend % Divisor
+
+L_mod::
+   call  mod0     ; Check for Zero Modulus
+   pop   iy
+   pop   hl
+   exx
+   pop   hl
+   push  iy
+   push  hl
+   exx
+   push  hl
+   call  L_div
+   ld e,l
+   ld d,h      ; Least
+   exx
+   push  hl
+   exx
+   pop   bc    ; BCDE = modulus
+   ret
+
+; G_MOD  : Compute Modulus of Two Long Unsigned Integers
+;
+; INPUT  :
+;          BCDE = Divisor
+;          Stack : (Ret Addr) (Dividend MSW) (Dividend LSW)
+; OUTPUT :
+;          BCDE = Dividend % Divisor
+
+G_mod::
+   call  mod0     ; Check for Zero Modulus
+   pop   iy
+   pop   hl
+   exx
+   pop   hl
+   push  iy
+   push  hl
+   exx
+   push  hl
+   call  G_div
+   ld e,l
+   ld d,h      ; Least
+   exx
+   push  hl
+   exx
+   pop   bc    ; BCDE = modulus
+   ret
+
+; MOD0   : Check for Zero Modulus
+;
+; INPUT  :
+;     BCDE = Divisor
+; OUTPUT :
+;          BCDE = Divisor
+
+mod0:
+   ld a,b      ; Check for Zero
+   or c
+   or d
+   or e
+   ret   nz    ; Return if No Error
+   pop   hl    ; Return Address of Modulus Routine
+			   ; Return Address of Caller on Stack
+   ld hl,238      ; Long Zero Modulus Error
+   push  hl
+   push  hl    ; Dummy Return Address
+   ld iy,(ERROR_EXIT)   ; Error is Fatal: Will Not Return
+   jp (iy)     ; Execute Handler
+
+; L_DIV  : Divide Two Long Signed Integers
+;
+; INPUT  :
+;          BCDE = Divisor
+;          Stack : (Ret Addr) (Dividend MSW) (Dividend LSW)
+; OUTPUT :
+;          BCDE  = Dividend / Divisor
+;          HL'HL = Dividend % Divisor
+
+L_div::
+   ld a,b
+   or c
+   or d
+   or e     ; Check for Zero
+   jr nz,ldiv0
+div0:
+			   ; Return Address of Caller on Stack
+   ld hl,237      ; Long Divide By Zero Error
+   push  hl
+   push  hl    ; Dummy Return Address
+   ld iy,(ERROR_EXIT)   ; Error is Fatal: Will Not Return
+   jp (iy)     ; Execute Handler
+ldiv0:
+   ld a,b      ; A' = Sign of Divisor
+   ex af,af'
+   ld a,b
+   or a     ; Check for Neg
+   jp p,l_div1
+			   ; Negate BCDE to Make Divisor Positive
+   ld hl,0
+   sbc   hl,de    ; Least
+   ex de,hl
+   ld hl,0
+   sbc   hl,bc    ; Most
+   ld c,l
+   ld b,h      ; Now Negated
+l_div1:
+   pop   iy    ; Return Address
+   push  bc    ; MSW of Divisor
+   exx
+   pop   de    ; MSW of Divisor
+   ld hl,0     ; MSW of Accumulator
+   exx
+   pop   hl    ; LSW of Dividend
+   pop   bc    ; MSW of Dividend
+   ex af,af'
+   xor   b     ; Compute Sign of Result
+   push  af    ; Save Sign of Result
+   push  hl    ; Save LSW of Dividend
+   ld a,b      ; Sign of Dividend from MSW of Dividend
+   or a     ; Check Sign of Dividend
+   jp p,l_div2 ; If Plus
+			   ; Negate BC-Stack
+   pop   hl    ; Get LSW
+   push  de    ; Save Temp
+   ex de,hl
+   ld hl,0
+   or a     ; Clear Carry
+   sbc   hl,de    ; Negate LSW
+   ex de,hl
+   ld hl,0
+   sbc   hl,bc    ; Negate MSW
+   ld b,h
+   ld c,l
+   ex de,hl
+   pop   de    ; Restore DE
+   push  hl    ; Restore LSW to Stack
+l_div2:
+   ld hl,0     ; Zero Accumulator LSW
+			   ; Get First 8 Bits
+   ld a,b      ; MSB
+   call  dloop8
+   ex af,af'
+   ld a,c
+   call  dloop8      ; Next 8 Bits
+   pop   bc    ; Next 16 Bits of Dividend
+   exx
+   ld c,a      ; 8 Bits
+   ex af,af'
+   ld b,a      ; BC = 16 bits of Quotient
+   push  bc
+   exx
+   ld a,b
+   call  dloop8      ; 3rd 8 Bits
+   ex af,af'
+   ld a,c
+   call  dloop8      ; LSB
+			   ; HL'HL = Modulus: Put Result in BCDE
+   pop   bc    ; MSW of Quotient
+   ld e,a
+   ex af,af'
+   ld d,a      ; BCDE = Quotient, HL'HL = Modulus
+			   ; Sign of Result
+   pop   af
+   jp p,l_div4 ; If Negation Not Required
+			   ; Negate BCDE
+   push  hl    ; Save Modulus
+   ld hl,0
+   or a
+   sbc   hl,de    ; LSW
+   ex de,hl
+   ld hl,0
+   sbc   hl,bc
+   ld c,l
+   ld b,h
+   pop   hl    ; Restore Modulus
+l_div4:
+   jp (iy)
+
+; divide 8 steps, part of divisor in a
+; hl'-hl is accumulator, de'-de is divisor
+
+dloop8:
+   ld b,8      ; Count
+dloop0:
+   rla         ; Shift Left A, Accumulate Quotient
+   adc   hl,hl    ; Shift Left
+   exx
+   adc   hl,hl    ; Shift Left Most
+   exx
+   or a     ; Clear Carry
+   sbc   hl,de    ; Trial Subtraction
+   exx
+   sbc   hl,de    ; Most
+   jr nc,dloop1   ; If Subtract OK
+			   ; Reverse Subtraction
+   exx
+   add   hl,de
+   exx
+   adc   hl,de    ; Most
+   scf         ; Set Carry
+dloop1:
+   exx
+   djnz  dloop0      ; 8 steps, Quotient Bit in Carry
+   rla         ; Get Last Quotient Bit
+   cpl         ; Correct Polarity of Quotient
+   ret         ; A = 8 bits of Quotient
+
+; L_DIV  : Divide Two Long Signed Integers
+;
+; INPUT  :
+;          BCDE = Divisor
+;          Stack : (Ret Addr) (Dividend MSW) (Dividend LSW)
+; OUTPUT :
+;          BCDE  = Dividend / Divisor
+;          HL'HL = Dividend % Divisor
+
+G_div::
+   ld a,b
+   or c
+   or d
+   or e     ; Check for Zero
+   jp z,div0
+g_div1:
+   pop   iy    ; Return Address
+   push  bc    ; MSW of divisor
+   exx
+   pop   de    ; MSW of Divisor: DE'DE =  Divisor
+   ld hl,0     ; MSW of Accumulator
+   exx
+   pop   hl    ; LSW of Dividend
+   pop   bc    ; MSW of Dividend
+   push  hl    ; Save LSW of Dividend
+g_div2:
+   ld hl,0     ; Zero Accumulator LSW
+
+; | 32 zero bits | divisor 32 bits | 64-bit accumulator
+
+   ld a,b      ; MSB
+   call  dloop8
+   ex af,af'      ; Save 8 Quotient Bits
+   ld a,c
+   call  dloop8      ; Next 8 Bits
+   pop   bc    ; Next 16 Bits of Dividend
+   exx
+   ld c,a      ; 8 Bits
+   ex af,af'
+   ld b,a      ; BC = 16 Bits of Quotient
+   push  bc
+   exx
+   ld a,b
+   call  dloop8      ; 3rd 8 Bits
+   ex af,af'
+   ld a,c
+   call  dloop8      ; LSB
+			   ; HL'HL = Modulus
+   pop   bc    ; Most of Quotient
+   ld e,a
+   ex af,af'
+   ld d,a      ; BCDE = Quotient, HL'HL = Modulus
+   jp (iy)     ; Return
+
+#endasm
+
+
+/*** BeginHeader abs */
+
+int abs(int val);
+
+/*** EndHeader   abs */
+
+/*
+ * ABS
+ *
+ * Purpose:
+ *              Compute the absolute value of an integer arg
+ * Returns:
+ *              arg     if arg >= 0
+ *             -arg     if arg < 0
+ * Notes:
+ *              o This may be in the main library, but it is
+ *                repeated here so that the math package gets
+ *                a completely tested version that is not a
+ *                a macro. This function must be recursive and
+ *                ROMABLE.
+ *              o Portable code below. Library uses optimized
+ *                assembler (provided below).
+ *
+ *
+ *    int abs(x)
+ *    int x;
+ *    {
+ *            return ( (x >= 0) ? x : -x);
+ *    }
+ */
+
+/* START FUNCTION DESCRIPTION ********************************************
+abs                          <MATH.LIB>
+
+SYNTAX: int abs(int x);
+
+KEYWORDS: math
+
+DESCRIPTION: 	Computes the absolute value of an integer arg.
+
+RETURN VALUE: 	Absolute value of the argument.
+END DESCRIPTION **********************************************************/
+#asm  nodebug fast
+
+abs::
+	   ld       a,h
+	   or       a
+	   ret      p                    ; if already positive
+	   ex       de,hl
+	   ld       hl,0
+	   sbc      hl,de
+	   ret
+
+#endasm
+
+/*** BeginHeader acos */
+
+float acos(float x);
+
+/*** EndHeader   acos */
+
+/*
+ * ACOS
+ *
+ * Purpose:
+ *              Compute the arccosine of real FLOAT value x
+ *              The value x is assumed between -1 and 1
+ * Returns:
+ *              0       Range error, set errno = EDOM
+ *              angle   No error, answer in radians 0..PI
+ * Method:
+ *              acos(x) = PI/2 - asin(x)
+ */
+
+/* START FUNCTION DESCRIPTION ********************************************
+acos                         <MATH.LIB>
+
+SYNTAX: float acos(float x);
+
+KEYWORDS: math
+
+DESCRIPTION: Computes the arccosine of real FLOAT value x.  x is assumed
+between -1 and 1.
+
+RETURN VALUE:	Arccosine of the argument.
+END DESCRIPTION **********************************************************/
+nodebug float acos(float x)
+{
+	auto float y;
+	float sqrt(), atan();
+
+	if ((y = x * x) > ONE)
+	{
+		exception(EDOM);
+		return ZERO;
+	}
+	if (x == - ONE)
+		return PI;
+	if (y == ONE)
+		return ZERO;
+	return (PIbyTWO - atan(x / sqrt(ONE - y)));
+}
+
+/*** BeginHeader acot */
+
+float acot(float x);
+
+/*** EndHeader   acot */
+
+/*
+ * ACOT
+ *
+ * Purpose:
+ *              Compute the arccotangent of real FLOAT value x
+ *              The value x is assumed between -INF and +INF
+ * Returns:
+ *              angle   answer in radians 0 .. PI approx
+ * Method:
+ *              acot(x) = PI/2 + atan(-x)
+ */
+
+/* START FUNCTION DESCRIPTION ********************************************
+acot                         <MATH.LIB>
+
+SYNTAX: float acot(float x);
+
+KEYWORDS: math
+
+DESCRIPTION: Computes the arccotangent of real FLOAT value x.  x is
+assumed between -INF and +INF.
+
+RETURN VALUE:	Arccotangent of the argument.
+END DESCRIPTION **********************************************************/
+nodebug float acot(float x)
+{
+	float atan();
+
+	return (PIbyTWO + atan(- x));
+}
+
+/*** BeginHeader acsc */
+
+float acsc(float x);
+
+/*** EndHeader   acsc */
+
+/*
+ * ACSC
+ *
+ * Purpose:
+ *              Compute the arccosecant of real FLOAT value x
+ *              The value x is assumed between -INF and +INF
+ * Returns:
+ *              angle   answer in radians -PI/2 .. PI/2 approx
+ * Method:
+ *              acsc(x) = asec(x/sqrt(x*x-1));
+ */
+
+/* START FUNCTION DESCRIPTION ********************************************
+acsc                         <MATH.LIB>
+
+SYNTAX: float acsc(float x);
+
+KEYWORDS: math
+
+DESCRIPTION: Computes the arccosecant of real FLOAT value x. x is assumed
+between -INF and +INF.
+
+RETURN VALUE:	The Arccosecant of the argument.
+END DESCRIPTION **********************************************************/
+nodebug float acsc(float x)
+{
+	auto float y;
+	float sqrt(), asec();
+
+	if ((y = x * x) < ONE)
+	{
+		exception(EDOM);
+		return ZERO;
+	}
+	if (y == ONE)
+	{
+		return ((x >= ZERO) ? PIbyTWO : - PIbyTWO);
+	}
+	return (asin(1.0 / x));
+}
+
+/*** BeginHeader asec */
+
+float asec(float x);
+
+/*** EndHeader   asec */
+
+/*
+ * ASEC
+ *
+ * Purpose:
+ *              Compute the arcsecant of real FLOAT value x
+ *              The value x is assumed between -INF and +INF
+ * Returns:
+ *              angle   answer in radians 0 .. PI approx
+ *              0.0     errno = EDOM, on range error
+ * Method:
+ *              asec(x) = atan(sqrt(x*x - 1)) - (x >= 0 ? 0 : PI);
+ */
+
+/* START FUNCTION DESCRIPTION ********************************************
+asec                         <MATH.LIB>
+
+SYNTAX: float asec(float x);
+
+KEYWORDS: math
+
+DESCRIPTION: Computes the arccosecant of real FLOAT value x. x is assumed
+between -INF and +INF.
+
+RETURN VALUE:	The Arccosecant of the argument.
+END DESCRIPTION **********************************************************/
+nodebug float asec(float x)
+{
+	auto float y;
+	float atan(), sqrt();
+
+	if ((y = x * x) < ONE)
+	{
+		exception(EDOM);
+		return ZERO;
+	}
+	return (PIbyTWO - asin(1.0 / x));
+}
+
+/*** BeginHeader asin */
+
+float asin(float x);
+
+/*** EndHeader   asin */
+
+/*
+ * ASIN
+ *
+ * Purpose:
+ *              Compute the arcsine of real FLOAT value x
+ *              The value x is assumed between -1 and 1
+ * Returns:
+ *              0       Range error, set errno = EDOM
+ *              angle   No error, answer in radians -PI/2 .. PI/2
+ * Method:
+ *              asin(x) = atan(x/sqrt(1 - x*x))
+ */
+
+/* START FUNCTION DESCRIPTION ********************************************
+asin                         <MATH.LIB>
+
+SYNTAX: float asin(float x);
+
+KEYWORDS: math
+
+DESCRIPTION: Computes the arcsine of real FLOAT value x. x is assumed
+between -1 and +1.
+
+RETURN VALUE:	The arcsine of the argument.
+END DESCRIPTION **********************************************************/
+nodebug float asin(float x)
+{
+	auto float y;
+	float sqrt(), atan();
+
+	if ((y = x * x) > ONE)
+	{
+		exception(EDOM);
+		return ZERO;
+	}
+	if (x == - ONE) 
+		return - PIbyTWO;
+	if (y == ONE) 
+		return PIbyTWO;
+	return (atan(x / sqrt(ONE - y)));
+}
+
+/*** BeginHeader atan */
+
+float atan(float x);
+
+/*** EndHeader   atan */
+
+/*
+ * ATAN
+ *
+ * Purpose:
+ *              Compute the arctangent of real float value x
+ *              The value x is assumed between -INF and +INF
+ * Returns:
+ *              angle   answer in radians -PI/2 .. PI/2 approx
+ *              0.0     ERANGE error
+ * Method:
+ *              Integral of 1/(1+x*x), or other inventions. Method
+ *              here is rational approxiamtion, Cheney & Hart.
+ * Notes:
+ *              o Constants from C&H, 6.5.21, 6.5.22, Table 5097.
+ */
+
+/* START FUNCTION DESCRIPTION ********************************************
+atan                         <MATH.LIB>
+
+SYNTAX: float atan(float x);
+
+KEYWORDS: math
+
+DESCRIPTION: Computes the arctangent of real FLOAT value x. x is assumed
+between -INF and +INF.
+
+RETURN VALUE:	The arctangent of the argument.
+END DESCRIPTION **********************************************************/
+nodebug float atan(float x)
+{
+	STATIC float p[] =
+			 {
+				 33.05861847399, 58.655751569, 32.3909748562,
+				 5.853195211263, .1952374193623, - .002434603300441
+			 };
+	STATIC float q[] =
+			 {
+				 33.05861847399, 69.67529105952, 49.00434821822,
+				 12.97557886271, 1.0
+			 };
+	auto float g, h;
+	auto int r, s;
+	float poly();
+
+	if ((g = x) == ZERO)
+		return ZERO;
+	if (s = (g < ZERO))
+		g = - g;
+	if (r = (g > ONE))
+		g = ONE / g;
+	h = g * g;
+	g *= poly(h, 5, p) / poly(h, 4, q);
+	if (r)
+		g = PIbyTWO - g;
+	return (s ? - g : g);
+}
+
+/*** BeginHeader atan2 */
+
+float atan2(float y, float x);
+
+/*** EndHeader   atan2 */
+
+/*
+ * ATAN2
+ *
+ * Purpose:
+ *              Compute the arctangent of real float value y/x
+ *              to find the angle in radians between the x-axis
+ *              and the ray through (0,0) and (x,y).
+ * Returns:
+ *              0       Error x=y=0, errno = EDOM
+ *              angle   answer in radians -PI .. PI approx
+ *              PI/2    x=0, y>0
+ *             -PI/2    x=0, y<0
+ *              0       x>0, y=0
+ *              PI      x<0, y=0
+ *
+ *  Recoded 10-Sept-88 after math test failure.
+ *  There were problems! The results in Q-II and Q-III were wrong.
+ */
+/* START FUNCTION DESCRIPTION ********************************************
+atan2                        <MATH.LIB>
+
+SYNTAX: float atan2(float y, float x);
+
+KEYWORDS: math
+
+DESCRIPTION: Computes the arctangent of real FLOAT value y/x to find the
+angle in radians between the x-axis and the ray through (0,0) and (x,y).
+
+RETURN VALUE:	Arctangent of y/x.
+END DESCRIPTION **********************************************************/
+nodebug float atan2(y, x)
+float y, x;
+{
+	static FLOAT z;
+	FLOAT atan();
+
+	if (x == ZERO)
+	{
+		if (y == ZERO)
+		{
+			exception(EDOM);
+			return ZERO;
+		}
+		return ((y > ZERO) ? PIbyTWO : - PIbyTWO);
+	}
+	if (y == ZERO)
+		return ((x > ZERO) ? ZERO : - PI);
+	z = atan(y / x);
+	if (x > ZERO)
+		return z;
+	return (z + ((y > ZERO) ? PI : - PI));
+}
+
+/*** BeginHeader ceil */
+
+float ceil(float x);
+
+/*** EndHeader   ceil */
+
+/*
+ * CEIL
+ *
+ * Purpose:
+ *              Compute FLOAT ceiling, the smallest integer greater
+ *              than or equal to the given number.
+ * Argument:
+ *              ceil(f)
+ *              f               FLOAT number
+ * Returns:
+ *              g               Where g is a whole number, signed,
+ *                              with f <= g and g-1 < f.
+ * Notes:
+ *              o No overflow check.
+ *              o No auto conversion to FLOAT.
+ */
+/* START FUNCTION DESCRIPTION ********************************************
+ceil                         <MATH.LIB>
+
+SYNTAX: float ceil(float x);
+
+KEYWORDS: math
+
+DESCRIPTION: Computes the smallest integer greater than or equal to the
+given number.
+
+RETURN VALUE:	See description.
+END DESCRIPTION **********************************************************/
+nodebug FLOAT ceil(f)
+FLOAT f;
+{
+	auto long i;
+
+	i = (long) f;
+	if ((FLOAT) i < f)
+		++i;
+	return ((FLOAT) i);
+}
+
+/*** BeginHeader cos */
+
+float cos(float x);
+
+/*** EndHeader   cos */
+
+/*
+ * COS
+ *
+ * Purpose:
+ *              Compute the cosine of real float value x
+ *              The value x is assumed in radians (not degrees)
+ *              Use deg() and rad() for conversions.
+ * Returns:
+ *              number          answer between -1 and 1
+ *                              No error checking for large x
+ * Method:
+ *              cos(x) = sin(x + PI/2)
+ */
+/* START FUNCTION DESCRIPTION ********************************************
+cos                          <MATH.LIB>
+
+SYNTAX: float cos(float x);
+
+KEYWORDS: math
+
+DESCRIPTION: Computes the cosine of real float value x (radians).
+
+RETURN VALUE:	Cosine of the argument.
+END DESCRIPTION **********************************************************/
+nodebug float cos(float x)
+{
+	float sin();
+
+	return (sin(x + PIbyTWO));
+}
+
+/*** BeginHeader cosh */
+
+float cosh(float x);
+
+/*** EndHeader   cosh */
+
+/*
+ * COSH
+ *
+ * Purpose:
+ *              Compute the hyperbolic cosine of real FLOAT value x
+ * Returns:
+ *              number          x in range
+ *              INF             x too large positive
+ *             -INF             x too large negative
+ *                              errno = ERANGE returned to flag error
+ * Method:
+ *              cosh(x) = (exp(x) + exp(-x))/2.0
+ * Notes:
+ *              o The value of EXPLARGE was found by solving the
+ *                equation exp(x) = 1.0e39.
+ */
+
+/* START FUNCTION DESCRIPTION ********************************************
+cosh                         <MATH.LIB>
+
+SYNTAX: float cosh(float x);
+
+KEYWORDS: math
+
+DESCRIPTION: Computes the hyperbolic cosine of real FLOAT value x.
+
+RETURN VALUE:	See description.
+END DESCRIPTION **********************************************************/
+nodebug FLOAT cosh(float x)
+{
+	FLOAT exp(), fabs();
+
+	if (fabs(x) > EXPLARGE)
+	{
+		exception(ERANGE);
+		return INF;
+	}
+	return (exp(x) + exp(- x)) / 2.0;
+}
+
+/*** BeginHeader deg */
+
+float deg(float x);
+
+/*** EndHeader   deg */
+
+/*
+ * DEG
+ *
+ * Purpose:
+ *              Changes FLOAT radians x to degrees
+ * Returns:
+ *              angle in degrees ( a FLOAT)
+ * Method:
+ *              angle = (180.0/PI)*x;
+ */
+
+/* START FUNCTION DESCRIPTION ********************************************
+deg                          <MATH.LIB>
+
+SYNTAX: float deg(float x);
+
+KEYWORDS: convert
+
+DESCRIPTION: Changes FLOAT radians x to degrees
+
+RETURN VALUE: Angle in degrees (a FLOAT).
+END DESCRIPTION **********************************************************/
+nodebug float deg(float x)
+{
+	return (x * (IPIby180));
+}
+
+/*** BeginHeader exp */
+
+float exp(float x);
+
+/*** EndHeader   exp */
+
+/*
+ * EXP
+ *
+ * Purpose:
+ *              Compute the exponential of real FLOAT value x
+ * Returns:
+ *              number          x in range
+ *              INF             x too large positive
+ *              0               x too large negative
+ *                              errno = ERANGE returned to flag error
+ * Method:
+ *              exp(x) = pow(EBASE,x)
+ *              EBASE = 2.71828 approx = e = base for natural logarithm
+ */
+
+/* START FUNCTION DESCRIPTION ********************************************
+exp                          <MATH.LIB>
+
+SYNTAX: float exp(float x);
+
+KEYWORDS: math
+
+DESCRIPTION: Computes the exponential of real FLOAT value x.
+
+RETURN VALUE:	See description.
+END DESCRIPTION **********************************************************/
+nodebug FLOAT exp(float x)
+{
+	FLOAT pow10();
+
+	if (x > EXPLARGE)
+	{
+		exception(ERANGE);
+		return INF;
+	}
+	if (x < - EXPLARGE)
+	{
+		exception(ERANGE);
+		return 0.0;
+	}
+	return pow10(LOGE * x);
+}
+
+/*** BeginHeader fabs */
+
+float fabs(float x);
+
+/*** EndHeader   fabs */
+
+/*
+ * FABS
+ *
+ * Purpose:
+ *              Compute the FLOAT absolute value of FLOAT x
+ * Returns:
+ *              arg     if arg >= 0
+ *             -arg     if arg < 0
+ */
+
+/* START FUNCTION DESCRIPTION ********************************************
+fabs                         <MATH.LIB>
+
+SYNTAX: float fabs(float x);
+
+KEYWORDS: math
+
+DESCRIPTION: Computes the FLOAT absolute value of FLOAT x.
+
+RETURN VALUE:  x, if x >= 0; else -x.
+END DESCRIPTION **********************************************************/
+#asm  nodebug fast
+
+fabs::
+	   res      7,b                  ; clear sign bit
+	   ret
+
+#endasm
+
+/*** BeginHeader floor */
+
+float floor(float x);
+
+/*** EndHeader   floor */
+
+/*
+ * FLOOR
+ *
+ * Purpose:
+ *              Compute FLOAT floor, the largest integer less
+ *              than or equal to the given number.
+ * Argument:
+ *              floor(f)
+ *              f               FLOAT number
+ * Returns:
+ *              g               Where g is a whole number, signed,
+ *                              with g <= f and f < g+1.
+ * Notes:
+ *              o No overflow check.
+ *              o No auto conversion to FLOAT.
+ */
+
+/* START FUNCTION DESCRIPTION ********************************************
+floor                        <MATH.LIB>
+
+SYNTAX: float floor(float x);
+
+KEYWORDS: math
+
+DESCRIPTION: Computes the largest integer less than or equal to the given
+number.
+
+RETURN VALUE:	See description.
+END DESCRIPTION **********************************************************/
+nodebug
+FLOAT floor(float f)
+{
+	auto long i;
+
+	i = (long) f;
+	if (f < 0.0)
+		i--;
+	return ( (FLOAT)i );
+}
+
+/*** BeginHeader fmod */
+
+float fmod(float x, float y);
+
+/*** EndHeader   fmod */
+
+/*
+ * FMOD
+ *
+ * Purpose:
+ *              Solves for FLOAT f in the equation x = k*y + f
+ *              such that x*f >= 0, fabs(f) < fabs(y), for some
+ *              long integer k.
+ * Returns:
+ *              f       as computed above, a remainder (not a modulus)
+ * Notes:
+ *              o This works because the float library converts
+ *                to integer by truncation. If it didn't, then
+ *                it would be much more difficult to write.
+ */
+
+/* START FUNCTION DESCRIPTION ********************************************
+fmod                         <MATH.LIB>
+
+SYNTAX: float fmod(float x, float y);
+
+KEYWORDS: math
+
+DESCRIPTION:	Floating point modulo math.
+
+RETURN VALUE:	Returns the remainder of x/y.
+END DESCRIPTION **********************************************************/
+nodebug FLOAT fmod(float x, float y)
+{
+	auto long k;
+
+	if (y == ZERO)
+	{
+		exception(ERANGE);
+		return ZERO;
+	}
+	k = x / y;
+	return (x - (FLOAT)k * y);
+}
+
+/*** BeginHeader frexp */
+
+float frexp(float x, int *n);
+
+union FC4
+{
+	float f;
+	char c[4];
+};
+
+/*** EndHeader   frexp */
+
+/*
+ * FREXP
+ *
+ * Purpose:
+ *              Splits x into x = f*(radix**n) where n is an integer
+ *              and 0.5 <= f < 1.0. The value of radix is 2 for this
+ *              library.
+ * Returns:
+ *              f               the fraction, a FLOAT
+ *              n               via *nptr = n;
+ * Notes:
+ *              o The float library is radix 2.
+ *              o There is always a better way to do this calculation
+ *                based on knowledge of the float representation.
+ *              o The exponent in this float library is given by
+ *                r = ((int)255 & (int)x.c[3]) - (int)128.
+ */
+
+/* START FUNCTION DESCRIPTION ********************************************
+frexp                        <MATH.LIB>
+
+SYNTAX: float frexp(float x, int *n);
+
+KEYWORDS: math
+
+DESCRIPTION: Splits x into x = f*(radix**n), where n is an integer and
+0.5 <= f < 1.0.  Radix = 2 for this library.
+
+RETURN VALUE:	See description.
+END DESCRIPTION **********************************************************/
+nodebug FLOAT frexp(float f, int *nptr)
+{
+	auto union FC4 *x;
+
+	x = (union FC4 *) &f;
+	if (x->f == 0.0)
+	{
+		*nptr = 0;
+		return (0.0);
+	}
+	*nptr = ((0x7f & (int) x->c[3]) << 1) +
+	((0x80 & (int) x->c[2]) >> 7) - 126;// exponent
+	
+	x->c[3] &= 0xbf;
+	x->c[3] |= 0x3f;
+	x->c[2] |= 0x80;
+
+	return (x->f * 0.5);
+}
+
+/*** BeginHeader labs */
+
+long labs(long x);
+
+/*** EndHeader   labs */
+
+/*
+ * LABS
+ *
+ * Purpose:
+ *              Compute the long integer absolute value of long integer x
+ * Returns:
+ *              arg     if arg >= 0
+ *             -arg     if arg < 0
+ */
+
+/* START FUNCTION DESCRIPTION ********************************************
+labs                         <MATH.LIB>
+
+SYNTAX: long labs(long x);
+
+KEYWORDS: math
+
+DESCRIPTION: Computes the long integer absolute value of long integer x.
+
+RETURN VALUE: x, if x >= 0; else -x.
+END DESCRIPTION **********************************************************/
+nodebug long labs(long x)
+{
+	return (x >= 0 ? x : - x);
+}
+
+/*** BeginHeader ldexp */
+
+float ldexp(float x, int n);
+
+/*** EndHeader   ldexp */
+
+/*
+ * LDEXP
+ *
+ * Purpose:
+ *              computes  x*(radix**n) where n is an integer
+ *              and typically 0.5 <= x < 1.0
+ * Returns:
+ *              product         a FLOAT
+ * Notes:
+ *              o The float exponent in this library is
+ *                r = ((int)255 & (int)x.c[3]) - (int)128.
+ *              o A portable version of ldexp() that can be used
+ *                to check an implementation appears below.
+ *
+ *      FLOAT ldexp(x,n)
+ *      FLOAT x;
+ *      int n;
+ *      {
+ *      int i;
+ *      FLOAT f;
+ *              i = n; f = x;
+ *              if(i < 0) while(i++ < 0) f = f/2.0;
+ *              else      while(i-- > 0) f += f;
+ *              return f;
+ *      }
+ */
+
+/* START FUNCTION DESCRIPTION ********************************************
+ldexp                        <MATH.LIB>
+
+SYNTAX: float ldexp(float x, int n);
+
+KEYWORDS: math
+
+DESCRIPTION: Computes x*(radix**n), where n is an integer and
+0.5 <= x < 1.0.
+
+RETURN VALUE:	See description.
+END DESCRIPTION **********************************************************/
+nodebug FLOAT ldexp(float f, int n)
+{
+	auto int r;
+	auto union FC4 *x;
+
+	x = (union FC4 *) &f;
+
+	r = ((0x7f & (int) x->c[3]) << 1) +
+	((0x80 & (int) x->c[2]) >> 7) + n;// exponent
+
+	x->c[3] = (x->c[3] & 0x80) | (r >> 1);
+	x->c[2] |= (r & 0x01 ? 0x80 : 0);
+
+	return x->f;
+}
+
+/*** BeginHeader log */
+
+float log(float x);
+
+/*** EndHeader   log */
+
+/*
+ * LOG
+ *
+ * Purpose:
+ *              Compute the logarithm base e of real FLOAT value x
+ * Returns:
+ *              number          x in range
+ *              INF             x too large positive
+ *             -INF             x = 0 or x < 0
+ *                              errno = EDOM returned to flag error
+ * Method:
+ *              ln(x) = log10(x)/log10(e) = log10(x)*ln(10)
+ * Notes:
+ *              o Not very well done. Errors must filter back
+ *                through the log() function.
+ */
+
+/* START FUNCTION DESCRIPTION ********************************************
+log                          <MATH.LIB>
+
+SYNTAX: float log(float x);
+
+KEYWORDS: math
+
+DESCRIPTION: Computes the logarithm, base e, of real FLOAT value x.
+
+RETURN VALUE:	See description.
+END DESCRIPTION **********************************************************/
+nodebug FLOAT
+log(float x)
+{
+	FLOAT log10();
+
+	return (log10(x) * LNof10);
+}
+
+/*** BeginHeader log10 */
+
+float log10(float x);
+
+/*** EndHeader   log10 */
+
+/*
+ * LOG10
+ *
+ * Purpose:
+ *              Compute the base 10 logarithm of real FLOAT value x
+ * Returns:
+ *              number          x in range
+ *              INF             x too large positive
+ *             -INF             x = 0 or x < 0
+ *                              errno = EDOM returned to flag error
+ * Method:
+ *              Rational approximation.
+ * Notes:
+ *              o See C&H 6.3.28. Constants from table 2325.
+ */
+
+/* START FUNCTION DESCRIPTION ********************************************
+log10                        <MATH.LIB>
+
+SYNTAX: float log10(float x);
+
+KEYWORDS: math
+
+DESCRIPTION: Computes the base 10 logarithm of real FLOAT value x.
+
+RETURN VALUE:	See description.
+END DESCRIPTION **********************************************************/
+FLOAT poly();
+
+nodebug FLOAT
+log10(FLOAT x)
+{
+	STATIC
+	FLOAT p[] =
+	{
+			-8.625170319686, 11.70031513942,
+			-3.932918863942, 0.1960631750250
+	};
+	STATIC
+	FLOAT q[] =
+	{
+			-9.930094301066, 16.78051701465, -8.135425915213, 1.0
+	};
+	auto FLOAT n, m, y, z;
+	register int r;
+
+	auto union
+	{
+		FLOAT f;
+		char c[4];
+	} g;
+
+	if (x <= ZERO)
+	{
+		exception(EDOM);
+		return - INF;
+	}
+	g.f = x;
+	r = ((0x7f & (int) g.c[3]) << 1) +
+	((0x80 & (int) g.c[2]) >> 7) - 126;// exponent
+	g.c[3]&= 0xB0;
+	g.c[3] |= 0x3f;
+	g.c[2] |= 0x80;
+	x = g.f * ONE_HALF;
+	if (x == ONE_HALF)
+	{
+		y = ZERO;
+		--r;
+	}
+	else
+	{
+		m = x * SQR10;
+		y = (m - ONE) / (m + ONE);
+		z = y * y;
+		y = (y * poly(z, 3, p) / poly(z, 3, q) - ONE_HALF);
+	}
+	return (y + (float) r * LOG2);
+}
+
+/*** BeginHeader modf */
+
+float modf(float x, int *n);
+
+/*** EndHeader   modf */
+
+/*
+ * MODF
+ *
+ * Purpose:
+ *              Splits FLOAT x = f + n, where n is an integer
+ *              and FLOAT f satisfies fabs(f) < 1.0
+ * Returns:
+ *              f               the fraction, a FLOAT remainder
+ *              n               via *nptr = n;
+ */
+
+/* START FUNCTION DESCRIPTION ********************************************
+modf                         <MATH.LIB>
+
+SYNTAX: float modf(float x, int *n);
+
+KEYWORDS: math
+
+DESCRIPTION: Splits x into f + n, where n is an integer and FLOAT f 
+satisfies fabs(f) < 1.0.
+
+RETURN VALUE:	See description.
+END DESCRIPTION **********************************************************/
+nodebug FLOAT modf(FLOAT x, int *nptr)
+{
+	register int i;
+	auto FLOAT f;
+	FLOAT fabs();
+
+	i = x;
+	f = x - (FLOAT)i;
+	if (fabs(f) < ONE)
+	{
+		*nptr = i;
+		return f;
+	}
+	exception(ERANGE);
+	return ZERO;
+}
+
+/*** BeginHeader poly */
+
+float poly(float x, int n, float c[]);
+
+/*** EndHeader   poly */
+
+/*
+ * POLY
+ *
+ * Purpose:
+ *              Compute polynomial value by Horner's method.
+ *
+ *      Horner's method for polynomial evaluation
+ *
+ * Example: Given p[2] = 3, p[1] = 4, p[0] = 6,
+ *          then 3*(x**2) + 4*x + 6 = x( x(3) + 4) + 6 =
+ *               x( x(p[2]) + p[1]) + p[0]
+ *
+ */
+
+/* START FUNCTION DESCRIPTION ********************************************
+poly                         <MATH.LIB>
+
+SYNTAX: float poly(float x, int n, float c[]);
+
+KEYWORDS: math
+
+DESCRIPTION: Computes polynomial value by Horner's method.	"x" is the
+variable of the polynomial.  "n" is the order of the polynomial, and
+"c" is an array containing the coefficients of each power of "x".
+
+RETURN VALUE:	See description.
+END DESCRIPTION **********************************************************/
+nodebug float poly(float x, int n, float p[])
+{
+	auto float value;
+
+	value = p[n];
+	while (n)
+		value = x * value + p[ --n];
+	return (value);
+}
+
+/*** BeginHeader pow */
+
+float pow(float x, float y);
+
+/*** EndHeader   pow */
+
+/*
+ *      Raise X to the Yth Power
+ *
+ *  Range and Domain Error Generated by exp() and log()
+ *                                               y
+ *      Method :   y * log(x)     log(x )     y
+ *                   e          =  e         = x
+ */
+
+/* START FUNCTION DESCRIPTION ********************************************
+pow                          <MATH.LIB>
+
+SYNTAX: float pow(float x, float y);
+
+KEYWORDS: math
+
+DESCRIPTION: Raises x to the yth power.
+
+RETURN VALUE:	See description.
+END DESCRIPTION **********************************************************/
+nodebug float pow(float x, float y)
+{
+	return (exp(y * log(x)));
+}
+
+/*** BeginHeader pow10 */
+
+float pow10(float x);
+
+/*** EndHeader   pow10 */
+
+/*
+ * POW10
+ *
+ * Purpose:
+ *              Generate 10 to the x.
+ *
+ */
+
+/* START FUNCTION DESCRIPTION ********************************************
+pow10                        <MATH.LIB>
+
+SYNTAX: float pow10(float x);
+
+KEYWORDS: math
+
+DESCRIPTION:	10 to the power of "x".
+	
+RETURN VALUE:	See description.
+END DESCRIPTION **********************************************************/
+float poly();
+nodebug float pow10(float x)
+{
+	static float coeff[] =
+			 {
+				 1.0, .2302585092158E1, .2650949191501E1, .2034670312104E1,
+				 .1171493469046E1, .5358845480519, .2321569786604
+			 };
+	static float pt[] =
+			 {
+				 .1258925411794E+01, .1584893192461E+01, .1995262314969E+01,
+				 .2511886431510E+01, .3162277660168E+01, .3981071705535E+01,
+				 .5011872336273E+01, .6309573444802E+01, .7943282347243E+01
+			 };
+	static float p10[] =
+			 {
+				 1.0e1, 1.0e2, 1.0e3, 1.0e4, 1.0e5, 1.0e6, 1.0e7, 1.0e8, 1.0e9
+			 };
+	static float p100[] =
+			 {
+				 1.0e10, 1.0e20, 1.0e30
+			 };
+	int n, m, r;
+	float g;
+
+	if (r = (x < 0.0))
+		x = - x;
+	if (x > POW10INF)
+	{                        // Error - overflow
+		exception(ERANGE);
+		return 0.0;
+	}
+	n = m = 0;
+	if (x >= 0.100)
+	{
+		n = x;
+		x -= n;
+		m = 10 * x;
+		x -= 0.100 * m;
+	}
+	g = x ? poly(x, 6, coeff) : 1.00;
+	if (m)
+		g *= pt[m - 1];
+	if (n >= 10)
+	{
+		g *= p100[n / 10 - 1];
+		n %= 10;
+	}
+	if (n)
+		g *= p10[n - 1];
+	return (r ? 1.00 / g : g);
+}
+
+/*** BeginHeader sin */
+
+float sin(float x);
+
+/*** EndHeader   sin */
+
+/*
+ * SIN
+ *
+ * Purpose:
+ *              Compute the sine of real FLOAT value x
+ *              The value x is assumed in radians (not degrees)
+ *              Use deg() and rad() for conversions.
+ * Returns:
+ *              number          answer between -1 and 1
+ *                              No error checking for large x
+ *
+ * timing:      about 6 milliseconds on 8 mhz z80
+ *              about 3 milliseconds on 9.216 mhz HD64180
+ *
+ * Method:
+ *              Rational approximation from Cheney & Hart.
+ * Notes:
+ *              o Cody & Waite p 137 had too many errors with the current
+ *                float package. Went back to Cheney & Hart to get it right.
+ *              o Coefficients from #3370, C&H
+ *              o The switch case below uses more code but runs about
+ *                32% faster than other methods. Use ASM to optimize.
+ *              o No error checks for large x. The max size of x
+ *                is about 1440 degrees, which is 4 wraps of the unit
+ *                circle (25.13 radians).
+ *              o No assembler optimization.
+ *              o Correction made in return for incorrect sign on answers
+ *                where x < -PI
+ */
+
+/* START FUNCTION DESCRIPTION ********************************************
+sin                          <MATH.LIB>
+
+SYNTAX: float sin(float x);
+
+KEYWORDS: math
+
+DESCRIPTION:	Sine of x.
+
+RETURN VALUE:	Sine of x.
+END DESCRIPTION **********************************************************/
+nodebug float sin(float x)
+{
+	static float p[] =
+			 {
+				 .1357884e8, - .49429081e7, .440103053e6, - .138472724e5, .145968841e3
+			 };
+	static float q[] =
+			 {
+				 .864455865e7, .408179225e6, .946309610e4, .132653491e3, 1.0
+			 };
+	auto float y, z;
+	auto int b, c;
+	float poly();
+
+	b = (x >= 0.0) ? 0 : 2;
+	c = y = x * (b ? - TWObyPI : TWObyPI);
+	switch ((b + (int) c) & 3)
+	{
+		case 0 :
+			y = y - c;
+			break;
+		case 1 :
+			y = (c + 1) - y;
+			break;
+		case 2 :
+			y = c - y;
+			break;
+		case 3 :
+			y = y - (c + 1);
+			break;
+	}
+	z = y * y;
+	return (y * poly(z, 4, p) / poly(z, 4, q));
+}
+
+/*** BeginHeader sinh */
+
+float sinh(float x);
+
+/*** EndHeader   sinh */
+
+/*
+ * SINH
+ *
+ * Purpose:
+ *              Compute the hyperbolic sine of real FLOAT value x
+ * Returns:
+ *              number          x in range
+ *              INF             x too large positive
+ *             -INF             x too large negative
+ *                              errno = ERANGE returned to flag error
+ * Method:
+ *              sinh(x) = (exp(x) - exp(-x))/2.0
+ * Notes:
+ *              o The value of EXPLARGE was found by solving the
+ *                equation exp(x) = 1.0e39.
+ */
+
+/* START FUNCTION DESCRIPTION ********************************************
+sinh                         <MATH.LIB>
+
+SYNTAX: float sinh(float x);
+
+KEYWORDS: math
+
+DESCRIPTION:	Hyperbolic sine of x.
+
+RETURN VALUE:	See description.
+END DESCRIPTION **********************************************************/
+nodebug FLOAT sinh(float x)
+{
+	FLOAT exp();
+
+	if (x > EXPLARGE)
+	{
+		exception(ERANGE);
+		return INF;
+	}
+	if (x < - EXPLARGE)
+	{
+		exception(ERANGE);
+		return - INF;
+	}
+	return (exp(x) - exp(- x)) / 2.0;
+}
+
+/*** BeginHeader sqrt */
+
+float sqrt(float x);
+
+/*** EndHeader   sqrt */
+
+/* square root computation - about 1000 microseconds on 8-mhz Z80
+   performs table lookup followed by 2 newton iterations
+	accuracy about 1 part in 10^7
+*/
+
+/* START FUNCTION DESCRIPTION ********************************************
+sqrt                         <MATH.LIB>
+
+SYNTAX: float sqrt(float x);
+
+KEYWORDS: math
+
+DESCRIPTION:	Square root of x.
+
+RETURN VALUE:	See description.
+END DESCRIPTION **********************************************************/
+useix nodebug float sqrt(float y)
+{
+
+/* taking upper 5 bits of 3rd byte of floating number
+0-15 corresponds to floating 2.00-3.99 , sqrt 1.414 ... 1.999..
+16-31     "                  1.00-1.99.., sqrt 1.00 ... 1.414...
+for even exponents n-0..15  table value=((1+n/16+1/32)^.5-1)*256
+for odd exponents n=16..31  value=((2+(n-16)/8+1/16)^.5 -1)*256
+table values rounded to nearest integer
+*/
+
+	static char sval[] =
+			{
+				0, 8, 16, 23, 30, 37, 44, 51, 58, 64, 70, 77, 83,
+				89, 95, 100, 106, 117, 128, 139, 149, 159, 169, 178, 187, 197,
+				206, 214, 223, 231, 240, 247
+			};
+	auto float x;
+	auto int j;
+	static int newton();
+#asm  nodebug xmemok
+	ld    a,(ix+y+2)          ; upper bits in bcde
+							   ; 1 bit exp and 4 bits mant
+	rra
+	rra
+	rra
+	and   1fh
+	xor   10h                  ; adjust table access
+	ld    l,a
+	ld    h,0
+	ld    de,sval              ; table of starting values
+	add   hl,de                ; hl points to table entry
+	ld    a,(ix+y+3)          ; exp most
+	ld    b,(ix+y+2)          ; exp least bit
+	rl    b                    ; exp least bit
+	rla                           ; a has exponent
+	sub   127                  ; fix offset
+	sra   a                    ; divide by 2
+	add   a,127                ; put back offset
+	ld    b,a                  ; save exp
+	ld    a,(ix+y+2)          ; mantissa
+	and   7                    ; use lower 3 bits to adjust estimate
+	add   a,(hl)               ; starting value
+	srl   b
+	rra                        ; Fix 3/15/89
+	ld    (ix+x+1),0          ; remove garbage bits
+	rr    (ix+x+1)
+	ld    (ix+x+2),a          ; mantissa
+	ld    (ix+x+3),b          ; exp
+#endasm
+/* starting guess in x, do newton iteration 2 times */
+	newton();
+	newton();
+	return x;
+
+
+	subfunc newton:
+	{
+		x = x + y / x;
+/* perform divide by 2 fast */
+#asm  nodebug xmemok
+	   rl       (ix+x+2)
+	   rl       (ix+x+3)
+	   dec      (ix+x+3)             ; divide by 2 by dec exp
+	   or       a
+	   rr       (ix+x+3)
+	   rr       (ix+x+2)
+#endasm
+	}
+}
+
+/*** BeginHeader tan */
+
+float tan(float x);
+
+/*** EndHeader   tan */
+
+/*
+ * TAN
+ *
+ * Purpose:
+ *              Compute the tangent of real FLOAT value x
+ *              The value x is assumed in radians (not degrees)
+ *              Use deg() and rad() for conversions.
+ * Returns:
+ *              number          answer between -INF and +INF
+ *                              errno = 0
+ *              INF             x approx (2n+1)PI/2 error
+ *                              errno = ERANGE
+ *              ZERO            Argument too large negative or
+ *                              positive ( greater than 8*PI).
+ *                              errno = EDOM
+ * Method:
+ *              tan(x) = sin(x)/cos(x)  for x not within .01 of
+ *                                      a multiple of PI/2
+ *              tan(x) = new approx     otherwise
+ *
+ * Current problems:
+ *
+ *      First, if fabs(x) > 25.13, then we probably can't
+ *      compute it at all. The number 25.13 comes from
+ *
+ *              8*PI = 25.13274123 (12-digits)
+ *              8*3.14159 = 25.13272 (6-digits)
+ *              error = -2.12288e-05
+ *              So to maintain 6-digit accuracy restrains
+ *              computation to -8PI < x < 8PI.
+ *
+ *      Let us assume 0 <= x <= pi/2. Let u = pi/2 - x. If
+ *      u is too close to zero, then computation fails:
+ *
+ *      sin(x)/cos(x) = sin(x)/cos(pi/2-u)
+ *                    = sin(x)/sin(u)
+ *                    = cos(u)/sin(u)
+ *                    = 1./u approximately
+ *
+ *      This is cured by using a different rational function
+ *      near pi/2, namely a Taylor expansion:
+ *
+ *                         2       4           2      4
+ *      tan x = (1/u)(1 - u  /2 + u /24)/(1 - u /6 + u /120)
+ *
+ *      At u = .009999, tan x = 100.006668, but 1/u = 100.010001.
+ *      For 0 <= x < BADTAN, sin(x)/cos(x) is a good approximation.
+ *      It looks like we need the above rational, but perhaps a
+ *      better choice of BADTAN would allow use of 1/u.
+ */
+
+/* START FUNCTION DESCRIPTION ********************************************
+tan                          <MATH.LIB>
+
+SYNTAX: float tan(float x);
+
+KEYWORDS: math
+
+DESCRIPTION:	Compute the tangent of the argument.
+
+RETURN VALUE:	See description.
+END DESCRIPTION **********************************************************/
+nodebug float tan(float x)
+{
+	FLOAT sin(), cos();
+	STATIC FLOAT p[] =
+	{
+		1.0, -0.5, 0.0416666666
+	};
+	STATIC FLOAT q[] =
+	{
+		1.0, -0.1666666667, 0.0083333333
+	};
+	auto FLOAT z, w;
+	register int c;
+	FLOAT poly();
+	int abs();
+
+	c = x * TWObyPI;
+	if (abs(c) >= 16)
+	{
+		exception(EDOM);
+		return ZERO;
+	}
+	z = x - c * PIbyTWO;
+	if (c & 1)
+		z += ((z < ZERO) ? PIbyTWO : - PIbyTWO);
+	if (c = (z < ZERO))
+		z = - z;
+	if (z == PIbyTWO)
+	{
+		exception(ERANGE);
+		return INF;
+	}
+	if (z > BADTAN)
+	{
+		z = PIbyTWO - z;
+		w = z * z;
+		z = (poly(w, 2, p) / poly(w, 2, q)) / z;
+	}
+	else
+	{
+		z = sin(z) / cos(z);
+	}
+	return (c ? - z : z);
+}
+
+/*** BeginHeader tanh */
+
+float tanh(float x);
+
+/*** EndHeader   tanh */
+
+/*
+ * TANH
+ *
+ * Purpose:
+ *              Compute the hyperbolic tangent of real FLOAT value x
+ * Returns:
+ *              number          x in range
+ *              INF             x too large positive
+ *             -INF             x too large negative
+ *                              errno = ERANGE returned to flag error
+ * Method:
+ *              tanh(x) = (exp(x) - exp(-x))/(exp(x) + exp(-x))
+ * Notes:
+ *              o Find EXPLARGE by solving exp(x)=1.0e39=INF
+ */
+
+/* START FUNCTION DESCRIPTION ********************************************
+tanh                         <MATH.LIB>
+
+SYNTAX: float tanh(float x);
+
+KEYWORDS:	
+
+DESCRIPTION:	Computes the hyperbolic tangent of argument.
+
+RETURN VALUE:	See description.
+END DESCRIPTION **********************************************************/
+nodebug FLOAT tanh(float x)
+{
+	FLOAT exp();
+	auto FLOAT y;
+
+	y = x + x;
+	if (y > EXPLARGE)
+	{
+		exception(ERANGE);
+		return ONE;
+	}
+	if (y < - EXPLARGE)
+	{
+		exception(ERANGE);
+		return - ONE;
+	}
+	y = exp(y);
+	return ((y - ONE) / (y + ONE));
+}
+
+/*** BeginHeader _pow10 */
+float _pow10(int exp);
+/*** EndHeader   _pow10 */
+
+/***************************************************************************\
+	GENERAL UTILITY Convert Integer to Floating Exponent ( i.e. 10 ** i )
+
+	   float _pow10 ( int exp )
+\***************************************************************************/
+
+static float n10[][4] =
+			 {
+				 1e0, 1e-1, 1e-2, 1e-3,
+				 1e0, 1e-4, 1e-8, 1e-12,
+				 1e0, 1e-16, 1e-32, 0.0
+			 };
+static float p10[][4] =
+			 {
+				 1e0, 1e1, 1e2, 1e3,
+				 1e0, 1e4, 1e8, 1e12,
+				 1e0, 1e16, 1e32, 0.0
+			 };
+
+/* START _FUNCTION DESCRIPTION ********************************************
+_pow10                       <MATH.LIB>
+
+SYNTAX: float _pow10(int exp)
+
+KEYWORDS:
+
+DESCRIPTION:	Computes integral powers of 10.
+
+RETURN VALUE:	See description.
+END DESCRIPTION **********************************************************/
+nodebug float _pow10(int exp)
+{
+	float prod;
+	int i, sign;
+
+	prod = 1.0;
+	if (sign = (exp < 0))
+		exp = - exp;
+	for (i = 0; i < 3; i++)
+	{
+		if (sign)
+			prod *= n10[i][exp & 3];
+		else
+			prod *= p10[i][exp & 3];
+		if (! (exp >>= 2))
+			break;
+	}
+	return (prod);
+}
+
+/*** BeginHeader getcrc */
+
+int getcrc(char *Data, char count, int accum);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+getcrc                       <MODEM232.LIB>  
+
+SYNTAX: int getcrc(char *dataarray, char count, int accum);
+
+DESCRIPTION: Computes CRC of a data array.  "dataarray" points to "count" 
+number of bytes.  "accum" is the base CRC for the data array.  "count" max 
+is 255.
+
+RETURN VALUE: CRC value.
+END DESCRIPTION **********************************************************/
+#asm nodebug
+getcrc::
+            ld hl,0002   ; locate first 2 byte argument
+            add hl,sp
+            ld e,(hl)
+            inc hl
+            ld d,(hl)
+            push de    ; de has the address of the data
+            inc hl     ; two more increment get the second 1 byte argument
+            ld c,(hl)  ;  c has the number of counts
+            inc hl     ; now pointing to the low byte of accum
+            inc hl
+            ld a,(hl)  ; a has the low byte of the accum
+            inc hl
+            ld h,(hl)  ; h has the high byte of the accum
+            ld l,a     ; l has the low byte of the accum
+do_data:               ; compute crc for (de+1) bytes of data
+            pop de     ;
+            ld a,(de)  ; load first data
+            inc de     ; update to next memory location
+            push de    ; keep last memory location
+            ld d,a     ; use d for current data
+            ld b,8     ; rotate and xor data 8 times
+eight_times:
+            ld a,h     ; xor data to accum
+            xor d
+            rlca
+            jr nc,no_poly  ; no carry, no need to xor polynomial
+            ; scf
+            ; ccf
+            ; rl l
+            ; rl h
+            add hl,hl
+            ld a,0x10      ; xor 0x1021 to accum
+            xor h
+            ld h,a
+            ld a,0x21
+            xor l
+            ld l,a
+            jr rotate_data
+no_poly:                ; only need to shift accum
+            ; scf
+            ; ccf
+            ; rl l
+            ; rl h
+            add hl,hl
+rotate_data:
+            ; scf             ; rotate data
+            ; ccf
+            xor a
+            rl d
+            djnz eight_times
+            dec c
+            jr nz,do_data
+            pop de    ; pop one last time to balance loop
+            ret
+#endasm
+
+/*** beginheader L_and,G_and,L_or,G_or,L_xor,G_xor,L_asr,G.rmax,  
+	G_asr,G_asl,L_asl,cg_lg,cg_gt,cg_le,ce_ge,cl_lt, 
+	cl_gt,cl_glt,cl_glt1,cl_le,cl_ge*/
+
+#KILL L.and
+#KILL G.and
+#KILL L.or
+#KILL G.or
+#KILL L.xor
+#KILL G.xor
+#KILL L.asr
+#KILL G.asr
+#KILL G.rmax
+#KILL L.asl
+#KILL G.asl
+//#KILL cg.lg
+//#KILL cg.gt
+//#KILL cg.le
+//#KILL ce.ge
+//#KILL cl.lt
+//#KILL cl.gt
+//#KILL cl.glt
+//#KILL cl.glt1
+//#KILL cl.le
+//#KILL cl.ge
+	
+/*** endheader */
+#asm nodebug
+
+; module longlib.180
+
+
+; modified 9-Sept-89 for unsigned long 'g' and 'G'
+; utilities for long operations (c) 1988, 1989 Z-World, Davis, CA
+; long argument passed in bcde. if 2 arguments first on stack
+; second in bcde
+; results returned in bcde
+; 16-July-91 fix bug in cg.ge
+L_and::
+G_and::
+	pop   iy ;return address
+	pop   hl ;least significant of stack item
+	ld a,d   ;2nd byte (from low) of register item
+	and   h  ;AND 2nd of stack
+	ld d,a   ;put result back to register
+	ld a,e   ;1st of register
+	and   l  ;1st of stack item
+	ld e,a   ;put result back to register
+	pop   hl ;most (same as before)
+	ld a,b
+	and   h
+	ld b,a
+	ld a,c
+	and   l
+	ld c,a   
+	jp (iy)  ;return
+L_or::
+G_or::   ; same principle as L.and
+	pop   iy ;return address
+	pop   hl ;least
+	ld a,d
+	or h
+	ld d,a
+	ld a,e
+	or l
+	ld e,a
+	pop   hl ;most
+	ld a,b
+	or h
+	ld b,a
+	ld a,c
+	or l
+	ld c,a   
+	jp (iy)  ;return
+L_xor::
+G_xor::  ; same principle as L.and
+	pop   iy ;return address
+	pop   hl ;least
+	ld a,d
+	xor   h
+	ld d,a
+	ld a,e
+	xor   l
+	ld e,a
+	pop   hl ;most
+	ld a,b
+	xor   h
+	ld b,a
+	ld a,c
+	xor   l
+	ld c,a   
+	jp (iy)  ;return
+; right shift item on stack by count in bcde
+L_asr::
+	pop   iy ;return
+	ld a,b   ;2nd of count
+	or c  ;or 3rd of count
+	or d  ;or 4th of count
+	jr nz,L.rmax   ;shift count > 256, jp
+	ld a,e   ;count
+	cp 32
+	jr nc,L.rmax   ;shift count > 32, jp
+	pop   de ;least
+	pop   hl ;most (the number is thus hlde)
+	or a  ;TA: should check for zero, special case!
+	jr z,L.go   ;TA: nothing to do, bye!
+	ld b,a   ;count
+l.asr1:  sra   h  ;shift right arithmetic, sign bit preserved
+	rr l  ;rotate
+	rr d
+	rr e
+	djnz  l.asr1   ;is (--b) zero yet? if not, continue
+L.go:: ld b,h
+	ld c,l   ;most
+	jp (iy)  ;return
+L.rmax:  pop   hl
+	pop   hl ;most
+	ld a,h
+	or a  ;check sign
+	jp m,L.r1   ;if minus, jump
+G.rmax::  ld bc,0  ;otherwise right shift count overflow, exit with
+	ld de,0  ;zeros.
+	jp (iy)
+L.r1: ld bc,-1 ;right shift count overflow, exit with negative number
+	ld de,-1
+	jp (iy)
+; right shift unsigned item on stack by count in bcde
+
+_ZGLExit:
+	pop	hl
+	pop	hl
+	jr		G.rmax
+
+;// 1-4-96, Merge the two modules. New linking style makes the address G.rmax not
+;// accessible with jr.
+;// 1-4-96 #endasm
+
+;// 1-4-96 /*** beginheader G_asr,G_asl,L_asl,cg_lg,cg_gt,cg_le,ce_ge,cl_lt, 
+;// 1-4-96 cl_gt,cl_glt,cl_glt1,cl_le,cl_ge*/
+;// 1-4-96 /*** Endheader */
+;// 1-4-96 #asm nodebug
+G_asr::  ; almost the same as L.asr, except sign is not preserved
+	pop   iy ;return
+	ld a,b
+	or c
+	or d
+	jr nz,_ZGLExit
+	ld a,e   ;count
+	cp 32
+	jr nc,_ZGLExit
+	pop   de ;least
+	pop   hl ;most
+	or a
+	jr z,L.go   ;nothing to do, bye!
+	ld b,a   ;count
+g.asr1:  srl   h
+	rr l
+	rr d
+	rr e
+	djnz  g.asr1
+	ld b,h
+	ld c,l   ;most
+	jp (iy)  ;return
+
+G_asl::  ; shift left
+L_asl::
+	pop   iy
+	ld a,b
+	or a,c
+	or a,d
+	jr nz,_ZGLExit   ;zero
+	ld a,e
+	cp 32
+	jr nc,_ZGLExit   ;zero
+	ld b,a   ;count
+	pop   de ;least
+	pop   hl ;most
+	or a
+	jr z,L.go   ;nothing to do, bye!
+l.asl1:  xor   a  ;clc
+	rl e
+	rl d
+	rl l
+	rl h
+	djnz  l.asl1
+	ld c,l   ;to bc
+	ld b,h
+	jp (iy)  ;return
+#endasm
+
+/*** BeginHeader lsqrt */
+
+unsigned lsqrt(unsigned long x);
+
+/*** EndHeader */
+
+nodebug unsigned lsqrt(unsigned long x) {
+	static char buffer[8];
+	auto char lastBuf[8];
+	register int count;
+
+	memcpy(lastBuf,buffer,sizeof(buffer));
+	*(unsigned long *)buffer = x;
+	*((unsigned long *)buffer+1) = 0;
+	count = 16;
+#asm xmemok
+	ld		de,0
+doAgain:	
+	call	shiftBy2
+	
+	ex		de,hl								; shift root by one bit
+	add	hl,hl
+	ex		de,hl
+
+	ld		l,e				;	bc = de * 2 + 1
+	ld		h,d
+	add	hl,hl
+	inc	hl
+	ld		c,l
+	ld		b,h
+	
+	ld		hl,(buffer+4)
+	xor	a					;	carry bit clear
+	sbc	hl,bc				;	subtract least sig. word
+	push	hl
+	ld		hl,(buffer+6)
+	ld		bc,0
+	bit	7,d
+	jr		z,noCarryOver
+	inc	bc
+noCarryOver:
+	sbc	hl,bc				;	subtract most sig. word
+	jp		c,noSubtract
+								;	commit the subtraction
+	ld		(buffer+6),hl
+	pop	hl
+	ld		(buffer+4),hl
+	
+	inc	de					;	increment root
+	
+	jr		contLoop
+noSubtract:
+	pop	hl
+contLoop:
+	ld		hl,count
+	dec	(hl)
+	jp		nz,doAgain
+
+	ld		l,e
+	ld		h,d
+	jr		funcEnd
+
+shiftBy2:
+	ld		hl,(buffer)				;	shift buffer by two bits
+	add	hl,hl
+	rl		c
+	add	hl,hl
+	rla
+	ld		(buffer),hl
+	ld		hl,(buffer+2)
+	rr		c
+	adc	hl,hl
+	rl		c
+	rra
+	adc	hl,hl
+	rla
+	ld		(buffer+2),hl
+	ld		hl,(buffer+4)
+	rr		c
+	adc	hl,hl
+	rl		c
+	rra
+	adc	hl,hl
+	rla
+	ld		(buffer+4),hl
+	ld		hl,(buffer+6)
+	rr		c
+	adc	hl,hl
+	rl		c
+	rra
+	adc	hl,hl
+	rla
+	ld		(buffer+6),hl
+	ret
+
+funcEnd:
+#endasm
+}
+
+
+/*** BeginHeader */
+
+#endif
+
+/*** EndHeader */

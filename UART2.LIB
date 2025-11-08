@@ -1,0 +1,1280 @@
+// 1-26-96, Allow transmitter to overflow receiver beyond CTS not ready;
+// 7-13-95, compute 80% and 20% of buffer with float multiply.
+/************************************************************************
+8-29-94
+
+Sample library to create access to a second uart board.
+
+To trigger service within plcbus_isr do:
+#define USE_UART2EXP
+
+Board Address is defined by jumpers on J1, 1-2 and 3-4.
+
+                    J1, 1-2         J1, 3-4         Board Address
+PAL fp04901
+                    conn.           conn.           0x040000  (reserved for       
+                                                             DC programming)
+                    n.c.            conn.           0x040008
+                    conn.           n.c.            0x040010 ( default for
+                                                            this lib.)
+                    n.c.            n.c.            0x040018 ( uart232.lib)
+
+PAL fp04911
+                    conn.           conn.           0x040002
+                    n.c.            conn.           0x04000A
+                    conn.           n.c.            0x040012
+                    n.c.            n.c.            0x04001A 
+
+PAL fp04921
+                    conn.           conn.           0x040004
+                    n.c.            conn.           0x04000c
+                    conn.           n.c.            0x040014
+                    n.c.            n.c.            0x04001c 
+PAL fp04931
+                    conn.           conn.           0x040006
+                    n.c.            conn.           0x04000e
+                    conn.           n.c.            0x040016
+                    n.c.            n.c.            0x04001e 
+
+For three uartexp boards:
+(1) Replicate this library and change every occurence of uart2 to uart3.
+(2) Change the address UART2ADDR to UART3ADDR and define your board address.
+    e.g.  #define   UART3ADDR   0x040008   
+(3) In plcbus_isr in drivers.lib, add :
+
+#ifdef  USE_UART3EXP
+        call    Duart3_circ_int
+#endif
+
+*************************************************************************/
+
+/* START LIBRARY DESCRIPTION *********************************************
+UART2.LIB
+   Copyright (c) 1994, Z-World.
+
+DESCRIPTION: Support library for the uart2 expansion card. Used by the 
+Little PLC, the Rugged Giant (CPLC)  or the Little Star.
+Bit Map from the PLC BUS line data to SCC2691:
+
+PLC BUS     D5       D4    D3     D2     D1         D0
+74HC174   SCC/EN   SCCA0  SCCRST SCCA1  LT180/OFF  SCCA2
+
+SUPPORT LIB'S: modem232.lib, rtk.lib
+END DESCRIPTION **********************************************************/
+
+
+/* 
+Control Register for the SCC2691 and the LT1180 are defined in uart232.lib.
+*/
+/*** Beginheader */
+#use uart232.lib					// 1-26-96, needs definitions from uart232.lib file
+#define UART2ADDR  0x040010L
+
+long _theUART2addr;
+char _UART2found;             // if 1 there is a UART present
+                             // if 0, there is no UART available
+
+/*** Endheader */
+
+/*** Beginheader  Dinit_uart2, Dwrite_uart2, Dread_uart2, Dkill_uart2,
+                  Dwrite_uart21ch, Dread_uart21ch, Dreset_uart2tbuf,
+                  Dreset_uart2rbuf,uart2modemstat,uart2modemset,
+                  uart2binaryset, uart2binaryreset, Drestart_uart2modem */
+
+int  Dinit_uart2(char *rbuf, char *tbuf, int rsize, int tsize,
+     char mode, char baud, char ismodem, char isecho);
+int  Dwrite_uart2(char *buf, int count); // initiate send
+int  Dread_uart2(char *buf, char terminate); // initiate receive
+void Dkill_uart2(void);           // abort all
+int  Dwrite_uart21ch(char data);
+int  Dread_uart21ch(char *data);
+void Dreset_uart2tbuf(void);
+void Dreset_uart2rbuf(void);
+void Duart2send_prompt(void);
+void Drestart_uart2modem(void);
+int  Duart2modem_chk(char *buf);
+int  uart2modemstat(void);
+int  uart2modemset(void);
+void uart2binaryset(void);
+void uart2binaryreset(void);
+
+/*** Endheader */
+
+char *uart2_write_buf;        // Static pointer to the transmit buffer
+char *uart2_read_buf;         // Static pointer to the receive buffer
+shared int uart2_rx_head;     // Head pointer for the receive buffer
+shared int uart2_rx_tail;     // Tail pointer for the receive buffer
+shared int uart2_tx_head;     // Head pointer for the transmit buffer
+shared int uart2_tx_tail;     // Tail pointer for the transmit buffer
+int  uart2_rx_size;           // Static storage of receive buffer size
+int  uart2_tx_size;           // Static storage of transmit buffer size
+                             /* if 0, not in file transfer mode
+                                1, xmodem file transfer               */
+shared int uart2_80rbuf;
+shared int uart2_20rbuf;
+shared int uart2_rbufcnt;
+shared int uart2_tbufcnt;
+char uart2_CRTS_ENB;          // enabled if 1
+char uart2_CTS_ON;            // if 1, receiving data
+char uart2_echo;              // 1 to echo, 0 no echo
+char uart2Binary;             // =1, serial receive is in binary mode
+                             // =0, serial receive is in text mode
+char uart2CmdOrData;
+char uart2UseModem;
+
+/* START FUNCTION DESCRIPTION ********************************************
+uart2binaryset                <UART232.LIB>
+
+SYNTAX: void uart2binaryset(void);
+
+DESCRIPTION: Sets the serial communication mode to binary. All received
+data are stuffed directly into the receive buffer.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void uart2binaryset(void)
+{
+    uart2Binary = 1;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+uart2binaryreset              <UART232.LIB>
+
+SYNTAX: void uart2binaryreset(void);
+
+DESCRIPTION:  Resets serial communication to ASCII mode. Backspace char
+is tracked to adjust receive buffer head index.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void uart2binaryreset(void)
+{
+    uart2Binary = 0;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+uart2modemstat                <UART232.LIB>
+
+SYNTAX: int uart2modemstat(void);
+
+DESCRIPTION: Returns modem status.
+
+RETURN VALUE: 1, if modem is in command mode; 0 if modem in data mode 
+(i.e. open to communication).
+END DESCRIPTION **********************************************************/
+nodebug int uart2modemstat(void)
+{
+    return (uart2CmdOrData);
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+uart2modemset                 <UART232.LIB>
+
+SYNTAX: int uart2modemset(void);
+
+DESCRIPTION: Returns information about modem selection.
+
+RETURN VALUE: 1, if modem option is selected; else 0.
+END DESCRIPTION **********************************************************/
+nodebug int uart2modemset(void)
+{
+    return (uart2UseModem);
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+Duart2send_prompt             <UART232.LIB>
+
+SYNTAX: void Duart2send_prompt(void);
+
+DESCRIPTION: Sends 'CR','LINEFEED' and '>' to uart2 board 0x040018. 
+Does not check for available space in transmit buffer.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void Duart2send_prompt(void)
+{
+    static char prompt[4] =
+            {
+                ENTER, LINEFEED, '>', '\0'
+            };
+    Dwrite_uart2(prompt, 3);
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+Dinit_uart2                   <UART232.LIB>
+
+SYNTAX: int Dinit_uart2(char *rbuf, char *tbuf, int rsize, int tsize, 
+            char mode, char baud, char ismodem, char isecho)
+
+DESCRIPTION: Initializes uart2 board 0x040018 for serial communication.
+"rbuf" and "tbuf"point to user defined character arrays whose sizes are
+"rsize" and "tsize" respectively.  "mode" is defined as follows:  bit0 = 0/1 
+for 1/2 stop bit(s);  bit1 = 1/0 for parity/no parity; bit2 = 0/1 for 7/8 
+data bits; bit3 = 0/1 for even/odd parity; bit4 = 0/1 for CTS, RTS control 
+disabled/enabled; "baud" is the baud rate in multiples of 1200 (e.g. 8 for
+9600 baud). "ismodem" is 1/0, if modem is/is not used. "isecho" is 1/0, if
+char's are/are not echoed.
+
+RETURN VALUE: 1, if uart2 board 0x040018 is found; else -1.
+END DESCRIPTION **********************************************************/
+nodebug int Dinit_uart2(char *rbuf, char *tbuf, int rsize, int tsize,
+    char mode, char baud, char ismodem, char isecho)
+{
+    int  k;
+    char initmr1;
+    char initmr2;
+
+    uart2Binary = 0;
+    uart2UseModem = ismodem;
+    uart2_echo = isecho;
+    uart2_read_buf = rbuf;    // initialize receive buffer
+    uart2_write_buf = tbuf;
+    uart2_rx_size = rsize;
+    uart2_tx_size = tsize;
+
+    Dreset_uart2tbuf();
+    Dreset_uart2rbuf();
+    initmr1 = (~mode & '\B00000010') << 3; // parity or none
+    initmr1 = initmr1 + ((mode & '\B00000100') >> 2) + '\B00000010';
+                             // 7 or 8 data bits
+    initmr1 = initmr1 + ((mode & '\B00001000') >> 1); // odd or even
+    initmr2 = ((mode & '\B00000001') << 3) + '\B00000111'; // 1 or 2 stops
+    if (mode & '\B00010000') // CTS and RTS ON
+    {
+        initmr2 = initmr2 | '\B00010000';
+        uart2_CRTS_ENB = 1;
+        uart2_80rbuf = rsize * 0.80;   // 7-13-95 (rsize * 80) / 100;
+        uart2_20rbuf = rsize * 0.20;   // 7-13-95 (rsize * 20) / 100;
+    }
+    else
+    {
+        uart2_CRTS_ENB = 0;
+    }
+    uart2_CTS_ON = 1;
+
+    if (k = IBIT(ITC, 1)) 
+        IRES(ITC, 1); // reset if set
+    _theUART2addr = UART2ADDR;
+    _UART2found = find_uart(_theUART2addr);
+    if (_UART2found)          // initialize if there is a UART found
+    {
+        uart_reset(_theUART2addr); // reset the uart2 board with address "_theUART2addr"
+        uart_reg_wr(_theUART2addr, UART_ACR, '\B11101000'); // mp0 line is RTSN
+        uart_reg_wr(_theUART2addr, UART_MR1, initmr1);
+        uart_reg_wr(_theUART2addr, UART_MR2, initmr2);
+        uart_reg_wr(_theUART2addr, UART_CTUR, (96/baud)>>8 );
+        uart_reg_wr(_theUART2addr, UART_CTLR, (96/baud) & 0xff);
+        uart_reg_wr(_theUART2addr, UART_CSR, 0xdd);
+      // uart2_reg_wr(_theUART2addr, UART_CSR, uart2baud[exp_of_two(baud)]);
+        uart_reg_wr(_theUART2addr, UART_IMR, '\B00000100'); // received int is enabled
+        uart_reg_wr(_theUART2addr, UART_CR, '\B10100101');
+        ISET(ITC, 1);
+        if (uart2UseModem)
+            Drestart_uart2modem();
+        else 
+            uart2CmdOrData = 0; // serial port is just in data mode
+        return 1;              // uart2 is found and initialized
+    }
+    else
+    {
+        if (k) 
+            ISET(ITC, 1);    // has to release if originaly set
+        return - 1;          // uart2 is not found
+    }
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+Dreset_uart2rbuf              <UART232.LIB>
+
+SYNTAX: void Dreset_uart2rbuf(void);
+
+DESCRIPTION: Resets receive buffer for the uart2 board 0x040018. Sets head 
+and tail indexes to zero. Sets "uart2_rbufcnt" to zero.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void Dreset_uart2rbuf(void)
+{
+    uart2_rx_head = uart2_rx_tail = 0;
+    uart2_rbufcnt = 0;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+Dreset_uart2tbuf              <UART232.LIB>
+
+SYNTAX: void Dreset_uart2tbuf(void);
+
+DESCRIPTION: Resets transmit buffer of uart2 board 0x040018. Sets head and
+tail indexes to zero. Sets "uart2_tbufcnt" to zero.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void Dreset_uart2tbuf(void)
+{
+    uart2_tx_head = uart2_tx_tail = 0;
+    uart2_tbufcnt = 0;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+Dwrite_uart2                  <UART232.LIB>
+
+Write a character data array of lenght count to the transmit buffer.
+
+SYNTAX: int Dwrite_uart2(char *buf, int count);
+
+DESCRIPTION: buf is the pointer to a character array.
+count is the numbers of characters to send.
+The transmit interrupt is automatically turned on if off.
+
+RETURN VALUE: 1, if array is succesfully copied; else 0, if there's no 
+space in the transmit buffer for count number of characters.
+END DESCRIPTION **********************************************************/
+nodebug int Dwrite_uart2(char *buf, int count)
+{
+    int dum_tail, dum_head;
+    char var;
+    int i;
+
+    if (!count) 
+        return 1;            // no need to write anything
+    if ((uart2_tbufcnt + count) >= uart2_tx_size) 
+        return 0;            // not enough space
+    dum_head = uart2_tx_head;
+    i = 0;
+    do
+    {
+        *(uart2_write_buf + dum_head++) = *(buf + i++);
+        if (dum_head == uart2_tx_size) 
+            dum_head = 0; 
+    } while (i < count);
+    DI();               // disable interrupt, 5-3-94
+    if (uart2_tx_tail == uart2_tx_head)
+    {
+       // 5-16-94 EI();           // enable interrupt, 5-3-94
+        uart2_tx_head = dum_head;
+        uart2_tbufcnt = count;
+        // save_shadow();          // 8-12-94
+        uart_reg_wr(_theUART2addr, UART_IMR, '\B00000101');
+        // restore_shadow();       // 8-12-94
+        // Turn on transmit interrupt, received interrupt is always on
+        // initiate transfer, if not transferring
+        // bit 0 for transmit interrupt enable, 
+        // bit 2 for receive int enable
+    }
+    else
+    {
+        uart2_tx_head = dum_head;
+        uart2_tbufcnt = uart2_tbufcnt + count;
+        //5-16-94 EI();           // enable interrupt, 5-3-94
+    }
+    EI();               // enable interrupt, 5-16-94
+    return 1;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+Dread_uart2                   <UART232.LIB>
+
+SYNTAX: int Dread_uart2(char *buf, char terminate);
+
+DESCRIPTION: Reads serial receive buffer, pointed to by "buf," for stream 
+with specified terminated character, "terminate." "terminate" is replaced 
+by '\0'.  If the modem option is selected with Dinit_s1(...), the receive 
+stream is automatically parsed for modem messages.  Modem messages are 
+automatically processed and  serial service routines are automatically 
+called.  Note that modem messages are terminated with 'CR'.
+
+RETURN VALUE: 1, if a stream is found and copied to buf; else 0, if no 
+stream was found or if modem option is selected and stream matched a 
+modem message.
+END DESCRIPTION **********************************************************/
+nodebug int Dread_uart2(char *buf, char terminate)
+{
+    int i;
+    int dum_head, dum_tail;
+
+    dum_head = uart2_rx_head;
+    dum_tail = uart2_rx_tail;
+    i = 0;
+    if (dum_head == dum_tail) 
+        return 0;
+    else
+    {
+        // Copy chars into caller's buffer:
+        do
+        {
+            *(buf + i) = *(uart2_read_buf + dum_tail++);
+            if (dum_tail == uart2_rx_size) 
+                dum_tail = 0;             // Wrap around circ rec'v buffer.
+            
+            if (*(buf + i++) == terminate)
+            {
+                *(buf + i - 1) = '\0';    // Replace terminate char w '\0'
+
+                // ***** Service receive buffer ********
+                uart2_rx_tail = dum_tail;  // Reset circ rec'v buffer tail.
+                if (uart2_CRTS_ENB)
+                {
+                    uart2_rbufcnt = uart2_rbufcnt - i;
+                    if (!uart2_CTS_ON)
+                    {
+                        if (uart2_rbufcnt <= uart2_20rbuf)
+                        {
+                            di();           // 5-16-94
+                            // save_shadow();  // 8-12-94
+                            uart_reg_wr(_theUART2addr, UART_CR, '\B10100101');
+                            // restore_shadow();   // 8-12-94
+                            ei();           // 5-16-94
+                            uart2_CTS_ON = 1;
+                        }
+                    }
+                }
+
+                if (uart2UseModem)
+                {
+                    if (Duart2modem_chk(buf) == -1) 
+                        return 1;       // Not a modem msg
+                    else 
+                        return 0;       // A modem msg
+                }
+                return 1;
+            }
+        } while (dum_tail != dum_head); // 'til inbuf is empty
+        return 0;
+    }
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+Dwrite_uart21ch               <UART232.LIB>
+
+SYNTAX: Dwrite_uart21ch(char data);
+
+DESCRIPTION: Writes a character to the transmit buffer. The transmit 
+interrupt is turned on, if off.
+
+RETURN VALUE: 1, if "data" is succesfully written to the transmit buffer;
+0, if there's no space in the transmit buffer.
+END DESCRIPTION **********************************************************/
+nodebug int Dwrite_uart21ch(char data)
+{
+    int dum_tail, dum_head;
+    char var;
+
+    if ((uart2_tbufcnt + 1) >= uart2_tx_size) 
+        return 0;
+    dum_head = uart2_tx_head;
+    *(uart2_write_buf + dum_head++) = data;
+    if (dum_head == uart2_tx_size) 
+        dum_head = 0; 
+    DI();                   // disable interrupt, 5-3-94
+    if (uart2_tx_tail == uart2_tx_head)
+    {
+    //   5-16-94  EI();               // enable interrupt, 5-3-94
+        uart2_tx_head = dum_head;
+        uart2_tbufcnt = 1;
+        // save_shadow();      // 8-12-94
+        uart_reg_wr(_theUART2addr, UART_IMR, '\B00000101');
+        // restore_shadow();       // 8-12-94
+        // initiate transfer if not transferring
+    }
+    else
+    {
+        uart2_tx_head = dum_head;
+        uart2_tbufcnt++;  
+      //  5-16-94 EI();               // enable interrupt, 5-3-94
+    }
+    EI();                   // 5-16-94
+    return 1;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+Dread_uart21ch                <UART232.LIB>
+
+SYNTAX: int Dread_uart21ch(char *data);
+
+DESCRIPTION: Fetches character from serial receive buffer an stores it
+at location pointed to by "data."
+
+RETURN VALUE: 1, if a byte is copied to *data; else 0 (if receive buf is
+empty).
+END DESCRIPTION **********************************************************/
+nodebug int Dread_uart21ch(char *data)
+{
+    int dum_head, dum_tail;
+
+    dum_head = uart2_rx_head;
+    dum_tail = uart2_rx_tail;
+    if (dum_head == dum_tail) 
+        return 0;
+    else
+    {
+        *data = *(uart2_read_buf + uart2_rx_tail++);
+        if (uart2_rx_tail == uart2_rx_size) 
+            uart2_rx_tail = 0;
+        if (uart2_CRTS_ENB)
+        {
+            uart2_rbufcnt--;
+            if (!uart2_CTS_ON)
+            {
+                if (uart2_rbufcnt <= uart2_20rbuf)
+                {
+                    di();       // 5-16-94
+                    // save_shadow();          // 8-12-94
+                    uart_reg_wr(_theUART2addr, UART_CR, '\B10100101');
+                    // restore_shadow();       // 8-12-94
+                    ei();       // 5-16-94
+                    uart2_CTS_ON = 1;
+                }
+            }
+        }
+        return 1;
+    }
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+Dkill_uart2                   <UART232.LIB>
+
+SYNTAX: void Dkill_uart2(void);
+
+DESCRIPTION: Resets uart2 board 0x040018.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void Dkill_uart2(void)
+{
+    uart_reset(_theUART2addr); // reset the uart2 board, _theUART2addr
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+Drestart_uart2modem           <UART232.LIB>
+
+Sends command to set/reset the modem connected to the uart2 board 0x040018.
+
+SYNTAX: void Drestart_uart2modem(void);
+
+DESCRIPTION: Sends command to set/reset the modem connected to Z180, 
+channel 1. Hayes smart modem is desirable. Required hardware connections:
+
+                       modem               sio chan 1
+                        RX  ----------------- TX
+                        TX  ----------------- RX
+                        GND ----------------- GND
+                        RTS --+           +-- RTS
+                        CTS --|           +-- CTS
+                        DTR --+
+
+i.e. On modem side, RTS,CTS and DTR are tied together. On the SCC side, 
+RTS is connected to CTS.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void Drestart_uart2modem(void)
+{
+    int ercode;
+    int ok_count;
+    char buf[20];
+
+    /* If modem is available, master should make sure that modem
+       is in command mode on power up.                           */
+    uart2CmdOrData = 1;       // modem in command mode
+    ok_count = 0;
+    Dwrite_uart2("+++", 3);
+    Ddelay_1sec();
+    while ((++ok_count < 4) && ((ercode = Dread_uart2(buf, ENTER)) == 0 ||
+           (Dget_modem_command(buf) != 0))) 
+        Ddelay_1sec();
+    Dwrite_uart2("AT H0", 5); // or time out
+    Dwrite_uart21ch(ENTER);
+    ok_count = 0;
+    while ((++ok_count < 4) && ((ercode = Dread_uart2(buf, ENTER)) == 0 ||
+           (Dget_modem_command(buf) != 0))) 
+        Ddelay_1sec();       // wait for OK
+    Dwrite_uart2("AT E0 V1 M0 S0=2", 16); // or time out
+    /*****************************
+     E0 for commands not echoed
+     V1 for word responses
+     M0 for internal speaker off
+     S0=2 for automatic answering
+     ******************************/
+    Dwrite_uart21ch(ENTER);
+    ok_count = 0;
+    while ((++ok_count < 4) && ((ercode = Dread_uart2(buf, ENTER)) == 0 ||
+           (Dget_modem_command(buf) != 0))) 
+        Ddelay_1sec();       // wait for OK
+    Dwrite_uart2("AT &D0 &R1", 10); // or time out
+    /*****************************
+     &D0 for ignore the Data Terminal Ready (DTR)
+     &R1 for ignore the Ready To Send (RTS)
+     ******************************/
+    Dwrite_uart21ch(ENTER);
+    ok_count = 0;
+    while ((++ok_count < 4) && ((ercode = Dread_uart2(buf, ENTER)) == 0 ||
+           (Dget_modem_command(buf) != 0))) 
+        Ddelay_1sec();       // wait for OK
+    Ddelay_1sec();
+    Dreset_uart2rbuf();
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+Duart2modem_chk               <UART232.LIB>
+
+SYNTAX: int Duart2modem_chk(char *buf);
+
+DESCRIPTION: Checks 'CR' terminated stream for modem messages.  Serial
+service routines are called as function of modem condition (if selected).
+"buf" points to a 'CR' terminated stream that was copied from the receive 
+buffer.
+
+RETURN VALUE: -1, if no match to any modem messages; 0, if stream was 
+processed as a modem message.
+END DESCRIPTION **********************************************************/
+nodebug int Duart2modem_chk(char *buf)
+{
+    int which_one;
+    int i;
+
+    which_one = Dget_modem_command(buf);
+    switch (which_one)
+    {
+        case -1:             // No matching string was found.
+            if (!uart2CmdOrData) 
+                return - 1;
+            break;
+        case 2:              // Ring detected, set for auto answer.
+                             // Dwrite_uart21ch("ATA",3);
+                             // Dwrite_uart21ch(ENTER);
+            break;           // manually receive call if ring is detected
+
+        case 9:             // Connect at 2400 bps, switch to data mode.
+            Ddelay_5sec();
+            Ddelay_5sec();
+            Dreset_uart2tbuf();
+            Dreset_uart2rbuf();
+            uart2CmdOrData = 0;
+            Duart2send_prompt();
+            Dwrite_uart2("Welcome to the Remote System", 28);
+            Duart2send_prompt();
+            break;
+        case 0:             // OK from command to modem.
+            break;      
+        case 3:             // No carrier
+            uart2CmdOrData = 1; 
+            Ddelay_5sec();     // Wait and reset buffers
+            Dreset_uart2tbuf();
+            Dreset_uart2rbuf();
+            break;
+        case 4:             // Command error.
+            break;           
+        case 5:             // Connect at 1200 bps
+            Ddelay_5sec();
+            Ddelay_5sec();
+            Dreset_uart2tbuf();
+            Dreset_uart2rbuf();
+            uart2CmdOrData = 0;
+            Duart2send_prompt();
+            Dwrite_uart2("Welcome to the Remote System", 28);
+            Duart2send_prompt();
+            break;           // switch to data mode
+
+        case 6:              // No dial tone
+        case 7:              // Busy
+        case 8:              // No answer
+        case 10:             // Just line feed
+        default:
+            break;
+    }
+    return 0;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+Duart2_circ_int               <UART232.LIB>
+
+SYNTAX: Duart2_circ_int(void);
+
+DESCRIPTION: Transmit and receive interrupt service routine for the uart2 
+board 0x040018.  This routine is called by plcbus_isr().
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+#asm root nodebug 
+Duart2_circ_int::
+;;;; no need to save the registers since they were save from plcbus_isr
+;;;;            push af
+;;;;           push hl
+;;;;           push bc
+;;;;           push de
+
+;;;;           in0 a,(CBR)    ; save the cbr
+;;;;           push af
+
+           ld a,(_UART2found)    ; check flag if uart2 was found
+           cp 1
+           jp nz, _quickout     ; uart2 is not available
+
+
+save_exp_bus:
+  ;aoc 2-8-94     ld hl, (SHBUS0)    ; save least of shadow register
+  ;aoc 2-8-94     push hl
+  ;aoc 2-8-94     ld hl, (SHBUS1)    ; save most of shadow register
+  ;aoc 2-8-94     push hl
+
+;;;;; no need to save the plcbus since they were saved by plcbus_isr
+;;;;;           ld  hl, SHBUS0        
+;;;;;           ld b,(hl)  ; EXP      
+;;;;;           inc hl                
+;;;;;           ld c,(hl) ; BUSADR0   
+;;;;;           push bc               
+
+;;;;;           inc hl                
+;;;;;           ld b,(hl)  ; BUSADR1  
+;;;;;           inc hl                
+;;;;;           ld c,(hl)  ; BUSASR2  
+;;;;;           push bc               
+
+            ld      de, (_theUART2addr)     ; BUSADR2 (e), BUSADR1 (d)
+            ld      bc, (_theUART2addr+2)   ; BUSADR0 (c)
+           ;;;;; call set24adr         ; set up the address
+            out0    (BUSADR0), c        ;;;;;
+            out0    (BUSADR1), d        ;;;;;      
+            out0    (BUSADR2), e        ;;;;;
+
+            in0     a,(BUSRD0)        ; check for the AT bit
+            and     00000010b
+            jp      z,restore_exp_bus ; not this board
+
+            ;  address is still the same at this point
+
+            ld      a,UART_CR
+            out0    (BUSWR),a
+            ;;;;; ld de,(_theUART2addr)
+            inc e
+            ;;;;; call set8adr
+            out0    (BUSADR2), e        ;;;;; set to access register data 
+            ld      a,01000101b         ;  reset all error bits
+            out0    (BUSWR),a
+
+           ;;;;; ld de,(_theUART2addr)
+           ;;;;; call set8adr
+            dec     e                       ;;;;; 
+            out0    (BUSADR2), e        ; set to select the register
+            ld      a,UART_ISR
+            out0    (BUSWR), a          ; set up bus to read UART_ISR
+                                        ; access the HC174
+           ;;;;; ld de,(_theUART2addr)
+            inc e                       ; increment 1 to access the SCC data
+           ;;;;; call set8adr
+            out0    (BUSADR2), e        ; set to access register data 
+            in0     a,(BUSRD1)          ; read SCC register ISR
+            push    af                  ; remember a copy of the ISR
+
+            bit     2,a                 ; is it a receive interrupt
+            jp      z,_uart2Txmit        ; not receiving, go to transmit
+
+_uart2Recvr:
+           ;;;;; ld de,(_theUART2addr)    ; set up to access HC174
+            dec      e                  ; 
+            out0    (BUSADR2), e        ; set to select the register
+            ld      a, UART_RHR
+            out0    (BUSWR),a
+           ;;;;; ld de,(_theUART2addr)
+            inc     e                   ;
+            out0    (BUSADR2), e        ; set to access register data
+            in0     c,(BUSRD1)          ; c has the character received
+
+            ld      a,(uart2Binary)      ; binary mode ?
+            cp      1
+            jp      z, _StuffData       ; just stuff data in if binary mode.
+                                        ;
+                                        ; if text mode, 
+                                        ; process backspace char and echoing.
+            ld      a,c
+            cp      BACKSPACE           ; is character a backspace?
+            jp      nz, _notBackSpace
+            ld      a,(uart2CmdOrData)
+            cp      1
+            jr      z, _noEcho
+            ld      a,(uart2_echo)
+            cp      1
+            jr      nz,_noEcho
+            dec     e                   
+            out0   (BUSADR2), e         ; set to select the register
+            ld      a, UART_THR
+            out0    (BUSWR),a
+           ;;;;; ld de,(_theUART2addr)   ; least of address
+            inc e            ; add 1
+            out0    (BUSADR2), e        ; set to access register data
+            out0    (BUSWR),c           ;   output the data
+
+_noEcho:
+           ld       de,(uart2_rx_tail)  
+                                    ; see if (uart2_rx_head)==(uart2_rx_tail)
+           ld       hl,(uart2_rx_head)
+           ld       a,d
+           cp       h               ; if(uart2_rx_head)==(uart2_rx_tail), 
+                                    ; send prompt '>'
+           jr       nz, _notHTR     ;
+           ld       a,e
+           cp       l
+           jr       nz, _notHTR     ; if you send a backspace 
+                                    ; and rx_tail==rxhead
+           jp       _uart2Txmit
+_notHTR:
+           ld       a,h             ; if (uart2_rx_head)==0,
+                                    ; (uart2_rx_head)=(uart2_rx_size) - 1;
+           or       l
+           jr       nz,_HeadnotZero
+           ld       hl,(uart2_rx_size)
+           dec      hl
+           ld       (uart2_rx_head),hl
+           jp       _decRbufcount
+
+_HeadnotZero:
+            ld      hl,(uart2_rx_head)  ; else (uart2_rx_head)=(uart2_rx_head) -1
+            dec     hl
+            ld      (uart2_rx_head),hl
+_decRbufcount:
+            ld      a,(uart2_CRTS_ENB)   ; if uart2_CRTS_ENB, then rbuf_count
+            cp      1                   ; has to be decreased accordingly
+            jp      nz, _uart2Txmit
+            ld      hl, (uart2_rbufcnt)
+            dec     hl
+            ld      (uart2_rbufcnt),hl
+
+            jp      _uart2Txmit
+
+_notBackSpace:          ; not a BACKSPACE, so push data into receive queue
+            ld      a,(uart2CmdOrData)
+            cp      1
+            jp      z, _StuffData
+            ld      a,(uart2_echo)
+            cp      1
+            jp      nz,_StuffData
+            ld      de,(_theUART2addr)   ; access the HC174
+            out0    (BUSADR2), e        ; set to select the register
+            ld      a,UART_THR
+            out0    (BUSWR),a
+           ;;;;; ld de,(_theUART2addr)
+            inc     e                   ; access the SCC
+            out0    (BUSADR2), e        ; set to access register data
+            out0    (BUSWR),c
+
+_StuffData:     ; if we are stuffing data, we should also control CTS
+; 1-26-96, Allow transmitter to overflow receiver beyond CTS not ready.                
+; 1-26-96            ld      a,(uart2_CTS_ON)
+; 1-26-96            cp      1
+; 1-26-96            jp      nz,_uart2Txmit       ; if cts is off, do not receive data
+            ld      de, (uart2_read_buf) ;
+            ld      hl, (uart2_rx_head)
+            add     hl,de
+            ld      (hl),c              ; store data
+            ld      de,(uart2_rx_size)   ; do the modulo test
+            ld      hl,(uart2_rx_head)
+            inc     hl
+            ld      a,d
+            cp      h                   ; compare high byte
+            jp      nz,_notRollOver
+            ld      a,e
+            cp      l                   ; compare low byte
+            jp      nz,_notRollOver
+            ld      hl,00
+            ld      (uart2_rx_head),hl
+            jp      _checkforCTS
+ _notRollOver:
+            ld      (uart2_rx_head),hl
+ _checkforCTS:
+            ld      a,(uart2_CRTS_ENB)
+            cp      1                   ; if 1, _CTS_RTS_ENABLE is enabled.
+            jp      nz,_uart2Txmit
+            ld      hl, (uart2_rbufcnt)
+            inc     hl
+            ld      (uart2_rbufcnt),hl
+            ld      de, (uart2_80rbuf)   ;
+            ld      a,e                 ; compare uart2rbuf_cnt to uart2_80rbuf
+            cp      l                   ; if equal, then turn off CTS
+            jp      nz, _uart2Txmit
+            ld      a,d
+            cp      h
+            jp      nz, _uart2Txmit
+            ld      de,(_theUART2addr)   ; set up to access HC174
+            out0    (BUSADR2), e        ; set to select the register
+            ld      a, UART_CR          ; select command register
+            out0    (BUSWR),a
+                ;;;;; ld de,(_theUART2addr)
+            inc     e                   ; access the SCC
+            out0    (BUSADR2), e        ; set to access register data
+            ld      a,10110101b         ; assert RTSN high (not ready to receive)
+            out0    (BUSWR),a
+            ld      a, 0
+            ld      (uart2_CTS_ON),a    ; software has to know that CTS is off.
+ _uart2Txmit:
+            pop     af                  ; retrieve a copy of the ISR
+            bit     0,a
+            jp      z, _uart2TheEnd
+            ld      de,(uart2_tx_head)   ; see if (tx_head) == (tx_tail)
+            ld      hl,(uart2_tx_tail)
+            ld      a,d
+            cp      h                   ; compare d to h
+            jr      nz, _notTxEnd
+            ld      a,e
+            cp      l
+            jr      nz, _notTxEnd
+            ld      de,(_theUART2addr)
+            out0    (BUSADR2), e        ; set to select the register
+            ld      a,UART_IMR
+            out0    (BUSWR),a
+                ;;;;; ld de,(_theUART2addr)
+            inc     e
+            out0    (BUSADR2), e        ; set to access register data
+            ld      a,00000100b  ;  Tx interrupt is turn off, RX is kept on
+            out0    (BUSWR),a  ; turn off interrupt when no more character to send
+            jp      _uart2TheEnd
+ _notTxEnd:
+            ld      hl, (uart2_tbufcnt)
+            dec     hl
+            ld      (uart2_tbufcnt),hl      ; monitor tbuf count
+            ld      de, (uart2_write_buf)   ; send next character out
+            ld      hl, (uart2_tx_tail)
+            add     hl,de
+            ld      c,(hl)
+            ld      de,(_theUART2addr)
+            out0    (BUSADR2), e            ; set to select the register
+            ld      a,UART_THR
+            out0    (BUSWR),a
+                ;;;;; ld de,(_theUART2addr)
+            inc     e
+            out0    (BUSADR2), e            ; set to access register data
+            out0    (BUSWR),c
+            ld      de,(uart2_tx_size)
+            ld      hl,(uart2_tx_tail)       ; do the modulo test
+            inc     hl
+            ld      a,d
+            cp      h                       ; compare high byte
+            jp      nz,_notTRollOver
+            ld      a,e
+            cp      l
+            jp      nz,_notTRollOver
+            ld      hl,00
+            ld      (uart2_tx_tail),hl
+            jp      _uart2TheEnd
+ _notTRollOver:
+            ld      (uart2_tx_tail),hl
+_uart2TheEnd:
+restore_exp_bus:
+          ;;;;;     plcbus_isr saves and restores the plcbus
+          ;;;;;      pop de             ; pop most of shadow register
+          ;;;;;      pop bc             ; pop least of shadow register
+          ;;;;;      call set24adr      ; reload the previous bus address
+
+_quickout:
+            ;;;;;   plcbus_isr saves and restores these registers
+            ;;;;;               pop af
+            ;;;;;    out0 (CBR),a     ; aoc, 5-17-93, restore the cbr
+            ;;;;;      pop de
+            ;;;;;     pop bc
+            ;;;;;     pop hl
+            ;;;;;     pop af
+            ret
+#endasm
+
+/*** BeginHeader Dxmodem_uart2down, Dxmodem_uart2up */
+
+int Dxmodem_uart2down(char *mydata, int n_blocks);
+int Dxmodem_uart2up(unsigned long baseAddress, int *no_of_pages, int dest,
+    int (*data_parsing)() );
+
+/*** EndHeader */
+extern char uart2Binary;            // 12-15-94
+
+/* START FUNCTION DESCRIPTION ********************************************
+Dxmodem_uart2down             <UART232.LIB>
+
+SYNTAX: int Dxmodem_uart2down(char *mydata, int n_blocks)
+
+DESCRIPTION: Sends blocks of data to a PC or dumb terminal with xmodem 
+file transfer protocol.  "mydata" points to a character array. "n_blocks"
+is the number of 128 byte blocks to be sent.
+
+RETURN VALUE: 0, if there is a timeout during transfer; 1, if transfer 
+was successful; 2, if the transfer was cancelled.
+END DESCRIPTION **********************************************************/
+nodebug int Dxmodem_uart2down(char *mydata, int n_blocks)
+{
+    int  i;
+    int  timeout;
+    unsigned char nth_block, not_nth;
+    unsigned int testcrc;
+    int  checksum;
+    int  ercode;
+    char cdata;
+    int  iblock;
+
+    nth_block = 1;
+    not_nth = ~nth_block;
+
+    uart2Binary = 1;
+    timeout = 0;
+    Dwrite_uart2("Ready to Download File", 22);
+    Duart2send_prompt();
+    Dwrite_uart2("Do an xmodem receive", 20);
+    Duart2send_prompt();
+    while (((ercode = Dread_uart21ch(&cdata)) == 0) || ((cdata != XCRC) &&
+    (cdata != ESC) && (cdata != CAN)) )
+    {
+        Ddelay_1sec();
+        if (++timeout >= 30)
+        {
+                             // Dwrite_uart2("Timeout!!!",10);
+                             // Duart2send_prompt();
+            uart2Binary = 0;
+            Ddelay_5sec();
+            return 0;
+        }
+    }
+    if (cdata == CAN || cdata == ESC) // Monitor for a quick ABORT
+    {
+        uart2Binary = 0;
+        Ddelay_5sec();
+        return 2;
+    }
+    else 
+        timeout = 0;
+    do
+    {
+        iblock = (nth_block - 1) * 128;
+        Dwrite_uart21ch(SOH);
+        Dwrite_uart21ch(nth_block);
+        Dwrite_uart21ch(not_nth);
+        Dwrite_uart2(mydata + iblock, 128);
+        testcrc = getcrc(mydata + iblock, 128, 0);
+        cdata = (testcrc >> 8) & 0xff;
+        Dwrite_uart21ch(cdata);
+        cdata = (testcrc & 0xff);
+        Dwrite_uart21ch(cdata);
+        timeout = 0;
+        while (((ercode = Dread_uart21ch(&cdata)) == 0) ||
+               ((cdata != XCRC) && (cdata != NAK) && (cdata != ACK) &&
+                (cdata != CAN)) )
+        {
+            Ddelay_1tick();
+            if (++timeout > 200)
+            {
+                uart2Binary = 0;
+                Ddelay_5sec();
+                return 0;
+            }
+        }
+        if (cdata == CAN)
+        {
+            uart2Binary = 0;
+            Ddelay_5sec();
+            return 2;
+        }
+        else if (cdata == ACK)
+        {
+            if (++nth_block <= n_blocks) 
+                not_nth = ~nth_block;
+            else
+            {
+                Dwrite_uart21ch(EOT);
+                timeout = 0;
+                while (((ercode = Dread_uart21ch(&cdata)) == 0) || 
+                         cdata != ACK)
+                {
+                    Ddelay_1tick();
+                    if (++timeout > 200)
+                    {
+                        uart2Binary = 0;
+                        Ddelay_5sec();
+                        return 0;
+                    }
+                };
+                // Wait for final acknowledge for end of transfer
+                // time out if necessary.
+                uart2Binary = 0;
+                Ddelay_5sec();
+                return 1;    // 1 for succesful transfer
+            }
+        }
+    } while (1);
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+Dxmodem_uart2up               <UART232.LIB>
+
+
+SYNTAX: int Dxmodem_uart2up(unsigned long baseAddress, int *no_of_pages, 
+            int dest, int (*data_parsing)() );
+
+
+DESCRIPTION: Uploads data from a PC using the xmodem file transfer protocol.
+"baseAddress" is the destination's physical ram address. "*no_of_pages" is 
+the size of the uploaded file in number of pages.  "dest" is an additional 
+parameter to locate the uploaded file. "*data_parsing" is the address of 
+the function to parse the uploaded file into memory. The required parsing 
+function prototype ise:
+
+int parse_function(char *mydata, int blockcount, unsigned long baseAddress,
+    int dest);
+
+where "mydata" is a pointer to a 128 byte block of data; "blockcount" is 
+the nth block; "baseAddress" is the base address of the uploaded file; and
+"dest" is an added parameter to locate the data. The parser function should 
+return 1 for successful copy or else 0.
+
+RETURN VALUE: 0, if there is a timeout during transfer; 1, if the transfer 
+was successful; 2, if the transfer was cancelled.
+END DESCRIPTION **********************************************************/
+nodebug int Dxmodem_uart2up(unsigned long baseAddress, int *no_of_pages, int dest,
+    int (*data_parsing)() )
+{
+    int  i;
+    unsigned char nth_block, not_nth;
+    unsigned int testcrc;
+    unsigned int myblockcount;
+    int  checksum;
+    int  ercode;
+    int  timeout;
+    char cdata;
+    char locrc, hicrc, mylocrc, myhicrc;
+    static char mydata[130];
+
+    myblockcount = 1;
+    uart2Binary = 1;
+    timeout = 0;
+    Dwrite_uart2("Ready to receive", 16);
+    Duart2send_prompt();
+    Dwrite_uart2("Xmodem File Up", 14);
+    Duart2send_prompt();
+    do
+    {
+        Dwrite_uart21ch(XCRC);
+        Ddelay_1sec();
+        if (++timeout >= 30)
+        {
+            uart2Binary = 0;
+            Ddelay_5sec();
+            return 0;
+        }
+    }
+    while (((ercode = Dread_uart21ch(&cdata)) == 0) || ((cdata != SOH) &&
+            (cdata != ESC) && (cdata != CAN)));
+    if (cdata == CAN || cdata == ESC) // Somehow cancelled
+    {
+        uart2Binary = 0;
+        Ddelay_5sec();
+        return 2;
+    }
+    do
+    {
+        timeout = 0;
+        while (++timeout < 100 && (ercode = Dread_uart21ch(&cdata) == 0)) 
+            Ddelay_1tick();
+        if (timeout >= 100)
+        {
+            uart2Binary = 0;
+            Ddelay_5sec();
+            return 0;
+        }
+        else 
+            nth_block = cdata;
+        timeout = 0;
+        while (++timeout < 100 && (ercode = Dread_uart21ch(&cdata) == 0)) 
+            Ddelay_1tick();
+        if (timeout >= 100)
+        {
+            uart2Binary = 0;
+            Ddelay_5sec();
+            return 0;
+        }
+        else 
+            not_nth = cdata;
+        checksum = 0;
+        timeout = 0;
+        for (i = 0; i < 128; i++)
+        {
+            while (++timeout < 100 && 
+            (ercode = Dread_uart21ch(&cdata)) == 0) 
+                Ddelay_1tick();
+            if (timeout >= 100)
+            {
+                uart2Binary = 0;
+                Ddelay_5sec();
+                return 0;
+            }
+            else
+            {
+                timeout = 0;
+                mydata[i] = cdata;
+            }
+        }
+        testcrc = getcrc(mydata, 128, 0);
+        myhicrc = (testcrc >> 8) & 0xff;
+        mylocrc = testcrc & 0xff;
+
+        timeout = 0;
+        while (++timeout <= 100 && 
+        (ercode = Dread_uart21ch(&cdata) == 0)) 
+            Ddelay_1tick();
+        if (timeout >= 100)
+        {
+            uart2Binary = 0;
+            Ddelay_5sec();
+            return 0;
+        }
+        else 
+            hicrc = cdata;
+
+        timeout = 0;
+        while (++timeout <= 100 && 
+        (ercode = Dread_uart21ch(&cdata) == 0)) 
+            Ddelay_1tick();
+        if (timeout >= 100)
+        {
+            uart2Binary = 0;
+            Ddelay_5sec();
+            return 0;
+        }
+        else
+        {
+            if (cdata == mylocrc && hicrc == myhicrc)
+            {
+                if ((*data_parsing)(mydata, myblockcount, 
+                baseAddress, dest) == 1)
+                {
+                    Dwrite_uart21ch(ACK);
+                    ++myblockcount;
+                }
+                else 
+                    Dwrite_uart21ch(XCRC); // use  Dwrite_uart21ch(NAK) for checksum;
+            }
+            else 
+                Dwrite_uart21ch(XCRC);     // use Dwrite_uart21ch(NAK) for checksum;
+        }
+        timeout = 0;
+        while (((ercode = Dread_uart21ch(&cdata)) == 0) ||
+               ((cdata != EOT) && (cdata != SOH) && (cdata != CAN)))
+        {
+            Ddelay_1tick();
+            if (++timeout > 100) // time out after 2-3 seconds
+            {
+                uart2Binary = 0;
+                Ddelay_5sec();
+                return 0;
+            }
+        }
+        if (cdata == EOT)
+        {
+            Dwrite_uart21ch(ACK);
+            uart2Binary = 0;
+            *no_of_pages = myblockcount / 32;
+            Ddelay_5sec();
+            return 1;        // 1 for successful transfer
+        }
+        if (cdata == CAN)
+        {
+            uart2Binary = 0;
+            Ddelay_5sec();
+            return 2;
+        }
+    } while (1);
+}
+

@@ -1,0 +1,795 @@
+/* START LIBRARY DESCRIPTION *********************************************
+PBUS_LG.LIB
+    Copyright (c) 1994, Z-World.
+
+Description: PLCBus interface library for the Little Giant (also for the
+Protocol Switch).  Contains functions necessary to access PLCBus devices 
+through PIO port A on the Little Giant.  It provides low-level PLCBus
+functions as well as high-level functions for the relay and DAC expansion
+boards.  The bus must interface to the PIO port as follows: PIO pin 0:STB,
+1:A3, 2:A2, 3:A1, 4:D2, 5:D3, 6:D0, 7:D1.
+
+SUPPORT LIB'S:
+END DESCRIPTION **********************************************************/
+
+/**************************************************************************
+   Date        Who           Modifications
+   -------------------------------------------------------------------------
+   12/15/92    M. Samarin    Created.  Added functions for Relay6/8 boards.
+
+   01/15/93    M. Samarin    Added D/A functions.
+
+   11/03/95    A.O.C.        Redo WriteDAC functions to more conventional
+                             way of deciphering data. Bug was in the logical
+                             interpretation of != which was changed from
+                             earlier version of the compiler.
+
+***************************************************************************/
+
+/*** BeginHeader */
+#if BOARD_TYPE!=LITTLE_GIANT
+#error "Little Giant only."
+#endif
+/*** EndHeader */
+
+/*** BeginHeader */
+
+char pbus_shadow[4];
+
+/*** EndHeader  */
+
+/*=========================================================================
+               START OF PLCBus CYCLE SIMULATION DRIVERS
+  These functions simulate actual PLCBus cycles from the parallel port.
+  Their PLC counterparts may be found in DRIVERS.LIB (set12adr, write12data,
+  etc.). The bus is assumed to be interfaced through a PIO port A with the
+  following connections:
+
+        PORT A Pin:   7    6    5    4    3    2    1    0
+  Expansion Signal:   D1   D0   D3   D2   A1   A2   A3  STB
+==========================================================================*/
+
+/*** BeginHeader PBus12_Addr */
+
+void PBus12_Addr(int addr);
+
+/*** EndHeader  */
+
+/* START FUNCTION DESCRIPTION ********************************************
+PBus12_Addr                  <PBUS_LG.LIB>
+
+SYNTAX: void PBus12_Addr(int addr);
+
+KEY WORDS:
+
+DESCRIPTION: Sets the current address for the PLCBus. All read and write
+operations will access this address until a new address is set. addr is the
+12-bit physical address with the first and third nibbles swapped (most
+significant nibble in the low four bits).
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void PBus12_Addr(int addr)
+{
+    int i;
+    char abus, dbus, scr;
+    static char amask[4] =
+            {
+                0x02, 0x0A, 0x06, 0x0E
+            };
+
+    outport(PIOCA, 0xff);    // Mode 3
+    outport(PIOCA, 0x00);    // all output
+
+    for (i = 0; i < 3; ++i)  // Do for 3 nybbles
+    {
+        pbus_shadow[i] = scr = (addr >> (i << 2)) & 0x0f;
+        dbus = ((scr & 3) << 6) + ((scr & 0x0C) << 2);
+        abus = amask[i];
+        
+        // Simulate cycle by clocking STB
+        outport(PIODA, (char)(abus | dbus | 1)); 
+        outport(PIODA, (char)(abus | dbus | 0));
+        outport(PIODA, (char)(abus | dbus | 1));
+    }
+}
+
+/*** BeginHeader PBus4_Write */
+
+void PBus4_Write(char data);
+
+/*** EndHeader  */
+
+/* START FUNCTION DESCRIPTION ********************************************
+PBus4_Write                  <PBUS_LG.LIB>
+
+SYNTAX: void PBus4_Write(char data);
+
+KEY WORDS:
+
+DESCRIPTION: Writes 4-bit data on PLCBus.  The address must be set by a
+call to PBus12_Addr before calling this function.  "data" should contain 
+the value to write in the lower 4 bits.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+#asm nodebug
+PBus4_Write::
+
+   ld    a, l          ; stash the data into accumulator
+   ld    hl, pbus_shadow
+   inc   hl
+   inc   hl
+   inc   hl
+   ld    (hl), a       ; save data in shadow register 3
+
+   ld    c, 0xCF       ; Set parallel port A to all outputs
+   out0  (PIOCA), c
+   ld    c, 00
+   out0  (PIOCA), c
+
+   ld    l, a             ; save data in hl
+
+   and   03               ; (data & 3) << 6
+   rrca
+   rrca
+
+   ld    h, a             ; save it for a moment
+
+   ld    a, l             ; (data & 0x0c) << 2
+   and   0x0C
+   rla
+   rla
+   or    h                ; make final data in accumulator
+
+   or    0x0F             ; keep strobe high
+   out0  (PIODA), a
+   and   0xFE             ; go low
+   out0  (PIODA), a
+   or    0x01             ; back high
+   out0  (PIODA), a
+
+   ret
+#endasm
+
+/*** BeginHeader PBus4_Read0 */
+
+int PBus4_Read0(void);
+
+/*** EndHeader  */
+
+/* START FUNCTION DESCRIPTION ********************************************
+PBus4_Read0                  <PBUS_LG.LIB>
+
+SYNTAX: int PBus4_Read0(void);
+
+KEY WORDS:
+
+DESCRIPTION: Reads 4 bits of data off of the PLCBus using a BUSRD0 cycle.
+The address must be set by a call to PBus12_Addr before calling this
+function.
+
+RETURN VALUE: PLCBus data in lower 4 bits (upper bits undefined).
+END DESCRIPTION **********************************************************/
+nodebug int PBus4_Read0(void)
+{
+    char dbus;
+
+    /* Set PIOA Port to write bits 0-3, read 4-7
+       --------------------------------------------*/
+    outport(PIOCA, 0xff);    // Mode 3
+    outport(PIOCA, 0xf0);    // Data Bus = input
+
+    /* Execute Read0 Cycle
+       --------------------- */
+    outport(PIODA, 1);
+    outport(PIODA, 0);
+    dbus = inport(PIODA);
+    outport(PIODA, 1);
+
+    /* Unscramble d3-d0
+       ------------------- */
+    return (((dbus & 0x30) >> 2) + ((dbus & 0xc0) >> 6));
+}
+
+/*** BeginHeader PBus4_Read1 */
+
+int PBus4_Read1(void);
+
+/*** EndHeader  */
+
+/* START FUNCTION DESCRIPTION ********************************************
+PBus4_Read1                  <PBUS_LG.LIB>
+
+SYNTAX: int PBus4_Read1(void);
+
+KEY WORDS:
+
+DESCRIPTION: Reads 4 bits of data off of the PLCBus using a BUSRD1 cycle.
+The address must be set by a call to PBus12_Addr before calling this
+function.
+
+RETURN VALUE: PLCBus data in lower 4 bits (upper bits undefined).
+END DESCRIPTION **********************************************************/
+nodebug int PBus4_Read1(void)
+{
+    char dbus;
+
+    /* Set PIOA Port to write bits 0-3, read 4-7
+       --------------------------------------------*/
+    outport(PIOCA, 0xff);    // Mode 3
+    outport(PIOCA, 0xf0);    // Data Bus = input
+
+    /* Execute Read1 Cycle
+       --------------------- */
+    outport(PIODA, 0x09);
+    outport(PIODA, 0x08);
+    dbus = inport(PIODA);
+    outport(PIODA, 0x09);
+
+    /* Unscramble d3-d0
+       ------------------- */
+    return (((dbus & 0x30) >> 2) + ((dbus & 0xc0) >> 6));
+}
+
+/*** BeginHeader PBus4_ReadSp */
+
+int PBus4_ReadSp(void);
+
+/*** EndHeader  */
+
+/* START FUNCTION DESCRIPTION ********************************************
+PBus4_ReadSp                 <PBUS_LG.LIB>
+
+SYNTAX: int PBus4_ReadSp(void);
+
+KEY WORDS:
+
+DESCRIPTION: Reads 4 bits of data off of the PLCBus using a BUSSPARE cycle.
+The address must be set by a call to PBus12_Addr before calling this
+function.
+
+RETURN VALUE: PLCBus data in lower 4 bits (upper bits undefined).
+END DESCRIPTION **********************************************************/
+nodebug int PBus4_ReadSp(void)
+{
+    char dbus;
+
+    /* Set PIOA Port to write bits 0-3, read 4-7
+       --------------------------------------------*/
+    outport(PIOCA, 0xff);    // Mode 3
+    outport(PIOCA, 0xf0);    // Data Bus = input
+
+    /* Execute Read1 Cycle
+       --------------------- */
+    outport(PIODA, 0x0D);
+    outport(PIODA, 0x0C);
+    dbus = inport(PIODA);
+    outport(PIODA, 0x0D);
+
+    /* Unscramble d3-d0
+       ------------------- */
+    return (((dbus & 0x30) >> 2) + ((dbus & 0xc0) >> 6));
+}
+
+/*=========================================================================
+               END OF PLCBus CYCLE SIMULATION DRIVERS
+==========================================================================*/
+
+
+/*=========================================================================
+               START OF RELAY EXPANSION BOARD DRIVERS
+  These are functions specifically for controlling a RELAY6 or RELAY8 board
+  from the parallel port.
+==========================================================================*/
+
+/*** BeginHeader Relay_Board_Addr */
+
+int Relay_Board_Addr(int board);
+
+/*** EndHeader  */
+
+/* START FUNCTION DESCRIPTION ********************************************
+Relay_Board_Addr             <PBUS_LG.LIB>
+
+SYNTAX: int Relay_Board_Addr(int board);
+
+KEY WORDS:
+
+DESCRIPTION: Converts a logical relay board address to a physical PLCBus
+address.  "board" must be a number between 0 and 63 representing the relay
+board to access.  This number has the binary form pppzyx where ppp is
+determined by the board PAL number and x, y, and z are determined by jumper
+J1 on the board.  ppp values of 000, 001, 010, etc., correspond to PAL
+numbers of FPO4500, FPO4510, FPO4520, etc.; x, y, and z correspond to
+jumper J1 pins 1-2, 3-4, and 5-6, respectively (0 = closed, 1 = open). The
+resulting address is in the form pppx000y000z.
+
+RETURN VALUE: The PLCBus address of the board specified, with the first and
+third nibbles swapped; this address may be passed directly to PBus12_Addr.
+END DESCRIPTION **********************************************************/
+nodebug int Relay_Board_Addr(int board)
+{
+    int group, bdnum;
+
+    group = board >> 3;      // divide by 8
+    bdnum = board & 0x07;    // modulus 8
+
+    return ((bdnum & 4) >> 2) + ((bdnum & 2) << 3)
+        + (((bdnum & 1) + (group << 1)) << 8);
+}
+
+/*** BeginHeader Set_PBus_Relay */
+
+void Set_PBus_Relay(int board, int relay, int state);
+
+/*** EndHeader  */
+
+/* START FUNCTION DESCRIPTION ********************************************
+Set_PBus_Relay               <PBUS_LG.LIB>
+
+SYNTAX: void Set_PBus_Relay(int board,int relay,int state);
+
+KEY WORDS:
+
+DESCRIPTION: Sets a relay on an expansion bus relay board. board must be a
+number between 0 and 63 representing the relay board to access. This number
+has the binary form pppzyx where ppp is determined by the board PAL number
+and x, y, and z are determined by jumper J1 on the board. ppp values of 000,
+001, 010, etc., correspond to PAL numbers of FPO4500, FPO4510, FPO4520,
+etc.; x, y, and z correspond to jumper J1 pins 1-2, 3-4, and 5-6,
+respectively (0 = closed, 1 = open). relay is the relay number on the board
+(0 - 5 for RELAY6 board; 0 - 7 for RELAY8 board). state must be 1 to turn
+the relay on and 0 to turn the relay off.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void Set_PBus_Relay(int board, int relay, int state)
+{
+    PBus12_Addr(Relay_Board_Addr(board));     // Set Board Address on PLCBus
+    PBus4_Write((char) (relay << 1) + state); // Write Command on PLCBus
+}
+
+/*=========================================================================
+               END OF RELAY EXPANSION BOARD DRIVERS
+==========================================================================*/
+
+/*=========================================================================
+               START OF A/D EXPANSION BOARD DRIVERS
+==========================================================================*/
+
+/*=========================================================================
+               END OF A/D EXPANSION BOARD DRIVERS
+==========================================================================*/
+
+
+/*=========================================================================
+               START OF D/A EXPANSION BOARD DRIVERS
+  These functions are for controlling a DAC expansion board from the
+  parallel port.
+==========================================================================*/
+
+/*** BeginHeader DAC_Board_Addr */
+
+int DAC_Board_Addr(int bd);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+DAC_Board_Addr               <PBUS_LG.LIB>
+
+SYNTAX: int DAC_Board_Addr(int bd);
+
+KEY WORDS:
+
+DESCRIPTION: Converts a logical DAC board address to a physical PLCBus
+address. bd must be a number between 0 and 63 representing the DAC board to
+access. This number has the binary form pppzyx where ppp is determined by
+the board PAL number and x, y, and z are determined by jumper J3 on the
+board. ppp values of 000, 001, 010, etc., correspond to PAL numbers of
+FPO4800, FPO4810, FPO4820, etc.; x, y, and z correspond to jumper J3
+pins 1-2, 3-4, and 5-6, respectively (0 = closed, 1 = open). The resulting
+address is in the form pppx001y000z.
+
+RETURN VALUE: The PLCBus address of the board specified, with the first and
+third nibbles swapped; this address may be passed directly to PBus12_Addr.
+END DESCRIPTION **********************************************************/
+nodebug int DAC_Board_Addr(int bd)
+{
+    return ((bd & 4) >> 2) + (((bd & 2) + 4) << 3)
+        + ((((bd >> 3) << 1) + (bd & 1)) << 8);
+}
+
+
+/*** BeginHeader Write_DAC1 */
+
+void Write_DAC1(int val);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+Write_DAC1                   <PBUS_LG.LIB>
+
+SYNTAX: void Write_DAC1(int val);
+
+KEY WORDS:
+
+DESCRIPTION: Loads A register of DAC #1 with the given 12 bit value. The 
+board address must have been set previously with a call to PBus12_Addr. 
+The value in val will not actually be output until Latch_DAC1 is called.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void Write_DAC1(int val)
+{
+    int i;
+
+    for (i = 11; i >= 0; i--)
+    {
+        if (BIT(&val, i))
+            PBus4_Write(0x01); // Serial data bit Hi
+        else                   // or
+            PBus4_Write(0x00); // Serial data bit lo
+
+        PBus4_Write(0x07);     // Clock it in
+        PBus4_Write(0x06);
+    }
+}
+
+//nodebug void Write_DAC1(int val)
+//{
+//    int i, j;
+//
+//    j = val;
+//    for (i = 0x0800; i;)
+//    {
+//        PBus4_Write(((j & i) != 0));
+//        i >>= 1;
+//
+//        PBus4_Write(0x07);   // Clock it in
+//        PBus4_Write(0x06);
+//    }
+//}
+
+/*** BeginHeader Write_DAC2 */
+
+void Write_DAC2(int val);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+Write_DAC2                   <PBUS_LG.LIB>
+
+SYNTAX: void Write_DAC2(int val);
+
+KEY WORDS:
+
+DESCRIPTION: Loads A register of DAC #2 with the given 12 bit value. The
+board address must have been set previously with a call to PBus12_Addr. 
+The value in val will not actually be output until Latch_DAC2 is called.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void Write_DAC2(int val)
+{
+    int i;
+
+    for (i = 11; i >= 0; i--)
+    {
+        if (BIT(&val, i))
+            PBus4_Write(0x01); // Serial data bit Hi
+        else                   // or
+            PBus4_Write(0x00); // Serial data bit lo
+
+        PBus4_Write(0x03);     // Clock it in
+        PBus4_Write(0x02);
+    }
+}
+
+//nodebug void Write_DAC2(int val)
+//{
+//    int i, j;
+//
+//    j = val;
+//
+//    for (i = 0x0800; i;)
+//    {
+//        PBus4_Write(((j & i) != 0));
+//        i >>= 1;
+//
+//        PBus4_Write(0x03);   // Clock it in
+//        PBus4_Write(0x02);
+//    }
+//}
+
+/*** BeginHeader Latch_DAC1 */
+
+void Latch_DAC1(void);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+Latch_DAC1                   <PBUS_LG.LIB>
+
+SYNTAX: void Latch_DAC1(void);
+
+KEY WORDS:
+
+DESCRIPTION: Moves the value from A register of DAC #1 to B register.
+The value in B register represents the actual DAC output.  The board
+address must have been set previously with a call to PBus12_Addr, and the
+value should have been loaded into the A register with a call to Write_DAC1.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void Latch_DAC1(void)
+{
+    /* Strobe from A reg into B reg
+       ------------------------------- */
+    PBus4_Write(0x08);
+    PBus4_Write(0x09);
+}
+
+/*** BeginHeader Latch_DAC2 */
+
+void Latch_DAC2(void);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+Latch_DAC2                   <PBUS_LG.LIB>
+
+SYNTAX: void Latch_DAC2(void);
+
+KEY WORDS:
+
+DESCRIPTION: Moves the value from A register of DAC #2 to B register.
+The value in B register represents the actual DAC output.  The board
+address must have been set previously with a call to PBus12_Addr, and the
+value should have been loaded into the A register with a call to Write_DAC2.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void Latch_DAC2(void)
+{
+    /* Strobe firm B reg into A reg
+       ------------------------------- */
+    PBus4_Write(0x04);       // LDI2 low
+    PBus4_Write(0x05);       // LDI2 hi
+}
+
+/*** BeginHeader Init_DAC */
+
+void Init_DAC(void);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+Init_DAC                     <PBUS_LG.LIB>
+
+SYNTAX: void Init_DAC(void) ;
+
+KEY WORDS:
+
+DESCRIPTION: Initializes DAC board and sets all output values to 0.  Call
+this function before writing data to the DAC.  The board address must have
+been set previously with a call to PBus12_Addr.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void Init_DAC(void)
+{
+    PBus4_Write(0x09);
+    PBus4_Write(0x05);
+    PBus4_Write(0x0c);
+    PBus4_Write(0x0d);
+    PBus4_Write(0x0e);
+    PBus4_Write(0x0f);
+}
+
+/*** BeginHeader Set_DAC1*/
+
+void Set_DAC1(int val);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+Set_DAC1                     <PBUS_LG.LIB>
+
+SYNTAX: void Set_DAC1(int val);
+
+KEY WORDS:
+
+DESCRIPTION: Sets DAC #1 to the value specified in the lower 12 bits of val.
+In voltage output mode (J1 pins 2-3 jumpered), Vout = (val/4096) * 10.22V
+with Z-World default settings.  In current output mode (J1 pins 1-2 jumpered)
+Iout = (val/4096) * 22ma with Z-World default settings.  The board address
+must have been set previously with a call to PBus12_Addr.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void Set_DAC1(int val)
+{
+    Write_DAC1(val);
+    Latch_DAC1();
+}
+
+/*** BeginHeader Set_DAC2 */
+
+void Set_DAC2(int val);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+Set_DAC2                     <PBUS_LG.LIB>
+
+SYNTAX: void Set_DAC2(int val);
+
+KEY WORDS:
+
+DESCRIPTION: Sets DAC #2 to the value specified in the lower 12 bits of val.
+In voltage output mode (J1 pins 2-3 jumpered), Vout = (val/4096) * 10.22V
+with Z-World default settings.  In current output mode (J1 pins 1-2 jumpered)
+Iout = (val/4096) * 22ma with Z-World default settings.  The board address
+must have been set previously with a call to PBus12_Addr.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void Set_DAC2(int val)
+{
+    Write_DAC2(val);
+    Latch_DAC2();
+}
+
+/*** BeginHeader DAC_On, DAC_Off */
+
+void DAC_On(void);
+void DAC_Off(void);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+DAC_On                       <PBUS_LG.LIB>
+
+SYNTAX: void DAC_On(void);
+
+KEY WORDS:
+
+DESCRIPTION: Controlls the High-Side-Switch activation line. Only used with
+switch option U10-LT1188.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void DAC_On(void)
+{
+    PBus4_Write(0x0b);
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+DAC_Off                      <PBUS_LG.LIB>
+
+SYNTAX: void DAC_Off(void);
+
+KEY WORDS:
+
+DESCRIPTION: Controlls the High-Side-Switch activation line. Only used with
+switch option U10-LT1188.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void DAC_Off(void)
+{
+    PBus4_Write(0x0a);
+}
+
+/*=========================================================================
+               END OF D/A EXPANSION BOARD DRIVERS
+==========================================================================*/
+
+
+/*=========================================================================
+               START OF UART EXPANSION BOARD DRIVERS
+==========================================================================*/
+
+/*=========================================================================
+               END OF UART EXPANSION BOARD DRIVERS
+==========================================================================*/
+
+
+/*=========================================================================
+               START OF GENERAL EXPANSION BOARD DRIVERS
+  These functions are included for convenince when using the PLCBus
+  from the parallel port.  They are of help for all boards.
+==========================================================================*/
+
+/*** BeginHeader Reset_PBus */
+
+void Reset_PBus(void);
+
+/*** EndHeader  */
+
+/* START FUNCTION DESCRIPTION ********************************************
+Reset_PBus                   <PBUS_LG.LIB>
+
+SYNTAX: void Reset_PBus(void);
+
+KEY WORDS:
+
+DESCRIPTION: Resets the PLCBus.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void Reset_PBus(void)
+{
+    DI();
+    outport(PIOCA, 0xff);    // Mode 3
+    outport(PIOCA, 0x00);    // all output
+
+    outport(PIODA, 0x0d);
+    outport(PIODA, 0x0c);
+    outport(PIODA, 0x0d);
+
+    EI();
+}
+
+/*** BeginHeader Poll_PBus_Node */
+
+int Poll_PBus_Node(int addr);
+
+/*** EndHeader  */
+
+/* START FUNCTION DESCRIPTION ********************************************
+Poll_PBus_Node               <PBUS_LG.LIB>
+
+SYNTAX: int Poll_PBus_Node(int addr);
+
+KEY WORDS:
+
+DESCRIPTION: Polls a PLCBus device by performing a BUSRD0 cycle and checking
+the low bit of the returned value. "addr" is the 12-bit physical address of
+the device, with the first and third nibbles swapped.
+
+RETURN VALUE: Returns 1 if node answers poll, 0 if not.
+END DESCRIPTION **********************************************************/
+nodebug int Poll_PBus_Node(int addr)
+{
+    PBus12_Addr(addr);
+
+    if (PBus4_Read0() & 1)
+        return 0;
+    else
+        return 1;
+}
+
+
+/*** BeginHeader Reset_PBus_Wait */
+
+void Reset_PBus_Wait(void);
+
+/*** EndHeader  */
+
+/* START FUNCTION DESCRIPTION ********************************************
+Reset_PBus_Wait              <PBUS_LG.LIB>
+
+SYNTAX: void Reset_PBus_Wait(void);
+
+KEY WORDS:
+
+DESCRIPTION: Provides the minimum delay necessary for PLCBus expansion
+boards after a bus reset, assuming a 9Mhz CPU.  On a faster CPU this delay
+will be insufficient and must be increased.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void Reset_PBus_Wait(void)
+{
+    int i, k;
+
+    // Increase outer loop counter accordingly for a faster CPU 
+    // (i.e. for 12 Mhz use 6000 instead of 4500).
+    for (i = 4500; i; --i)
+        for (k = 0; k < 10; ++k);
+}
+
+/********************************************* End of PBUS_LG.LIB ****/
+

@@ -1,0 +1,894 @@
+/* START LIBRARY DESCRIPTION *********************************************
+DMA.LIB
+	Copyright (c) 1995, Z-World.
+
+DESCRIPTION: Generic library support for DMA0 and DMA1 of the z180. Support
+memory to/from memory, memory to/from io, memory to/from serial chan 0 and 
+chan1 transfers. 
+SUPPORT LIB'S: 
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+DMA0_Off             <dma.lib>
+
+SYNTAX: void DMA0_Off();
+
+KEYWORDS: DMA0 Off.
+
+DESCRIPTION: Reset the DMA channel 0 to off. 
+ 
+RETURN VALUE: not defined
+END DESCRIPTION **********************************************************/
+
+/*** BeginHeader DMA0_Off */
+void DMA0_Off();
+/*** EndHeader */
+
+nodebug void DMA0_Off()
+{
+	outport(DSTAT, '\B00100000' | (inport(DSTAT) & '\B10101000'));
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+DMA0_SerialInit             <dma.lib>
+
+SYNTAX: void DMA0_SerialInit(int chan, char mode, char baud);
+
+KEYWORDS: DMA0, Z180 Serial Port 0 or 1, Init.
+
+DESCRIPTION: Initialized the serial port "chan" = 0 or "chan" = 1 of the 
+				Z180. "mode" is defined as follows: bit0 = 0 for 1 stop bit, 
+				1 for 2 stop bits; bit1 = 0 for no parity, 1 for parity; 
+				bit2 = 0 for 7 data bits, 1 for 8 data bits; bit3 = 0 for even 
+				parity, 1 for odd; "baud" is the baud rate in multiples of 1200 
+				(e.g. 8 for 9600 baud). 
+ 
+RETURN VALUE: not defined
+END DESCRIPTION **********************************************************/
+
+/*** BeginHeader DMA0_SerialInit */
+void  DMA0_SerialInit(int chan, char mode, char baud);
+/*** EndHeader */
+
+nodebug void DMA0_SerialInit(int chan, char mode, char baud)
+{
+	 outport(STAT0 + chan, 0);              // reset port
+	 outport(CNTLB0 + chan , 
+				z180baud(sysclock(), baud) | ((mode << 1) & 0x10));
+												// set baud rate, odd or even parity
+	 outport(CNTLA0 + chan, (mode & 7));    // set stop bits, etc. enb rts
+	 outport(CNTLA0 + chan, inport(CNTLA0 + chan) | 0x20);
+	 inport(RDR0+chan);
+	 inport(RDR0+chan);                   // clear out reader registers
+	 outport(CNTLA0+chan, inport(CNTLA0+chan) | 0x60);  
+												// enable receive and transmit
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+DMA0_Rx             <dma.lib>
+
+SYNTAX: int DMA0_Rx(int chan, unsigned long memaddress, unsigned int count,
+							 int intmode, int countmode);
+
+KEYWORDS: DMA0, Z180 Serial Port 0 or 1 Receive.
+
+DESCRIPTION: Set up DMA0 to receive "count" numbers of bytes from serial 
+				port "chan" = 0 or "chan" = 1 to absolute memory location 
+				starting at "memaddress". For character arrays, convert the 
+				logical memory to physical memory with "phy_adr(array)". For 
+				xdata arrays, passed the array name directly. If "intmode" is 
+				1, the DMA will generate an interrupt at the end of the DMA
+				operation. The caller has to provide the interrupt service 
+				routine. "Intmode" = 0 generates no interrupt. "incmode" is
+				0 for increment memory address or 1 for decrement memory address.
+				
+RETURN VALUE: 1 for successful setup; 0 if the dma0 is busy; -1 if
+				 rx of serial port 0 or 1 is busy; -2 if chan is not 0 or 1.
+END DESCRIPTION **********************************************************/
+
+/*** BeginHeader DMA0_Rx */
+int DMA0_Rx(int chan, unsigned long memaddress, unsigned int count, 
+				int intmode, int incmode);
+/*** EndHeader */
+
+#asm nodebug
+DMA0_Rx::
+			ld    iy, 2
+			add   iy, sp
+			ld    a, (iy)        
+			ld    d, a
+			and   11111110b         ; limit to 1 or 0
+			jr    z, chan_ok
+			ld    hl, -2
+			ret                     ; return -2 if chan is not 0 or 1
+
+chan_ok:
+											; chan is in 'd'
+			ld    b, 0xff
+wait_dma:
+			in0   a, (DSTAT)
+			and   0x40
+			jr    z, dma0_free
+			djnz  wait_dma
+
+			ld    hl, 0x00
+			ret                     ; return 0 if dma channel is still busy
+
+dma0_free:
+
+			ld    e, 0xff
+			ld    b, 0x00
+			
+wait_rx:
+			ld    a, STAT0
+			add   a, d
+			ld    c, a
+			in    a, (c)
+			and   10000000b
+			jr    z, rx_free
+			ld    a, RDR0
+			add   a, d
+			ld    c, a
+			in    a, (c)            ; clear the read buffer if necessary
+			dec   e   
+			jr    nz, wait_rx
+
+			ld    hl, 0xffff        ; return -1 if rx is busy
+			ret
+			
+rx_free:       
+			
+			ld    a, (iy+2)         ; load the destination
+			out0  (DAR0L), a        ; memory address
+			ld    a, (iy+3)
+			out0  (DAR0H), a
+			ld    a, (iy+4)
+			out0  (DAR0B), a
+
+			ld    a, RDR0           ; load the source of RX 
+			add   a, d
+			out0  (SAR0L), a
+			xor   a
+			out0  (SAR0H), a
+			ld    a, 00000001b
+			add   a, d
+			out0  (SAR0B), a
+
+			ld    a, (iy+6)         ; load number of counts
+			out0  (BCR0L), a
+			ld    a, (iy+7)
+			out0  (BCR0H), a
+			
+			
+			ld    a, (iy+10);       ; get the increment mode
+			rla
+			rla
+			rla
+			rla                     ; rotate bit 0 to bit 4
+			and   00010000b         ; mask for bit4 only
+			or    00001100b         ; mask other control bit
+
+			out0  (DMODE), a
+			
+			in0   a, (DCNTL)        ; set DREQ0 for edge trigger
+			and   11111011b
+			or    00000100b
+			out0  (DCNTL), a
+
+			in0   a, (DSTAT)        ; read current state of DSTAT
+			and   10101000b         ; disable bits for DMA0
+			ld    b, a
+			
+			ld    a, (iy+8)
+			cp    1
+			jr    nz, no_intrpt
+
+intrpt:
+			ld    a, b
+			or    01100100b         ; enable with interrupt
+			jr    merge
+			
+no_intrpt:
+			ld    a, b
+			or    01100000b         ; enable without interrupt
+merge:
+			out0  (DSTAT), a                 
+			ld    hl, 1             ; return 1 for successful operation
+			ret
+#endasm
+			
+/* START FUNCTION DESCRIPTION ********************************************
+DMA0_Tx             <dma.lib>
+
+SYNTAX: int DMA0_Tx(int chan, unsigned long memaddress, unsigned int count,
+							 int intmode, int incmode);
+
+KEYWORDS: DMA0, Z180 Serial Port 0 or 1 Transmit.
+
+DESCRIPTION: Set up DMA0 to transmit "count" numbers of bytes from  
+				absolute memory location starting at "memaddress" out 
+				of serial port "chan" = 0 or "chan" = 1.  For character arrays, 
+				convert the logical memory to physical memory with 
+				"phy_adr(array)". For xdata arrays, passed the array name 
+				directly. If "intmode" is 1, the DMA will generate an interrupt 
+				at the end of the DMA operation. The caller has to provide the 
+				interrupt service routine. "Intmode" = 0 generates no interrupt. 
+				"Incmode" is 0 for increment memory address or 1 for decrement 
+				memory address.
+				
+RETURN VALUE: 1 for successful setup; 0 if the dma0 is busy; -1 if
+				 tx of serial port 0 or 1 is busy; -2 if chan is not 0 or 1.
+END DESCRIPTION **********************************************************/
+
+/*** BeginHeader DMA0_Tx */
+int DMA0_Tx(int chan, unsigned long memaddress, unsigned int count, 
+				int intmode, int incmode);
+/*** EndHeader */
+
+#asm nodebug
+DMA0_Tx::
+			ld    iy, 2
+			add   iy, sp
+
+			ld    a, (iy)
+			and   11111110b
+			jr    z, chan_ok
+			ld    hl, -2            ; return -2 if chan is not 0 or 1.
+			ret
+
+chan_ok:
+			
+			ld    b, 0xff
+wait_dma:
+			in0   a, (DSTAT)
+			and   0x40
+			jr    z, dma0_free
+			djnz  wait_dma
+			ld    hl, 0x00
+			ret                     ; return 0 if dma channel is still busy
+
+dma0_free:
+			ld    e, 0xff
+			ld    b, 0x00
+			ld    a, STAT0
+			add   a, (iy)
+			ld    c, a
+wait_tx:
+			in    a, (c)
+			and   00000010b
+			jr    nz, tx_free
+			dec   e    
+			ld    a, e
+			or    e
+			jr    nz, wait_tx
+			ld    hl, 0xffff
+			ret                     ; return -1 if tx is not free to transmit
+			
+tx_free:
+
+			ld    e, (iy+2)
+			ld    d, (iy+3)
+			ld    c, (iy+4)
+
+			in0   a, (CBR)
+			push  af
+
+			ld    a, c
+			ld    c, d
+
+			rl    c
+			rla
+			rl    c
+			rla
+			rl    c
+			rla
+			rl    c
+			rla
+
+			ld    c, 0x0e
+			sub   c
+			out0  (CBR), a
+
+			ld    a, d
+			and   0x0f
+			or    0xe0
+			ld    d, a
+
+			ex    de, hl
+
+			ld    c, (hl)           ; 'c' has the first byte to send
+			
+			pop   af
+			out0  (CBR), a
+
+			xor   a
+			ld    l, (iy+2)         ;  load low address
+			ld    h, (iy+3)         ;  load high address
+			ld    de, 1
+			add   hl, de            ;  increment by 1
+			ld    a, (iy+4)
+			
+			jp    nc, load_to_SAR0
+			inc   a                 ; carry over for the last byte
+
+load_to_SAR0:
+			out0  (SAR0L), l        ; load address of source
+			out0  (SAR0H), h
+			out0  (SAR0B), a
+
+						
+			ld    l, (iy+6)         
+			ld    h, (iy+7)
+			dec   hl
+			ld    a, l
+			or    h                 ; if only one byte to send
+			jr    z, merge
+
+not_one_byte:
+											
+			out0  (BCR0L), l        ; load remaining bytes to move
+			out0  (BCR0H), h
+
+			ld    a, TDR0           ; load TX for DMA
+			add   a, (iy)
+			out0  (DAR0L), a
+			xor   a
+			out0  (DAR0H), a
+			ld    a, 00000001b      ; set to TDRE of channel 0 or 1
+			add   a, (iy)
+			out0  (DAR0B), a
+			
+			ld    a, (iy+10)
+			rla
+			rla                     ; rotate bit 0 to bit 2
+			and   00000100b         ; mask for bit 2 only
+			or    00110000b         ; mask control 
+			out0  (DMODE), a        ; send out the counting mode
+			
+			in0   a, (DCNTL)        ; set DREQ0 for edge trigger
+			and   11111011b
+			or    00000100b
+			out0  (DCNTL), a
+
+			in0   a, (DSTAT)        ; 
+			and   10101000b
+			ld    b, a
+			
+			ld    a, (iy+8)
+			cp    1
+			jr    nz, no_intrpt
+
+intrpt:
+			ld    a, b
+			or    01100100b         ; enable with interrupt
+			out0  (DSTAT), a
+			jr    merge
+			
+no_intrpt:
+			ld    a, b
+			or    01100000b         ; enable without interrupt
+			out0  (DSTAT), a                 
+merge:
+			ld    b, 0x00
+			ld    a, TDR0
+			add   a, (iy)
+			ld    d, c
+			ld    c, a
+
+			out  (c), d
+			ld    hl, 1             ; return 1 for successful operation
+			
+			ret
+#endasm
+
+/* START FUNCTION DESCRIPTION ********************************************
+DMA0_MM             <dma.lib>
+
+SYNTAX: int DMA0_MM( unsigned long dest, unsigned long src, 
+							unsigned int count, int copymode, int intmode);
+
+KEYWORDS: DMA0, Memory to Memory transfer.
+
+DESCRIPTION: Set up DMA0 to copy "count" numbers of bytes from absolute 
+				memory location starting at "src" and up to absolute memory 
+				address starting at "dest" and up. For character arrays, convert 
+				the logical memory to physical memory with "phy_adr(array)". 
+				For xdata arrays, passed the array name directly. "Copymode" 
+				is 0 for steal mode copy or 1 for burst mode copy. If "intmode" 
+				is 1, the DMA will generate an interrupt at the end of the DMA 
+				operation. The caller has to provide the interrupt service 
+				routine. "Intmode" = 0 generates no interrupt.
+
+RETURN VALUE: 1 for successful setup; 0 if the dma0 is busy; 
+END DESCRIPTION **********************************************************/
+
+/*** BeginHeader DMA0_MM */
+int DMA0_MM(unsigned long dest, unsigned long src, unsigned int count, 
+				int copymode, int intmode);
+/*** EndHeader */
+
+#asm nodebug
+DMA0_MM::
+			ld    b, 0xff
+wait_dma:
+			in0   a, (DSTAT)
+			and   0x40
+			jr    z, dma0_free
+			djnz  wait_dma
+			ld    hl, 0x00
+			ret                  ; return 0 if dma channel is still busy
+
+dma0_free:
+
+			ld    iy, 2
+			add   iy, sp
+
+			ld    a, (iy)        ; load destination io 
+			out0  (DAR0L), a
+			ld    a, (iy+1)
+			out0  (DAR0H), a
+			ld    a, (iy+2)
+			out0  (DAR0B), a
+
+			ld    a, (iy+4)         ; load source address
+			out0  (SAR0L), a
+			ld    a, (iy+5)
+			out0  (SAR0H), a
+			ld    a, (iy+6)
+			out0  (SAR0B), a
+
+			
+			ld    a, (iy+8)         ; load bytes to move
+			out0  (BCR0L), a
+			ld    a, (iy+9)
+			out0  (BCR0H), a
+
+			ld    a, (iy+10)        ; copymode
+			rla                     ; rotate to mmod bit
+			and   00000010b         ; increment memory to increment memory
+			out0  (DMODE), a
+
+			in0   a, (DSTAT)        ; disable DMA0
+			and   10101000b
+			ld    b, a
+			
+			ld    a, (iy+12)
+			cp    1
+			jr    nz, no_intrpt
+
+intrpt:
+			ld    a, b
+			or    01100100b         ; enable with interrupt
+			jp    merge
+						
+no_intrpt:
+			ld    a, b
+			or    01100000b         ; enable without interrupt
+
+merge:
+			out0  (DSTAT), a                 
+			ld    hl, 1             ; return 1 for successful operation
+			ret
+#endasm
+
+/* START FUNCTION DESCRIPTION ********************************************
+DMA0_MIO             <dma.lib>
+
+SYNTAX: int DMA0_MIO(unsigned int ioaddress, unsigned long memaddress, 
+							unsigned int count, int intmode, int incmode);
+
+KEYWORDS: DMA0, Memory to IO transfer.
+
+DESCRIPTION: Set up DMA0 to write "count" numbers of bytes from absolute 
+				memory location starting at "memaddress" to io port 
+				designated by "ioaddress". An external device should control 
+				the generation of negative edge on \DREQ0 for each byte transfer. 
+				For character arrays, convert the logical memory to physical 
+				memory with "phy_adr(array)". For xdata arrays, passed the array 
+				name directly. If "intmode" is 1, the DMA will generate an 
+				interrupt at the end of the DMA operation. The caller has to 
+				provide the interrupt service routine. "Intmode" = 0 generates 
+				no interrupt. "Incmode" is 0 for increment memory address or 1 
+				for decrement memory address.
+				
+RETURN VALUE: 1 for successful setup; 0 if the dma0 is busy; 
+END DESCRIPTION **********************************************************/
+
+/*** BeginHeader DMA0_MIO */
+int DMA0_MIO(unsigned int ioaddress, unsigned long memaddress, unsigned
+				 int count, int intmode, int incmode);
+/*** EndHeader */
+
+#asm nodebug
+DMA0_MIO::
+			ld    b, 0xff
+wait_dma:
+			in0   a, (DSTAT)
+			and   0x40
+			jr    z, dma0_free
+			djnz  wait_dma
+			ld    hl, 0x00
+			ret                  ; return 0 if dma channel is still busy
+
+dma0_free:
+
+			ld    iy, 2
+			add   iy, sp
+
+			ld    a, (iy)        ; load destination io 
+			out0  (DAR0L), a
+			ld    a, (iy+1)
+			out0  (DAR0H), a
+			xor   a
+			out0  (DAR0B), a
+
+			ld    a, (iy+2)            ; load source address
+			out0  (SAR0L), a
+			ld    a, (iy+3)
+			out0  (SAR0H), a
+			ld    a, (iy+4)
+			out0  (SAR0B), a
+
+			ld    a, (iy+10)
+			rla
+			rla                        ; rotate bit 0 to bit 4
+			and   00000100b            ; mask bit 2 only
+			or    00110000b            ; mask control 
+			out0  (DMODE), a           ; out the increment mode
+			
+			ld    a, (iy+6)         ; load bytes to move
+			out0  (BCR0L), a
+			ld    a, (iy+7)
+			out0  (BCR0H), a
+
+			in0   a, (DCNTL)        ; set DREQ0 for edge trigger
+			and   11111011b
+			or    00000100b
+			out0  (DCNTL), a
+
+			in0   a, (DSTAT)        ; disable DMA0
+			and   10101000b
+			ld    b, a
+			
+			ld    a, (iy+8)
+			cp    1
+			jr    nz, no_intrpt
+
+intrpt:
+			ld    a, b
+			or    01100100b         ; enable with interrupt
+			jp    merge
+						
+no_intrpt:
+			ld    a, b
+			or    01100000b         ; enable without interrupt
+
+merge:
+			out0  (DSTAT), a                 
+			ld    hl, 1             ; return 1 for successful operation
+			ret
+#endasm
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+DMA0_IOM             <dma.lib>
+
+SYNTAX: int DMA0_IOM(unsigned long memaddress, unsigned int ioaddress
+							unsigned int count, int intmode);
+
+KEYWORDS: DMA0, IO to Memory transfer.
+
+DESCRIPTION: Set up DMA0 to read "count" numbers of bytes from the io port 
+				designated by "ioaddress" to absolute memory location starting 
+				at "memaddress". An external device should control the 
+				generation of negative edge on \DREQ0 for each byte transfer. 
+				For character arrays, convert the logical memory to physical 
+				memory with "phy_adr(array)". For xdata arrays, passed the array 
+				name directly. If "intmode" is 1, the DMA will generate an 
+				interrupt at the end of the DMA operation. The caller has to 
+				provide the interrupt service routine. "Intmode" = 0 generates 
+				no interrupt.  "Incmode" is 0 for increment memory address or
+				1 for decrement memory address.
+
+RETURN VALUE: 1 for successful setup; 0 if the dma0 is busy; 
+END DESCRIPTION **********************************************************/
+
+/*** BeginHeader DMA0_IOM */
+int DMA0_IOM(unsigned long memaddress, unsigned int ioaddress, unsigned
+				 int count, int intmode);
+/*** EndHeader */
+
+#asm nodebug
+DMA0_IOM::
+
+			ld    b, 0xff
+wait_dma:
+			in0   a, (DSTAT)
+			and   0x40
+			jr    z, dma0_free
+			djnz  wait_dma
+
+			ld    hl, 0x00
+			ret                  ; return 0 if dma channel is still busy
+
+dma0_free:
+			
+			ld    iy, 2
+			add   iy, sp
+
+			ld    a, (iy)           ; load destination address
+			out0  (DAR0L), a
+			ld    a, (iy+1)
+			out0  (DAR0H), a
+			ld    a, (iy+2)
+			out0  (DAR0B), a
+
+			ld    a, (iy+4)         ; load source io 
+			out0  (SAR0L), a
+			ld    a, (iy+5)
+			out0  (SAR0H), a
+			xor   a
+			out0  (SAR0B), a
+
+			ld    a, (iy+10)        ; get the increment mode
+			rla
+			rla
+			rla
+			rla                     ; rotate bit 0 to bit 4
+			and   00010000b         ; mask for bit4 only
+			or    00001100b         ; mask other control bit
+			out0  (DMODE), a
+			
+			ld    a, (iy+6)         ; load bytes to move
+			out0  (BCR0L), a
+			ld    a, (iy+7)
+			out0  (BCR0H), a
+
+			in0   a, (DCNTL)        ; set DREQ0 for edge trigger
+			or    00000100b
+			out0  (DCNTL), a
+
+			in0   a, (DSTAT)        ; disable DMA0
+			and   10101000b
+			ld    b, a
+			
+			ld    a, (iy+8)
+			cp    1
+			jr    nz, no_intrpt
+
+intrpt:
+			ld    a, b
+			or    01100100b         ; enable with interrupt
+			jp    merge
+			
+no_intrpt:
+			ld    a, b
+			or    01100000b         ; enable without interrupt
+
+merge:
+			out0  (DSTAT), a                 
+			ld    hl, 1             ; return 1 for successful operation
+						
+			ret
+#endasm
+
+// Start of functions for DMA1
+
+/* START FUNCTION DESCRIPTION ********************************************
+DMA1_Off             <dma.lib>
+
+SYNTAX: void DMA1_Off();
+
+KEYWORDS: DMA1 Off.
+
+DESCRIPTION: Reset the DMA channel 1 to off. 
+ 
+RETURN VALUE: not defined
+END DESCRIPTION **********************************************************/
+
+/*** BeginHeader DMA1_Off */
+void DMA1_Off();
+/*** EndHeader */
+void DMA1_Off()
+{
+	outport(DSTAT, '\B00010000' | (inport(DSTAT) & '\B01010100')); 
+}
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+DMA1_MIO             <dma.lib>
+
+SYNTAX: int DMA1_MIO(unsigned int ioaddress, unsigned long memaddress, 
+							unsigned int count, int intmode, int incmode);
+
+KEYWORDS: DMA1, Memory to IO transfer.
+
+DESCRIPTION: Set up DMA1 to write "count" numbers of bytes from absolute 
+				memory location starting at "memaddress" to io port 
+				designated by "ioaddress". An external device should control 
+				the generation of negative edge on \DREQ1 for each byte transfer. 
+				For character arrays, convert the logical memory to physical 
+				memory with "phy_adr(array)". For xdata arrays, passed the array 
+				name directly. If "intmode" is 1, the DMA will generate an 
+				interrupt at the end of the DMA operation. The caller has to 
+				provide the interrupt service routine. "Intmode" = 0 generates 
+				no interrupt. "Incmode" is 0 for increment memory address or 1  
+				for decrement memory address.
+
+RETURN VALUE: 1 for successful setup; 0 if the dma0 is busy; 
+END DESCRIPTION **********************************************************/
+
+/*** BeginHeader DMA1_MIO*/
+int DMA1_MIO(unsigned int ioaddress, unsigned long memaddress, unsigned
+				 int count, int intmode, int incmode);
+/*** EndHeader */
+
+#asm nodebug
+DMA1_MIO::
+			ld    b, 0xff
+wait_dma:
+			in0   a, (DSTAT)
+			and   0x80
+			jr    z, dma1_free
+			djnz  wait_dma
+
+			ld    hl, 0x00
+			ret                  ; return 0 if dma channel is still busy         
+
+dma1_free:
+		  
+			ld    iy, 2
+			add   iy, sp
+
+			ld    a, (iy)              ; load destination io 
+			out0  (IAR1L), a
+			ld    a, (iy+1)
+			out0  (IAR1H), a
+
+			ld    a, (iy+2)            ; load source address
+			out0  (MAR1L), a
+			ld    a, (iy+3)
+			out0  (MAR1H), a
+			ld    a, (iy+4)
+			out0  (MAR1B), a
+
+
+			in0   a, (DCNTL)
+			and   11111100b                        
+			or    00001000b
+			ld    b, a
+			ld    a, (iy+10)        ; get the increment mode
+			and   00000001b
+			or    b
+			out0  (DCNTL), a        ; set the increment mode
+											; DREQ1 is edge sensitive
+	
+			ld    a, (iy+6)         ; load bytes to move
+			out0  (BCR1L), a
+			ld    a, (iy+7)
+			out0  (BCR1H), a
+
+			in0   a, (DSTAT)        ; disable DMA0
+			and   01010100b
+			ld    b, a
+			
+			ld    a, (iy+8)
+			cp    1
+			jr    nz, no_intrpt
+
+intrpt:
+			ld    a, b
+			or    10011000b         ; enable with interrupt
+			jp    merge
+			ret      
+			
+no_intrpt:
+			ld    a, b
+			or    10010000b         ; enable without interrupt
+
+merge:
+			out0  (DSTAT), a                 
+			ld    hl, 1             ; return 1 for successful operation
+			ret
+#endasm
+
+/* START FUNCTION DESCRIPTION ********************************************
+DMA1_IOM             <dma.lib>
+
+SYNTAX: int DMA1_IOM(unsigned long memaddress, unsigned int ioaddress
+							unsigned int count, int intmode, int incmode);
+
+KEYWORDS: DMA1, IO to Memory transfer.
+
+DESCRIPTION: Set up DMA1 to read "count" numbers of bytes from io port 
+				designated by "ioaddress" to absolute memory location starting 
+				at "memaddress". An external device should control the 
+				generation of negative edge on \DREQ1 for each byte transfer. 
+				For character arrays, convert the logical memory to physical 
+				memory with "phy_adr(array)". For xdata arrays, passed the array 
+				name directly. If "intmode" is 1, the DMA will generate an 
+				interrupt at the end of the operation. The caller has to provide 
+				the interrupt service routine. "Intmode" = 0 generates no 
+				interrupt. "Incmode" is 0 for increment memory address or 1 
+				for decrement memory address.
+
+RETURN VALUE: 1 for successful setup; 0 if the dma0 is busy; 
+END DESCRIPTION **********************************************************/
+
+/*** BeginHeader DMA1_IOM*/
+int DMA1_IOM(unsigned long memaddress, unsigned int ioaddress, unsigned
+				 int count, int intmode, int incmode);
+/*** EndHeader */
+
+#asm nodebug
+DMA1_IOM::
+
+			ld    b, 0xff
+wait_dma:
+			in0   a, (DSTAT)
+			and   0x80
+			jr    z, dma1_free
+			djnz  wait_dma
+
+			ld    hl, 0x00
+			ret                  ; return 0 if dma channel is still busy
+
+dma1_free:
+		  
+			ld    iy, 2
+			add   iy, sp
+
+			ld    a, (iy)           ; load destination address
+			out0  (MAR1L), a
+			ld    a, (iy+1)
+			out0  (MAR1H), a
+			ld    a, (iy+2)
+			out0  (MAR1B), a
+
+			ld    a, (iy+4)         ; load source io 
+			out0  (IAR1L), a
+			ld    a, (iy+5)
+			out0  (IAR1H), a
+
+			in0   a, (DCNTL)
+			and   11111100b
+			or    00001010b
+			ld    b, a
+			ld    a, (iy+10)        ; get the increment mode
+			and   00000001b
+			or    b
+			out0  (DCNTL), a        ; out the increment mode
+											; DREQ1 is edge sensitive
+	
+			ld    a, (iy+6)         ; load bytes to move
+			out0  (BCR1L), a
+			ld    a, (iy+7)
+			out0  (BCR1H), a
+
+			in0   a, (DSTAT)        ; disable DMA0
+			and   01010100b
+			ld    b, a
+			
+			ld    a, (iy+8)
+			cp    1
+			jr    nz, no_intrpt
+
+intrpt:
+			ld    a, b
+			or    10011000b         ; enable with interrupt
+			jp    merge
+						
+no_intrpt:
+			ld    a, b
+			or    10010000b         ; enable without interrupt
+
+merge:
+			out0  (DSTAT), a                 
+			ld    hl, 1             ; return 1 for successful load
+						
+			ret
+#endasm
+
+
+
+

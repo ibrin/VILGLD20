@@ -1,0 +1,1193 @@
+// 1-26-96, Allow transmitter to overflow receiver beyond CTS not ready.
+// 11-13-95, add mask for receive data; 0x7f for 7 bits, 0xff for 8 bits. 
+// 7-13-95, compute 80% and 20% of buffer with float multiply.
+/* START LIBRARY DESCRIPTION *********************************************
+S1232.LIB
+    Copyright (c) 1994, Z-World.
+
+DESCRIPTION: RS232 driver for KIO serial port #A (first port on KIO).
+This is a "Little Giant only" library.
+
+SUPPORT LIB'S: modem232.lib, rtk.lib
+END DESCRIPTION **********************************************************/
+
+/*** BeginHeader */
+#if BOARD_TYPE!=LITTLE_GIANT
+#error "Little Giant only."
+#endif
+/*** EndHeader */
+
+/*** Beginheader Dinit_s1, Dwrite_s1, Dread_s1, Dkill_s1, Dwrite_s11ch,
+                 Dread_s11ch,Dreset_s1tbuf, Dreset_s1rbuf, s1modemstat,
+                 s1modemset, s1binaryset, s1binaryreset, Drestart_s1modem */
+
+int  Dinit_s1(char *rbuf, char *tbuf, int rsize, int tsize,
+         char mode, char baud, char ismodem, char isecho);
+                                     // Initialize
+int  Dwrite_s1(char *buf, int count);// Initiate send
+int  Dread_s1(char *buf, char terminate); // Initiate receive
+void Dkill_s1(void);                 // abort all
+int  Dwrite_s11ch(char data);
+int  Dread_s11ch(char *data);
+void Dreset_s1tbuf(void);
+void Dreset_s1rbuf(void);
+void Ds1send_prompt(void);
+void Drestart_s1modem(void);
+int  Ds1modem_chk(char *buf);
+int  s1modemstat(void);
+int  s1modemset(void);
+void s1binaryset(void);
+void s1binaryreset(void);
+
+/*** Endheader */
+
+char *s1_write_buf;          // Static pointer to the transmit buffer
+char *s1_read_buf;           // Static pointer to the receive buffer
+shared int s1_rx_head;       // Head pointer for the receive buffer
+shared int s1_rx_tail;       // Tail pointer for the receive buffer
+shared int s1_tx_head;       // Head pointer for the transmit buffer
+shared int s1_tx_tail;       // Tail pointer for the transmit buffer
+int s1_rx_size;              // Static storage of receive buffer size
+int s1_tx_size;              // Static storage of transmit buffer size
+
+shared int s1_80rbuf;
+shared int s1_20rbuf;
+shared int s1_rbufcnt;
+shared int s1_tbufcnt;
+char s1_CRTS_ENB;
+char s1_CTS_ON;
+char s1_echo;
+char s1Binary;               // = 1, serial receive is in binary mode
+                             // = 0, serial receive is in text mode
+char s1CmdOrData;            // 1 if modem is in command mode
+char s1UseModem;             // 1 if using modem
+
+extern char sioreg5;
+char s1_wreg5;               // keep state of SIO registers
+char s1_wreg1;
+char s1_wreg3;
+char s1_wreg4;
+
+char s1_data_mask;            // 11-13-95, data mask
+                              // 11-13-95, 0x7f for 7 bits, 0xff for 8 bits
+/* START FUNCTION DESCRIPTION ********************************************
+s1binaryset                  <S1232.LIB>
+
+SYNTAX: void s1binaryset(void);
+
+DESCRIPTION: Sets serial communication mode to binary.  All receive
+data are stuffed directly into the receive buffer.  Use for binary mode
+data transfer.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void s1binaryset(void)
+{
+    s1Binary = 1;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+s1binaryreset                <S1232.LIB>
+
+SYNTAX: void s1binaryreset(void);
+
+DESCRIPTION: Resets serial communication to ASCII mode.  Backspace char
+is tracked to adjust the receive buffer head index.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void s1binaryreset(void)
+{
+    s1Binary = 0;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+s1modemstat                  <S1232.LIB>
+
+SYNTAX: int s1modemstat(void);
+
+DESCRIPTION: Returns modem status.
+
+RETURN VALUE: 1, if modem is in command mode; else 0, if modem in data 
+mode (i.e. open to communication).
+END DESCRIPTION **********************************************************/
+nodebug int s1modemstat(void)
+{
+    return (s1CmdOrData);
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+s1modemset                   <S1232.LIB>
+
+SYNTAX: int s1modemset(void);
+
+DESCRIPTION: Returns information about modem selection.
+
+RETURN VALUE: 1, if modem option is selected; else 0.
+END DESCRIPTION **********************************************************/
+nodebug int s1modemset(void)
+{
+    return (s1UseModem);
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+Ds1send_prompt               <S1232.LIB>
+
+SYNTAX: void Ds1send_prompt(void);
+
+DESCRIPTION: Sends  'CR','LINEFEED' and '>' to the SIO channel 1.  Does 
+not check for available space in the transmit buffer.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void Ds1send_prompt(void)
+{
+    static char prompt[4] =
+            {
+                ENTER, LINEFEED, '>', '\0'
+            };
+    
+    Dwrite_s1(prompt, 3);
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+Dinit_s1                     <S1232.LIB>
+
+SYNTAX: int Dinit_s1(char *rbuf, char *tbuf, int rsize, int tsize, 
+        char mode, char baud, char ismodem, char isecho);
+
+DESCRIPTION: Initializes SIO port 1 for serial communication.  "rbuf" and
+"tbuf" point to user defined receive and transmit character arrays, whose
+respective sizes are "rsize" and "tsize."  "mode" is defined as follows: 
+bit0 = 0/1 for 1/2 stop bit(s);  bit1 = 1/0 for parity/no parity; bit2 =
+0/1 for 7/8 data bits; bit3 = 0/1 for even/odd parity; bit4 = 0/1 for CTS, 
+RTS control disabled/enabled; "baud" is the baud rate in multiples of 1200 
+(e.g. 8 for 9600 baud).  "ismodem" is 1/0, if modem is/is not used. "isecho" 
+is 1/0, if char's are/are not echoed.
+
+RETURN VALUE: 1.
+END DESCRIPTION **********************************************************/
+nodebug int Dinit_s1(char *rbuf, char *tbuf, int rsize, int tsize,
+    char mode, char baud, char ismodem, char isecho)
+{
+    static char var;
+
+    s1Binary   = 0;
+    s1UseModem = ismodem;
+    s1_echo    = isecho;
+    s1_read_buf  = rbuf;
+    s1_write_buf = tbuf;
+    Dreset_s1tbuf();
+    Dreset_s1rbuf();
+    s1_rx_size = rsize;
+    s1_tx_size = tsize;
+    outport(SIOCB, 0x18);    // reset port A
+    setctc(0, 2, siobaud(sysclock(), baud), 0); // Init CTC for baud rate
+
+    s1_wreg1 = 0x44;
+    outport(SIOCB, 0x11);    // wr reg 1
+    outport(SIOCB, 0x44);    // int all rec char's, parity error special
+
+    s1_wreg3 = 0x40;         // 7 data bits
+    s1_data_mask = 0x7f;      // 11-13-95, data mask for 7 bits
+    if (BIT(&mode, 2)) 
+    {    
+      SET(&s1_wreg3, 7);   // data bits receive
+      s1_data_mask = 0xff;    // 11-13-95, data mask for 8 bits
+    }
+
+    sioreg5 = (sioreg5 & 0x80) | 2;
+    sioreg5 = sioreg5 | (s1_wreg3 >> 1);
+
+    s1_wreg4 = 0x44;         // one stop bit, clock X 16, no parity
+    if (BIT(&mode, 0)) 
+        SET(&s1_wreg4, 3);   // stop bits
+
+    if (BIT(&mode, 1))       // parity selected
+        SET(&s1_wreg4, 0);   // enable parity
+
+        /* NOTE: parity bit is not stripped from characters, user code must
+           mask off the eighth bit                                       */
+
+    if (!(BIT(&mode, 3)) )   // bit 3, 0 even, 1 odd parity
+        SET(&s1_wreg4, 1);
+
+    if (mode & '\B00010000') // CTS  and RTS ON
+    {
+        s1_CRTS_ENB = 1;
+        s1_80rbuf = rsize * 0.80;   // 7-13-95 (rsize * 80) / 100;
+        s1_20rbuf = rsize * 0.20;   // 7-13-95 (rsize * 20) / 100;
+    }
+    else 
+        s1_CRTS_ENB = 0;
+
+    s1_CTS_ON = 1;
+
+
+    outport(SIOCB, 0x13);
+    outport(SIOCB, s1_wreg3); // set the registers
+    outport(SIOCB, 0x14);
+    outport(SIOCB, s1_wreg4);
+    outport(SIOCB, 0x15);
+    outport(SIOCB, sioreg5); 
+    intoff(&var);            // Disable interrupts if on
+    outport(SIOCB, 0x5);     // Enable transmitter
+                             // Outport(SIOCB,s1_wreg5=s1_wreg5 | 8);
+    outport(SIOCB, sioreg5 = sioreg5 | 8);
+    doint();                 // Give interrupts a chance
+                             // Enable transmitter interrupts
+    outport(SIOCB, 0x33);    // Reset error, register 3
+    outport(SIOCB, s1_wreg3 = s1_wreg3 | 1); // Enable receiver
+    doint();
+    outport(SIOCB, 0x11);
+    outport(SIOCB, s1_wreg1 = s1_wreg1 | 0x18); // Enable receiver ints
+    inton(&var);
+
+    if (s1UseModem)
+        Drestart_s1modem();
+    else 
+        s1CmdOrData = 0;     // Serial port is just in data mode
+    return 1;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+Dreset_s1rbuf                <S1232.LIB>
+
+Reset the receive buffer for the SIO channel 1.
+
+SYNTAX: void Dreset_s1rbuf(void);
+
+DESCRIPTION: Sets head and tail indexes to zero.  Sets s1_rbufcnt 
+to zero.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void Dreset_s1rbuf(void)
+{
+    s1_rbufcnt = s1_rx_head = s1_rx_tail = 0;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+Dreset_s1tbuf                <S1232.LIB>
+
+SYNTAX: void Dreset_s1tbuf(void);
+
+DESCRIPTION: Resets SI0 channel 1 transmit buffer.  Sets head and tail 
+indexes to zero.  Sets s1_tbufcnt to zero.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void Dreset_s1tbuf(void)
+{
+    s1_tbufcnt = s1_tx_head = s1_tx_tail = 0;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+Dwrite_s1                    <S1232.LIB>
+
+SYNTAX: int Dwrite_s1(char *buf, int count);
+
+DESCRIPTION: Writes a block of characters, pointed to by "buf", of length
+"count," to the transmit buffer.  Transmit interrupt is automatically 
+turned on, if off.
+
+RETURN VALUE: 1, if array is succesfully copied; else 0, if there's no
+space in the transmit buffer for count number of characters.
+END DESCRIPTION **********************************************************/
+nodebug int Dwrite_s1(char *buf, int count)
+{
+    static char var;
+    char mycheck;
+    int  dum_tail, dum_head;
+    int  i;
+
+    if (!count) 
+        return 1;            // No need to write anything
+    if ((s1_tbufcnt + count) >= s1_tx_size) 
+        return 0;
+        
+    dum_head = s1_tx_head;
+    i = 0;
+    do
+    {
+        *(s1_write_buf + dum_head++) = *(buf + i++);
+        if (dum_head == s1_tx_size) 
+            dum_head = 0;
+    } while (i < count);
+    DI();           // disable interrupt, 5-3-94
+    if (s1_tx_tail == s1_tx_head)
+    {
+        // 5-3-94 intoff(&var);
+        s1_tx_head = dum_head;
+        outport(SIOCB, 0x1); // enable transmitter interrupts
+        outport(SIOCB, s1_wreg1 = s1_wreg1 | 2);
+        // 5-3-94 doint();
+        // Have to check the transmit buffer, since device is not
+        // double buffered.
+        outport(SIOCB, 0x00);
+        if (inport(SIOCB) & '\B00000100')
+        {
+            s1_tbufcnt = count - 1;
+            dum_tail = s1_tx_tail++; 
+            if (s1_tx_tail == s1_tx_size) 
+                s1_tx_tail = 0;
+            EI();    
+            outport(SIODB, *(s1_write_buf + dum_tail) );
+                             // send first character
+        }
+        else
+        {
+            s1_tbufcnt = count;
+            EI();           // enable interrupt, 5-3-94 inton(&var);
+        }
+    }
+    else
+    {
+        // 5-3-94 intoff(&var);
+        s1_tx_head = dum_head;
+        s1_tbufcnt = s1_tbufcnt + count;
+        EI();               // enable interrupt, 5-3-94 inton(&var);
+    }
+    return 1;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+Dread_s1                     <S1232.LIB>
+
+SYNTAX: int Dread_s1(char *buf, char terminate);
+
+DESCRIPTION: Reads serial receive buffer, pointed to by "buf," for stream 
+with specified terminated character, "terminate."  "terminate" is replaced 
+by '\0'.  If modem option is selected with Dinit_s1(...), receive 
+stream is automatically parsed for modem messages.  Modem messages are 
+automatically processed and serial service routines are called.  Note 
+that modem messages are terminated with 'CR'.
+
+RETURN VALUE: 1, if stream is found and copied to buf; else 0, if no 
+stream was found or if modem option is selected and stream matched a 
+modem message.
+END DESCRIPTION **********************************************************/
+nodebug int Dread_s1(char *buf, char terminate)
+{
+    int i;
+    int dum_head, dum_tail;
+
+    dum_head = s1_rx_head;
+    dum_tail = s1_rx_tail;
+    i = 0;
+
+    if (dum_head == dum_tail) 
+        return 0;
+    else
+    {
+        do
+        {
+            *(buf + i) = *(s1_read_buf + dum_tail++);
+            if (dum_tail == s1_rx_size) 
+                dum_tail = 0;
+            if (*(buf + i++) == terminate)
+            {
+                *(buf + i - 1) = '\0';
+                s1_rx_tail = dum_tail;
+                if (s1_CRTS_ENB)
+                {
+                    s1_rbufcnt = s1_rbufcnt - i;
+                    if (!s1_CTS_ON)
+                    {
+                        if (s1_rbufcnt <= s1_20rbuf)
+                        {
+                            sioreg5 = sioreg5 | 2;
+                            outport(SIOCB, 0x05);
+                            outport(SIOCB, sioreg5);
+                            s1_CTS_ON = 1;
+                        }
+                    }
+                }
+
+                if (s1UseModem)
+                {
+                    if (Ds1modem_chk(buf) == -1) 
+                        return 1;       // Not a modem msg
+                    else 
+                        return 0;       // A modem msg
+                }
+                return 1;
+            }
+        } while (dum_tail != dum_head); // 'til inbuf is empty
+        return 0;
+    }
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+Dwrite_s11ch                 <S1232.LIB>
+
+SYNTAX: Dwrite_s11ch(char data);
+
+DESCRIPTION: Writes a character to the transmit buffer.  Transmit 
+interrupt is turned on, if off.
+
+RETURN VALUE: 1, if "data" is succesfully written to the transmit buffer;
+else 0, if there's no space in the transmit buffer.
+END DESCRIPTION **********************************************************/
+nodebug int Dwrite_s11ch(char data)
+{
+    static char var;
+    int dum_tail, dum_head;
+
+    if ((s1_tbufcnt + 1) >= s1_tx_size) 
+        return 0;
+    dum_head = s1_tx_head;
+    *(s1_write_buf + dum_head++) = data;
+    if (dum_head == s1_tx_size) 
+        dum_head = 0; 
+    DI();                   // disable interrupt, 5-3-94
+    if (s1_tx_tail == s1_tx_head)
+    {
+        // 5-3-94 intoff(&var);        // disable interrupts if on
+        s1_tx_head = dum_head;
+        outport(SIOCB, 0x1); // enable transmitter interrupts
+        outport(SIOCB, s1_wreg1 = s1_wreg1 | 2);
+        //5-3-94 doint();
+        // Have to check transmit buffer, since the device is not
+        // double buffered.
+        if (inport(SIOCB) & '\B00000100')
+        {
+            s1_tbufcnt = 0;  // 7-27-93
+            dum_tail = s1_tx_tail++; 
+            if (s1_tx_tail == s1_tx_size) 
+                s1_tx_tail = 0;
+            EI();    
+            outport(SIODB, *(s1_write_buf + dum_tail) ); // Send 1st char
+        }
+        else
+        {
+            s1_tbufcnt = 1;
+            EI();           // enable interrupt, 5-3-94 inton(&var);
+        }
+    }
+    else
+    {
+        // 5-3-94 intoff(&var);
+        s1_tx_head = dum_head;
+        s1_tbufcnt++;
+        EI();               // enable interrupt, 5-3-94 inton(&var);
+    }
+    return 1;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+Dread_s11ch                  <S1232.LIB>
+
+SYNTAX: int Dread_s11ch(char *data);
+
+DESCRIPTION: Fetches next character in serial receive buffer and stores
+it in location pointed to by "data."
+
+RETURN VALUE: 1, if a byte is copied to *data; else 0, if receive buffer 
+is empty.
+END DESCRIPTION **********************************************************/
+nodebug int Dread_s11ch(char *data)
+{
+    int dum_head, dum_tail;
+
+    dum_head = s1_rx_head;
+    dum_tail = s1_rx_tail;
+
+    if (dum_head == dum_tail) 
+        return 0;            // Buffer is empty.
+    else
+    {
+        *data = *(s1_read_buf + s1_rx_tail++);
+        if (s1_rx_tail == s1_rx_size) 
+            s1_rx_tail = 0; 
+        if (s1_CRTS_ENB)
+        {
+            s1_rbufcnt--;
+            if (!s1_CTS_ON)
+            {
+                if (s1_rbufcnt <= s1_20rbuf)
+                {
+                    sioreg5 = sioreg5 | 2;
+                    outport(SIOCB, 0x05);
+                    outport(SIOCB, sioreg5);
+                    s1_CTS_ON = 1;
+                }
+            }
+        }
+        return 1;
+    }
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+Dkill_s1                     <S1232.LIB>
+
+SYNTAX: void Dkill_s1(void);
+
+DESCRIPTION: Resets SIO channel 1.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void Dkill_s1(void)
+{
+    static char var;
+
+    intoff(&var);
+    outport(SIOCB, 0x18);    // reset the channel
+    outport(SIOCB, 0x18);
+    inton(&var);
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+Ds1_rser_int                 <S1232.LIB>
+
+SYNTAX: Ds1_rser_int(void);
+
+DESCRIPTION: Interrupt service routine for the SIO chan 0 receive.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+#INT_VEC SIOBR_VEC Ds1_rser_int   // set interrupt vector
+#INT_VEC SIOBER_VEC Ds1_rser_int  // special receive condition
+#asm root nodebug 
+Ds1_rser_int::
+        push af
+        push hl
+        push bc
+        push de
+
+        ld a,0x30           ; reset error
+        out0 (SIOCB),a
+        in0 c,(SIODB)       ; get in character
+        ld     a, (s1_data_mask)       ; 11-13-95, get data mask
+        and    c                       ; 11-13-95, mask the data
+        ld     c, a                    ; 11-13-95, copy masked data to c
+
+        ld a,(s1Binary)     ; binary mode ?
+        cp 1
+        jr z, _s1StuffData  ; just stuff in data, if binary mode.
+                       ; if text mode, process for BACKSPACE and echoing.
+        ld a,c
+        cp BACKSPACE   ; is character a backspace?
+        jr nz, _s1notBackSpace
+        ld a,(s1CmdOrData)
+        cp 1
+        jr z, _s1noEcho
+        ld a,(s1_echo)
+        cp 1
+        jr nz,_s1noEcho
+        out0 (SIODB),c     ; echo back the character
+
+_s1noEcho:
+        ld de,(s1_rx_tail) ; see if (rx_head) == (rx_tail)
+        ld hl,(s1_rx_head)
+        ld a,d
+        cp h               ;  if(rx_head)==(rx_tail) send a prompt '>'
+        jr nz, _s1notHTR   ;
+        ld a,e
+        cp l
+        jr nz, _s1notHTR
+        jp _s1RcvTheEnd
+_s1notHTR:
+        ld a,h             ; if (rx_head)==0, (rx_head)=(rx_size) - 1;
+        or l
+        jr nz,_s1HeadnotZero
+        ld hl,(s1_rx_size)
+        dec hl
+        ld (s1_rx_head),hl
+        jp _decRbufcount
+
+_s1HeadnotZero:
+        ld hl,(s1_rx_head) ; else (rx_head) = (rx_head) -1
+        dec hl
+        ld (s1_rx_head),hl
+_decRbufcount:
+        ld a,(s1_CRTS_ENB)
+        cp 1
+        jp nz,_s1RcvTheEnd
+        ld hl, (s1_rbufcnt)
+        dec hl
+        ld (s1_rbufcnt),hl
+        jp _s1RcvTheEnd
+
+_s1notBackSpace:           ; not BACKSPACE, so push data into receive queue
+        ld a,(s1CmdOrData)
+        cp 1
+        jr z, _s1StuffData
+        ld a,(s1_echo)
+        cp 1
+        jr nz,_s1StuffData
+        out0 (SIODB),c     ; echo character back
+_s1StuffData:
+; 1-26-96	Allow transmitter to overflow receiver beyond CTS not ready.
+; 1-26-96        ld a,(s1_CTS_ON)
+; 1-26-96        cp 1
+; 1-26-96        jp nz, _s1RcvTheEnd
+        ld de,(s1_read_buf)
+        ld hl,(s1_rx_head)
+        add hl,de
+        ld (hl),c          ; store data
+        ld de,(s1_rx_size) ; do the modulo test
+        ld hl,(s1_rx_head)
+        inc hl
+        ld a,d
+        cp h               ; compare high byte
+        jp nz,_s1notRollOver
+        ld a,e
+        cp l               ; compare low byte
+        jp nz,_s1notRollOver
+        ld hl,00
+        ld (s1_rx_head),hl
+        jp checkforCTS
+ _s1notRollOver:
+        ld (s1_rx_head),hl
+ checkforCTS:
+        ld a,(s1_CRTS_ENB)
+        cp 1
+        jp nz,_s1RcvTheEnd
+        ld hl, (s1_rbufcnt)
+        inc hl
+        ld (s1_rbufcnt),hl
+        ld de, (s1_80rbuf)
+        ld a,e
+        cp l
+        jp nz, _s1RcvTheEnd
+        ld a,d
+        cp h
+        jp nz, _s1RcvTheEnd
+        ld a,0x05
+        out0 (SIOCB),a
+        ld a,(sioreg5)  ;ld a,(s1_wreg5)
+        and 11111101b   ; turn off rts bit
+        ld (sioreg5),a  ;ld (s1_wreg5),a
+        out0 (SIOCB),a
+        ld a,0
+        ld (s1_CTS_ON),a
+ _s1RcvTheEnd:
+        pop de
+        pop bc
+        pop hl
+        pop af
+        ei
+        reti
+#endasm
+
+/* START FUNCTION DESCRIPTION ********************************************
+Ds1_tser_int                 <S1232.LIB>
+
+SYNTAX: Ds1_tser_int(void);
+
+DESCRIPTION: Interrupt service routine for SIO chan 0 transmit.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+#INT_VEC SIOBT_VEC Ds1_tser_int// set transmit interrupt vector
+
+#asm root nodebug
+Ds1_tser_int::
+        push af
+        push hl
+        push bc
+        push de
+
+        ld de,(s1_tx_head)   ; see if (tx_head) == (tx_tail)
+        ld hl,(s1_tx_tail)
+        ld a,d
+        cp h        ; compare d to h
+        jr nz, _nots1TxEnd
+        ld a,e
+        cp l
+        jr nz, _nots1TxEnd
+        ld a,0x11
+        out0 (SIOCB),a
+        ld a,(s1_wreg1)
+        and 0xfd
+        ld (s1_wreg1),a
+        out0 (SIOCB),a
+                    ; turn off interrupt when no more char's to send
+        jp _s1TxTheEnd
+ _nots1TxEnd:
+        ld hl, (s1_tbufcnt)
+        dec hl
+        ld (s1_tbufcnt),hl
+        ld de, (s1_write_buf)   ; send next character out
+        ld hl, (s1_tx_tail)
+        add hl,de
+        ld c,(hl)
+        out0 (SIODB),c
+        ld de,(s1_tx_size)
+        ld hl,(s1_tx_tail) ; do the modulo test
+        inc hl
+        ld a,d
+        cp h               ; compare high byte
+        jp nz,_nots1TRollOver
+        ld a,e
+        cp l
+        jp nz,_nots1TRollOver
+        ld hl,00
+        ld (s1_tx_tail),hl
+        jp _s1TxTheEnd
+ _nots1TRollOver:
+        ld (s1_tx_tail),hl
+_s1TxTheEnd:
+        pop de
+        pop bc
+        pop hl
+        pop af
+        ei
+        reti
+#endasm
+
+#INT_VEC SIOBEX_VEC Ds1_stat_int // Status change, never happens
+
+nodebug interrupt reti int Ds1_stat_int(void)
+{
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+Drestart_s1modem             <S1232.LIB>
+
+SYNTAX: void Drestart_s1modem(void);
+
+DESCRIPTION: Sends command to set/reset the modem connected to SI0, 
+channel 1. Hayes smart modem is desirable. Required hardware connections:
+
+                       MODEM               SIO CHAN 1
+                        RX  ----------------- TX
+                        TX  ----------------- RX
+                        GND ----------------- GND
+                        RTS --+           +-- RTS
+                        CTS --|           +-- CTS
+                        DTR --+
+
+i.e. On modem side, RTS,CTS and DTR are tied together. On SCC side, 
+RTS is connected to CTS.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void Drestart_s1modem(void)
+{
+    int  ercode;
+    int  ok_count;
+    char buf[20];
+
+    /* If modem is available, master should insure that modem
+       is in command mode on power up.                        */
+
+    s1CmdOrData = 1;         // modem in command mode
+    ok_count = 0;
+    Dwrite_s1("+++", 3);
+    Ddelay_1sec();
+    while ((++ok_count < 4) && ((ercode = Dread_s1(buf, ENTER)) == 0 ||
+           (Dget_modem_command(buf) != 0))) 
+        Ddelay_1sec();
+
+    Dwrite_s1("AT H0", 5);   // or time out
+    Dwrite_s11ch(ENTER);
+    ok_count = 0;
+    while ((++ok_count < 4) && ((ercode = Dread_s1(buf, ENTER)) == 0 ||
+           (Dget_modem_command(buf) != 0))) 
+        Ddelay_1sec();       // Wait for OK
+
+    Dwrite_s1("AT E0 V1 M0 s1=2", 16);// or time out
+    /*****************************
+     E0 for commands not echoed
+     V1 for word responses
+     M0 for internal speaker off
+     s1=2 for automatic answering
+     ******************************/
+    Dwrite_s11ch(ENTER);
+    ok_count = 0;
+    while ((++ok_count < 4) && ((ercode = Dread_s1(buf, ENTER)) == 0 ||
+           (Dget_modem_command(buf) != 0))) 
+        Ddelay_1sec();       // Wait for OK
+    Dwrite_s1("AT &D0 &R1", 10);// or time out
+    /*********************************************
+     &D0 for ignore the Data Terminal Ready (DTR)
+     &R1 for ignore the Ready To Send (RTS)
+     *********************************************/
+    Dwrite_s11ch(ENTER);
+    ok_count = 0;
+    while ((++ok_count < 4) && ((ercode = Dread_s1(buf, ENTER)) == 0 ||
+           (Dget_modem_command(buf) != 0))) 
+        Ddelay_1sec();       // Wait for OK
+    Ddelay_1sec();
+    Dreset_s1rbuf();
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+Ds1modem_chk                 <S1232.LIB>
+
+SYNTAX: int Ds1modem_chk(char *buf);
+
+DESCRIPTION: Checks 'CR' terminated stream, pointed to by "buf," for modem
+messages.  Serial service routines are called as function of the modem 
+condition (if selected).
+
+RETURN VALUE: -1, if no match to any modem messages; else 0, if stream was 
+processed as a modem message.
+END DESCRIPTION **********************************************************/
+nodebug int Ds1modem_chk(char *buf)
+{
+    int which_one;
+    int i;
+
+    which_one = Dget_modem_command(buf);
+    switch (which_one)
+    {
+        case - 1: 
+            if (!s1CmdOrData) 
+                return - 1;
+            break;
+        case 2:             // set for auto answer
+                             // Dwrite_s1("ATA",3);
+                             // Dwrite_s11ch(ENTER);
+            break;           // manually receive call if ring is detected
+        case 9:
+            Ddelay_5sec();
+            Ddelay_5sec();
+            Dreset_s1tbuf();
+            Dreset_s1rbuf();
+            s1CmdOrData = 0;
+            Ds1send_prompt();
+            Dwrite_s1("Welcome to the Remote System", 28);
+            Ds1send_prompt();
+            break;
+                             // connect at 2400 bps
+                             // switch to data mode
+
+        case 0:
+            break;      // ok from command to modem
+        case 3:
+            s1CmdOrData = 1; // no carrier detect
+            Ddelay_5sec();   // Wait and reset buffers
+            Dreset_s1tbuf();
+            Dreset_s1rbuf();
+            break;
+        case 4:
+            break;      // command error
+        case 5:
+            Ddelay_5sec();
+            Ddelay_5sec();
+            Dreset_s1tbuf();
+            Dreset_s1rbuf();
+            s1CmdOrData = 0;
+            Ds1send_prompt();
+            Dwrite_s1("Welcome to the Remote System", 28);
+            Ds1send_prompt();
+            break;           // switch to data mode
+
+        case 6:             // no dial tone
+        case 7:             // busy
+        case 8:             // no answer
+        case 10:            // just line feed
+        default:
+            break;
+    }
+    return 0;
+}
+
+/*** BeginHeader Dxmodem_s1down, Dxmodem_s1up */
+
+int Dxmodem_s1down(char *mydata, int n_blocks);
+int Dxmodem_s1up(unsigned long baseAddress, int *no_of_pages, int dest,
+    int (*data_parsing) ());
+
+/*** EndHeader */
+extern char s1Binary;               // 12-15-94
+
+/* START FUNCTION DESCRIPTION ********************************************
+Dxmodem_s1down               <S1232.LIB>
+
+SYNTAX: int Dxmodem_s1down(char *mydata, int n_blocks)
+
+DESCRIPTION: Sends blocks of data to PC or dumb terminal with xmodem 
+file transfer protocol.  "mydata" points to a character array.  "n_blocks"
+is the number of 128 byte blocks to be sent.
+
+RETURN VALUE: 0, if there's a timeout during transfer; 1, if xfer was
+successful; 2, if xfer was cancelled.
+END DESCRIPTION **********************************************************/
+nodebug int Dxmodem_s1down(char *mydata, int n_blocks)
+{
+    int  i;
+    int  timeout;
+    unsigned char nth_block, not_nth;
+    unsigned int testcrc;
+    int  checksum;
+    int  ercode;
+    char cdata;
+    int  iblock;
+
+    nth_block = 1;
+    not_nth = ~nth_block;
+
+    s1Binary = 1;
+    timeout = 0;
+    Dwrite_s1("Ready to Download File", 22);
+    Ds1send_prompt();
+    Dwrite_s1("Do an xmodem receive", 20);
+    Ds1send_prompt();
+    while (((ercode = Dread_s11ch(&cdata)) == 0) || ((cdata != XCRC) 
+    && (cdata != ESC) && (cdata != CAN)))
+    {
+        Ddelay_1sec();
+        if (++timeout >= 30)
+        {
+                             // Dwrite_s1("Timeout!!!",10);
+                             // Ds1send_prompt();
+            s1Binary = 0;
+            Ddelay_5sec();
+            return 0;
+        }
+    }
+    if (cdata == CAN || cdata == ESC) // Monitor for a quick ABORT
+    {
+        s1Binary = 0;
+        Ddelay_5sec();
+        return 2;
+    }
+    else 
+        timeout = 0;
+
+    do
+    {
+        iblock = (nth_block - 1) * 128;
+        Dwrite_s11ch(SOH);
+        Dwrite_s11ch(nth_block);
+        Dwrite_s11ch(not_nth);
+        Dwrite_s1(mydata + iblock, 128);
+        testcrc = getcrc(mydata + iblock, 128, 0);
+        cdata = (testcrc >> 8) & 0xff;
+        Dwrite_s11ch(cdata);
+        cdata = testcrc & 0xff;
+        Dwrite_s11ch(cdata);
+        timeout = 0;
+        while (((ercode = Dread_s11ch(&cdata)) == 0) ||
+        ((cdata != XCRC) && (cdata != NAK) && (cdata != ACK) && 
+        (cdata != CAN)))
+        {
+            Ddelay_1tick();
+            if (++timeout > 200)
+            {
+                s1Binary = 0;
+                Ddelay_5sec();
+                return 0;
+            }
+        }
+        if (cdata == CAN)
+        {
+            s1Binary = 0;
+            Ddelay_5sec();
+            return 2;
+        }
+        else if (cdata == ACK)
+        {
+            if (++nth_block <= n_blocks) 
+                not_nth = ~nth_block;
+            else
+            {
+                Dwrite_s11ch(EOT);
+                timeout = 0;
+                while (((ercode = Dread_s11ch(&cdata)) == 0) || 
+                cdata != ACK)
+                {
+                    Ddelay_1tick();
+                    if (++timeout > 200)
+                    {
+                        s1Binary = 0;
+                        Ddelay_5sec();
+                        return 0;
+                    }
+                };
+                // Wait for final acknowledge for end of transfer
+                // time out, if necessary.
+                s1Binary = 0;
+                Ddelay_5sec();
+                return 1;    // 1 for succesful transfer
+            }
+        }
+    } while (1);
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+Dxmodem_s1up                 <S1232.LIB>
+
+SYNTAX: int Dxmodem_s1up(unsigned long baseAddress, int *no_of_pages, 
+            int dest, int (*data_parsing)() );
+
+DESCRIPTION: Uploads data from PC using the xmodem file transfer protocol.
+"baseAddress" is the destination's physical ram address.  "*no_of_pages" is 
+the size of the uploaded file in number of pages.  "dest" is an additional 
+parameter to locate the uploaded file.  "*data_parsing" is the address of 
+the function to parse the uploaded file into memory.  The required parsing 
+function prototype is:
+
+int parse_function(char *mydata, int blockcount, 
+    unsigned long baseAddress, int dest);
+
+where "mydata" is a pointer to a 128 byte block of data;  "blockcount" is 
+the nth block;  "baseAddress" is the base address of the uploaded file; and
+"dest" is an added parameter to locate the data.  The parser function should 
+return 1 for successful copy or else 0.
+
+RETURN VALUE: 0, if there's a timeout during transfer; 1, if transfer 
+was successful; 2, if transfer was cancelled.
+END DESCRIPTION **********************************************************/
+nodebug int Dxmodem_s1up(unsigned long baseAddress, int *no_of_pages, 
+            int dest, int (*data_parsing)() )
+{
+    int  i;
+    unsigned char nth_block, not_nth;
+    unsigned int testcrc;
+    unsigned int myblockcount;
+    int  checksum;
+    int  ercode;
+    int  timeout;
+    char cdata;
+    char locrc, hicrc, mylocrc, myhicrc;
+    char mydata[130];
+
+    myblockcount = 1;
+    s1Binary = 1;
+    timeout = 0;
+    Dwrite_s1("Ready to receive", 16);
+    Ds1send_prompt();
+    Dwrite_s1("Xmodem File Up", 14);
+    Ds1send_prompt();
+    do
+    {
+        Dwrite_s11ch(XCRC);
+        Ddelay_1sec();
+        if (++timeout >= 30)
+        {
+            s1Binary = 0;
+            Ddelay_5sec();
+            return 0;
+        }
+    } while (((ercode = Dread_s11ch(&cdata)) == 0) || ((cdata != SOH) &&
+              (cdata != ESC) && (cdata != CAN)));
+    
+    if (cdata == CAN || cdata == ESC) // somehow cancelled
+    {
+        s1Binary = 0;
+        Ddelay_5sec();
+        return 2;
+    }
+    do
+    {
+        timeout = 0;
+        while (++timeout < 100 && (ercode = Dread_s11ch(&cdata) == 0)) 
+            Ddelay_1tick();
+        
+        if (timeout >= 100)
+        {
+            s1Binary = 0;
+            Ddelay_5sec();
+            return 0;
+        }
+        else 
+            nth_block = cdata;
+
+        timeout = 0;
+        while (++timeout < 100 && (ercode = Dread_s11ch(&cdata) == 0)) 
+            Ddelay_1tick();
+        
+        if (timeout >= 100)
+        {
+            s1Binary = 0;
+            Ddelay_5sec();
+            return 0;
+        }
+        else 
+           not_nth = cdata;
+        
+        checksum = 0;
+        timeout = 0;
+        for (i = 0; i < 128; i++)
+        {
+            while (++timeout < 100 && (ercode = Dread_s11ch(&cdata)) == 0) 
+                Ddelay_1tick();
+            
+            if (timeout >= 100)
+            {
+                s1Binary = 0;
+                Ddelay_5sec();
+                return 0;
+            }
+            else
+            {
+                timeout = 0;
+                mydata[i] = cdata;
+            }
+        }
+        testcrc = getcrc(mydata, 128, 0);
+        myhicrc = (testcrc >> 8) & 0xff;
+        mylocrc = testcrc & 0xff;
+        timeout = 0;
+        while (++timeout <= 100 && (ercode = Dread_s11ch(&cdata) == 0)) 
+            Ddelay_1tick();
+        
+        if (timeout >= 100)
+        {
+            s1Binary = 0;
+            Ddelay_5sec();
+            return 0;
+        }
+        else 
+            hicrc = cdata;
+        
+        timeout = 0;
+        while (++timeout <= 100 && (ercode = Dread_s11ch(&cdata) == 0)) 
+            Ddelay_1tick();
+        
+        if (timeout >= 100)
+        {
+            s1Binary = 0;
+            Ddelay_5sec();
+            return 0;
+        }
+        else
+        {
+            if (cdata == mylocrc && hicrc == myhicrc)
+            {
+                if ((*data_parsing)(mydata, myblockcount, baseAddress, 
+                dest) == 1)
+                {
+                    Dwrite_s11ch(ACK);
+                    ++myblockcount;
+                }
+                else 
+                    Dwrite_s11ch(XCRC); 
+            }
+            else 
+                Dwrite_s11ch(XCRC);
+        }
+        timeout = 0;
+        while (((ercode = Dread_s11ch(&cdata)) == 0) ||
+               ((cdata != EOT) && (cdata != SOH) && (cdata != CAN)))
+        {
+            Ddelay_1tick();
+            if (++timeout > 100) // time out after 2-3 secs
+            {
+                s1Binary = 0;
+                Ddelay_5sec();
+                return 0;
+            }
+        }
+        if (cdata == EOT)
+        {
+            Dwrite_s11ch(ACK);
+            s1Binary = 0;
+            *no_of_pages = myblockcount / 32;
+            Ddelay_5sec();
+            return 1;        // 1 for successfull transfer
+        }
+        if (cdata == CAN)
+        {
+            s1Binary = 0;
+            Ddelay_5sec();
+            return 2;
+        }
+    } while (1);
+}
+

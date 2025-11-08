@@ -1,0 +1,489 @@
+/* START LIBRARY DESCRIPTION *********************************************
+vdriver.lib
+
+	Generic virtual driver.
+	Support the following:
+		(1) millisecond timer ( attended every 0.00078125 sec )
+		(2) second timer
+		(3) tick timer        ( incremented every 0.00078125 sec )
+		(3) hit the watch dog and virtual watchdog
+		(4) call real time kernel or simplfied realtime kernel
+				every 32 x 0.0007815 = 25ms
+			if (#define RUNKERNEL is defined)
+		(5) call vd_quick_loop every nticks x 0.0007815s
+				where 0 <= nticks <= 255 is the argument to
+				vd_initquickloop(nticks)
+			if (#define VD_FASTCALL 1 is defined)
+
+	VdInit() must be called to initialize the virtual driver
+
+END DESCRIPTION **********************************************************/
+
+/*** BeginHeader */
+
+#ifndef __VDRIVER_LIB
+#define __VDRIVER_LIB
+
+#use vwdog.lib
+
+#if BOARD_TYPE==CPLC_BOARD
+	int  lc_beepvol;     // BEEPH or BEEPL for beep volume
+#endif
+
+/*** Endheader */
+
+/*** Beginheader VdInit */
+
+//extern shared unsigned long SEC_TIMER,MS_TIMER;
+//extern char MS_TIMEL;               // low part of ms timer
+//extern shared unsigned long SEC_TIMEL, SEC_TIMEI;
+//extern unsigned int vd_timer_save;  // 12-30-94, save value of PRT1 in interrupt
+//
+void VdInit(void);
+
+extern char vd_virt_block;
+extern char vd_virt_req;
+
+//shared unsigned TICK_TIMER;
+
+/*** Endheader */
+
+#if CC_VER >= 0x420
+#makechain _GLOBAL_INIT
+#endif
+
+// millisecond and second timers
+//	 shared unsigned long SEC_TIMER,MS_TIMER;
+//	char MS_TIMEL;                  // low part of ms timer
+//	shared unsigned long SEC_TIMEL, SEC_TIMEI;
+//	 unsigned int vd_timer_save;        // 12-30-94, save value of PRT1 in interrupt
+
+//	char  every32count;
+	 char vd_tickdivision;
+//	char lg_wd_code;    // 12-30-94
+								// when watchdog deliberately timed out, code why 
+
+	char vd_virt_block; // 12-30-94, virtual driver blocked
+	char vd_virt_req;   // 12-30-94, virtual driver requested
+
+/* START FUNCTION DESCRIPTION ********************************************
+VdInit           <vdriver.lib>
+
+SYNTAX: void VdInit(void);
+
+KEYWORDS: init, driver, interrupt, timer, watchdog, kernel
+
+DESCRIPTION:    Initializes virtual driver for all Z180 boards.
+				virtual watchdog (if N_WATCHDOG is defined). 
+					 Support vd_quick_loop, DelayMs, DelaySec, DelayTick
+					 Drives PRT1 at 0.00078125 sec. Drives RTK or SRTK at
+					 32*0.00078125 = 25ms (if RUNKERNEL is defined).
+
+					 Drives vd_quick_loop every nticks x 0.0007815s
+					 where 0 < nticks < 256 is the argument to
+					 vd_initquickloop(nticks)
+					 vd_quick_loop() must be defined by the user.
+				( #define VD_FASTCALL 1 must be defined)
+
+					 VdInit() must be called before a program can use
+					 the RTK, SRTK, virtual watchdogs, the Delayxxx
+					 routines or vd_quick_loop. 
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+
+nodebug void VdInit(void)
+{
+	int k,i,j;
+	char *p;
+
+ // **** insert code which must preceed global init here
+
+	hitwd();
+	DI();
+	vd_tickdivision = 0;
+
+	vwdogInit(0xffff);
+//#if N_WATCHDOG          // must be before global init for VdGetFreeWd
+//
+//   for(i=0; i<N_WATCHDOG; i++)
+//	   vd_wdogarray[i]=0xffff;   // disable all initially
+//
+//#endif
+
+	_GLOBAL_INIT();             // trigger the function blocks
+	
+	MS_TIMER = 0L;
+	MS_TIMEL = 0;
+	SEC_TIMEL = SEC_TIMER = 0L;
+	TICK_TIMER = 0;
+	p = (char *) &SEC_TIMEI;
+	k = 0x16C;                  // pointer to increment in eeprom
+	for (j = 0; j < 4; j++)
+		*p++= ee_rd(k++);
+
+	if (SEC_TIMEI < 107000000L || SEC_TIMEI > 107600000L)
+	{
+		SEC_TIMEI = 107374182L; // initialize timers in case of
+								// bad eeprom values.
+	}
+
+#asm xmemok
+dum: equ vwdog
+#endasm
+
+//	every32count = 0;
+
+#ifdef RUNKERNEL             // if real time kernel included
+   init_kernel();
+#endif
+
+	sysPRT1_781();
+
+	EI();
+	
+	vd_virt_req = vd_virt_block = 0;   //12-30-94, virtual driver run control
+
+	sysSyncTimer();       // Sink virtual time variables with RTC.
+
+}
+/*** BeginHeader */
+
+/*** EndHeader */
+
+extern char OPMODE;         // to single step with for virtual watchdog
+
+#asm root
+;	in0     l,(TMDR1L)          ; 12-30-94, reset timer, in0 a, (TMDR1L)
+;	in0     h,(TMDR1H)          ; 12-30-94, get timer high value
+;	ld      (vd_timer_save), hl ; 12-30-94, save timer value
+
+timer2a:
+	ld      hl,   every32count
+	inc     (hl)
+	ld      a,32  ; 1/32
+	cp      a,(hl)
+	jr      nz,timer2a01      ; 12-30-94, jmp to exit
+	ld      (hl),0            ; else clear counter
+
+; here to run the virtual driver
+	ld      a, 1
+	ld      (vd_virt_req), a    ; request to run the virtual driver
+
+timer2a01:
+; check for virtual driver execution blocked (no overrun allowed)
+	ld      hl,vd_virt_block
+	ld      a,(hl)
+	or      a
+	jr      nz,timer2b_1        ; return from interrupt if blocked
+								; not blocked, now block
+	ld      a,1
+	ld      (hl),a              ;block it
+	ei                          ; now interrupts on
+#ifdef VD_FASTCALL
+	call    vd_fastcall
+#endif
+	ei                          ; interrupts on for keyboard test
+	ld      a,(vd_virt_req)     ; see if request for virtual driver
+	or      a
+	jr      z,timer2b           ;no request, return
+	xor     a
+	ld      (vd_virt_req),a     ; clear the request for the virtual driver
+	ld      (vd_virt_block),a   ; clear the block for the virtual driver
+
+	jr do32count                ; do test every 32 times
+
+timer2b:
+	xor     a                   ; 12-30-94
+	di                          ; 12-30-94
+	ld      (vd_virt_block), a  ; 12-30-94
+
+timer2b_1:
+	pop     bc
+	pop     hl
+	pop     af
+	out0    (CBR),a
+	pop af
+	ei
+	ret
+
+#endasm
+
+/*** BeginHeader VDrvrSyncTimer */
+
+int VDrvrSyncTimer(void);
+
+/*** Endheader */
+
+/* _START FUNCTION DESCRIPTION ********************************************
+VDrvrSynctimer                 <vdriver.lib>
+
+SYNTAX: int VDrvrSynctimer(void);
+
+KEYWORDS: clock
+
+DESCRIPTION: Synchronize the virtual SEC_TIMER with the RTC.
+
+RETURN VALUE: 0, if RTC is read properly; else -1.
+END DESCRIPTION **********************************************************/
+nodebug int VDrvrSyncTimer(void)
+{
+	int           i, j;
+	unsigned long k;
+	struct tm     synctm;
+
+	// Read time until it ticks or there's an error
+	i = 0;
+	
+	tm_rd(&synctm);
+
+	i = synctm.tm_sec;
+	k = SEC_TIMER;
+	while ((SEC_TIMER - k) < 2)
+	{
+		j = tm_rd(&synctm);
+
+		if (i != synctm.tm_sec)
+		{
+			SEC_TIMER = mktime(&synctm);
+			return 0;
+		}
+		if (j < 0)
+			break;
+	}
+	return -1;
+}
+
+/*** BeginHeader user_pwrdown */
+
+int user_pwrdown();
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+user_pwrdown               <vdriver.lib>
+
+SYNTAX: int user_pwrdown(void);
+
+KEYWORDS: watchdog 
+
+DESCRIPTION: Called when virtual watchdog or power warning interrupt
+  occurs. Opportunity for user to do system cleanup of I/O for a few
+  milliseconds. No need to return, since return is an endless loop.
+  Interrupts are off and should stay off. Default routine resets
+  plc bus.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+fast int user_pwrdown()
+{
+#if ((BOARD_TYPE==CPLC_BOARD)+(BOARD_TYPE==L_STAR)+(BOARD_TYPE==Z104ISA))
+	inport(BUSRESET); // reset plc bus
+#endif
+}   
+
+/*** BeginHeader vd_fastcall, lk_quick_run, vd_initquickloop */
+
+int vd_initquickloop(int nticks);
+vd_quick_run();
+
+// mini kernel
+// entry point is lc_fastcall
+
+int lk_ticks, lk_left_ticks;
+
+/*** EndHeader */
+
+/* _START FUNCTION DESCRIPTION *******************************************
+vd_fastcall            <vdriver.lib>
+
+SYNTAX: vd_fastcall();
+
+KEYWORDS: virtual driver
+
+DESCRIPTION: Called by virtual driver to run ultra-fast thread
+				to run every nticks ticks. nticks is the
+				argument to vd_initquickloop(nticks) and should be
+				between 0 and 255. Must use #define VD_FASTCALL 1
+				to activate this thread. nticks = 0 shuts off fastcall.
+
+RETURN VALUE: n/a
+END DESCRIPTION *************************************************************/
+
+/* _START FUNCTION DESCRIPTION ***********************************************
+vd_quick_run            <vdriver.lib>
+
+SYNTAX: vd_quick_run();
+
+KEYWORDS: virtual driver
+
+DESCRIPTION: entry point for ultra-fast thread from interrupt
+				routines.  
+
+				Must use #define VD_FASTCALL 1
+
+RETURN VALUE: n/a
+END DESCRIPTION *************************************************************/
+
+#if (VD_FASTCALL==1)
+char lk_tick_divide; char lk_req_flag;
+char lk_fc_block;
+
+#asm
+vd_quick_run::
+	push    af
+	push    hl
+	di                              ; make sure interupts off
+	ld  a,1
+	ld  (lk_req_flag),a
+	call    lk_fc_4             ; do the fastcall
+	pop hl
+	pop af
+	ret
+
+; enter with af, hl free
+vd_fastcall::   
+	ld  a,(vd_tickdivision) ; setting vd_tickdivision to    
+	or a                            ; zero effectively shuts off
+	ret z                           ; the fastcall
+
+	ld hl,lk_tick_divide        ; count down ticks
+	dec (hl)                        ;  and pass thru 
+	ret nz                      ;  every vd_tickdivisions                       
+
+	ld a,(vd_tickdivision)  ; reset tick counter
+	ld hl,lk_tick_divide        ; to users nticks value
+	ld (hl),a
+
+	ld  a,0ffh
+	ld  (lk_req_flag),a     ; set request flag
+
+; only af register available from here on
+lk_fc_4:                            ; enter here from I/O interrupt
+	ld  a,(lk_fc_block)     ; is execution blocked?
+	or  a
+	ret nz                      ; quit if yes
+	ld  a,1
+	ld  (lk_fc_block),a     ; now block it
+lk_fc_5:
+	di
+	xor a
+	ld  (lk_req_flag),a     ; clear request flag
+	ei
+	call    lk_2_fastcall       ; now call the main routine
+
+; interrupts are on again now
+	ld  a,(lk_req_flag)
+	or  a
+	jr  nz,lk_fc_5              ; call again if the request flag was set meantime
+	xor a                       ; clear a
+	ld  (lk_fc_block),a     ; clear the block
+	ret                         ; return from interrupt
+#endasm
+
+nodebug lk_2_fastcall(){
+
+#GLOBAL_INIT{ lk_ticks=0; lk_fc_block=0;}
+
+	vd_quick_loop();    // this routine must be provided by user
+
+#asm xmemok
+	in0 l,(TMDR1L)
+	in0 h,(TMDR1H)
+#endasm
+}
+
+#funcchain _sys_781PostEI vd_fastcall
+
+/* START FUNCTION DESCRIPTION ********************************************
+vd_initquickloop            <vdriver.lib>
+
+SYNTAX: vd_initquickloop(int nticks);
+
+KEYWORDS: virtual driver
+
+DESCRIPTION: Called to initialize the ultra-fast thread of the
+				the virtual driver to run every nticks ticks. nticks
+				should be between 0 and 255. Zero turns off fastcall.
+				#define VD_FASTCALL 1 must be used. fastcall begins
+				running as soon as VdInit is called, so it is wise to
+				call this function first.
+
+RETURN VALUE: 1 - success, 0 - invalid request, bad nticks value  
+				  
+END DESCRIPTION **********************************************************/
+int vd_initquickloop(int nticks)
+{
+	extern char vd_tickdivision;
+	if( (nticks >= 0) && (nticks <= 255)){
+		vd_tickdivision = (char)nticks;
+		lk_tick_divide = vd_tickdivision;
+		return 1;
+	}
+	else
+	{
+#if ROM!=1
+		printf("vd_initquickloop argument must be 0-255\n");
+		printf("defaulting to 10\n");
+#endif
+		vd_tickdivision = 10;
+		lk_tick_divide = 10;
+		return 0;
+	}
+}   
+#endif
+
+
+
+/*** Beginheader VdAdjClk */
+
+	int VdAdjClk();
+
+/*** Endheader */
+
+/* START FUNCTION DESCRIPTION ***********************************************
+VdAdjClk            <vdriver.lib>
+
+SYNTAX: int VdAdjClk();
+
+KEYWORDS: virtual driver, clock
+
+DESCRIPTION: Synchronize the software second timer used by DelaySec with the
+				 real-time clock. This phase locks the SEC_TIMER to the
+				 real time clock, adjusting the rate of count once a day on
+				 SEC_TIMER to catch up or slow down. There is never any
+				 unsmooth change in the duration of the ticks of SEC_TIMER.
+				 Call from the main scan loop. Has not effect if real time
+				 clock is not installed.
+	
+RETURN VALUE: n/a
+END DESCRIPTION *************************************************************/
+
+
+
+int VdAdjClk(){
+
+	struct tm s;
+	int j;
+	unsigned long int e2,e1;   
+	#GLOBAL_INIT{ j=0;e2=0L;}
+	costate {
+
+		waitfor(DelaySec(86400L));  // wait one day
+		if(j<0) abort;
+	  	j = tm_rd(&s);
+		if(j<0) abort;  // if clock not present 
+
+		e1 = SEC_TIMER-mktime(&s);   // compute error seconds fast
+		SEC_TIMEI = SEC_TIMEI - 621L*(e1+e1-e2);// 1242 is 1 sec/day rate
+		e2=e1;
+		if(SEC_TIMEI < 106000000L || SEC_TIMEI > 108800000L)
+			SEC_TIMEI=107374182L; // double protection against clock fail
+		}
+}   
+
+/*** BeginHeader */
+
+#endif
+
+/*** EndHeader */

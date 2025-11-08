@@ -1,0 +1,920 @@
+#define SIOCA 0x00
+#define SIODA 0x00
+#define SIOCB 0x00
+#define SIODB 0x00
+#define SIOAER_VEC 0
+#define SIOAEX_VEC 0
+#define SIOBT_VEC 0
+#define SIOBER_VEC 0
+#define SIOBEX_VEC 0
+#define SIOBR_VEC 0
+#define SIOAT_VEC 0
+#define SIOAR_VEC 0
+#define ENB485 0
+#define CTC0 0
+#define CTC0_VEC 0
+
+/* START LIBRARY DESCRIPTION *********************************************
+KDM.LIB
+    Copyright (c) 1994, Z-World.
+
+DESCRIPTION:
+
+SUPPORT LIB'S:
+END DESCRIPTION **********************************************************/
+
+
+/*   This library contains code to drive the serial devices */
+
+/*
+   Driver for Z180 serial port #1 (second port on Z180).
+
+   *buf is a pointer to buffer for sending or receiving chars
+   *count is a pointer to count of characters, counted to zero
+   as characters are received/sent. Operation over when reaches zero.
+
+   baud - baud rate expressed in units of 1200 baud. (8 == 9600 baud )
+   mode - a 3 bit code matching Z180 CNTLA register format:
+
+      bit 0 -  0- 1 stop bit
+               1- 2 stop bits
+      bit 1 -  0- no parity
+            -  1- parity on
+      bit 2 -  0- 7 bit data
+               1- 8 bit data
+
+      bit 4 -  0- even parity
+               1- odd parity
+*/
+
+/*** Beginheader ser_init_z1,ser_send_z1,ser_rec_z1,ser_kill_z1   */
+
+void ser_init_z1(char mode, char baud);   // initialize
+void ser_send_z1(char *buf, char *count); // initiate send
+void ser_rec_z1(char *buf, char *count);  // initiate receive
+void ser_kill_z1(void);                   // abort all
+
+/*** Endheader    */
+
+
+char *z1_send_count;
+char *z1_send_buf;
+char *z1_rec_count;
+char *z1_rec_buf;
+/* START FUNCTION DESCRIPTION ********************************************
+ser_init_z1                  <SERIAL.LIB>
+
+SYNTAX: void ser_init_z1(char mode, char baud);
+
+KEYWORDS: 
+
+DESCRIPTION:	Initialize Driver for Z180 serial port #1 (second port on
+Z180).
+
+   baud - baud rate expressed in units of 1200 baud. (8 == 9600 baud )
+   mode - a 3 bit code matching Z180 CNTLA register format:
+
+      bit 0 -  0- 1 stop bit
+               1- 2 stop bits
+      bit 1 -  0- no parity
+            -  1- parity on
+      bit 2 -  0- 7 bit data
+               1- 8 bit data
+
+      bit 4 -  0- even parity
+               1- odd parity
+
+To use this driver, you must use z1_ser_int as the interrupt handler for
+port #1 on the Z180.  Please refer to ser_send_z1 for sending information,
+ser_rec_z1 for receiving information and ser_kill_z1 for aborting
+operations.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void ser_init_z1(char mode, char baud)
+{
+    outport(STAT1, 0);           // reset port
+    
+    // set baud rate
+    outport(CNTLB1, z180baud(sysclock(), baud) | (mode & 16)); 
+    
+    outport(CNTLA1, (mode & 7)); // set stop bits, etc
+    z1_send_count = NULL;
+    z1_rec_count  = NULL;
+    return;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+ser_send_z1                  <SERIAL.LIB>
+
+SYNTAX: void ser_send_z1(char *buf, char *count);
+
+KEYWORDS: 
+
+DESCRIPTION: 	Initialize driver to begin sending information.  "buf"
+points to an array that contains the information to be sent. "count"
+points to a count variable that counts how many bytes remains to be
+sent.  When (*count) becomes zero, the transmission is finished.  The
+program should poll (*count) periodically to check if transmission is
+finished.  A timeout mechanism to detect transmit failure is recommended.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void ser_send_z1(char *buf, char *count)
+{
+    z1_send_buf   = buf;
+    z1_send_count = count;
+    
+    // fix ++*z1_send_count;
+    outport(CNTLA1, inport(CNTLA1) | 0x20); // enable transmitter
+    outport(STAT1, inport(STAT1) | 1);      // enable xmit interrupt, no CTS
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+ser_rec_z1                   <SERIAL.LIB>
+
+SYNTAX: void ser_rec_z1(char *buf, char *count);
+
+KEYWORDS: 
+
+DESCRIPTION: 	Initializ driver to begin receiving information.  "buf"
+points to an array where information will be stored.  "count" points to
+a count variable that counts how many bytes remains to be received.
+When (*count) becomes zero, the transmission is finished.  The program
+should poll (*count) periodically to check if reception is finished.  A
+timeout mechanism to detect receive failure is recommended.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void ser_rec_z1(char *buf, char *count)
+{
+    z1_rec_buf   = buf;
+    z1_rec_count = count;
+    inport(RDR1);
+    inport(RDR1);            // FIX clear out reader registers
+    outport(CNTLA1, inport(CNTLA1) | 0x40); // enable receiver clear EFR
+    outport(STAT1, inport(STAT1) | 8);      // enable recvr interrupt, no CTS
+}
+
+/* disable Z180 port 1 */
+
+/* START FUNCTION DESCRIPTION ********************************************
+ser_kill_z1                  <SERIAL.LIB>
+
+SYNTAX: void ser_kill_z1(void);
+
+KEYWORDS: 
+
+DESCRIPTION:	Abort all operations of this communication port.  This
+function stops the receiver and the transmitter, but does not reset the
+counters associated with the transitter and receiver.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void ser_kill_z1(void)
+{
+    outport(STAT1, 0);
+}
+
+/* interrupt routine for Z180 serial port 1 */
+
+#INT_VEC SER1_VEC z1_ser_int // set interrupt vector
+
+/* START _FUNCTION DESCRIPTION ********************************************
+z1_ser_int                   <SERIAL.LIB>
+
+SYNTAX: void z1_ser_int(void);
+
+KEYWORDS: 
+
+DESCRIPTION: 	Interrupt handler for port #1 on the Z180, works ONLY with
+routines ser_xxxx_z1.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+
+nodebug interrupt ret void z1_ser_int(void)
+{                            // interrupt routine
+    if (*z1_rec_count && IBIT(STAT1, 7))
+    {                        // reader ready
+        *z1_rec_buf++= inport(RDR1); // input character
+        IRES(CNTLA1, 3);     // clear error flags
+
+        if (! -- *z1_rec_count)
+        {                    // count down, if done disable
+            outport(STAT1, inport(STAT1) & 0xf7);   // interrupt off
+            outport(CNTLA1, inport(CNTLA1) & 0xbf); // disable reader
+        }
+    }
+
+    if ((inport(STAT1) & 3) == 3)
+    {                        // transmitter int
+
+        if (! *z1_send_count)
+        {                    // reset on count+1 time through
+            outport(STAT1, inport(STAT1) & 0xfe); // interrupt off
+            // FIX  outport(CNTLA1,inport(CNTLA1) & 0xdf);
+        }
+        else
+        {
+            outport(TDR1, *z1_send_buf++); // send next character
+            -- *z1_send_count; // dec count of characters
+        }
+    }
+} 
+
+/*
+   Driver for Z180 serial port #0 (first port on Z180).
+
+   *buf is a pointer to buffer for sending or receiving chars
+   
+   *count is a pointer to count of characters, counted to zero
+   as characters are received/sent. Operation over when reaches zero.
+
+   baud - baud rate expressed in units of 1200 baud. (8 == 9600 baud )
+
+   mode - a 3 bit code matching Z180 CNTLA registe format:
+
+      bit 0 -  0- 1 stop bit
+               1- 2 stop bits
+      bit 1 -  0- no parity
+            -  1- parity on
+      bit 2 -  0- 7 bit data
+               1- 8 bit data
+
+   Note: The CTS input must be active or the serial channel cannot
+         transmit.
+*/
+
+/*** Beginheader ser_init_z0,ser_send_z0,ser_rec_z0,ser_kill_z0   */
+
+void ser_init_z0(char mode, char baud);   // initialize
+void ser_send_z0(char *buf, char *count); // initiate send
+void ser_rec_z0(char *buf, char *count);  // initiate receive
+void ser_kill_z0(void);                   // abort all
+
+/*** Endheader    */
+
+
+char *z0_send_count;
+char *z0_send_buf;
+char *z0_rec_count;
+char *z0_rec_buf;
+
+/* START FUNCTION DESCRIPTION ********************************************
+ser_init_z0                  <SERIAL.LIB>
+
+SYNTAX: void ser_init_z0(char mode, char baud);
+
+KEYWORDS: 
+
+DESCRIPTION: 	Similar to ser_init_z1, but deals with port #0 on the Z180.
+
+RETURN VALUE:	None.
+END DESCRIPTION **********************************************************/
+nodebug void ser_init_z0(char mode, char baud)
+{
+    outport(STAT0, 0);       // reset port
+    
+    // Set baud rate:
+    outport(CNTLB0, z180baud(sysclock(), baud) | (mode & 16)); 
+    outport(CNTLA0, (mode & 7)); // set stop bits, etc. enb rts
+    z0_send_count = NULL;
+    z0_rec_count  = NULL;
+    return;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+ser_send_z0                  <SERIAL.LIB>
+
+SYNTAX: void ser_send_z0(char *buf, char *count);
+
+KEYWORDS: 
+
+DESCRIPTION:	Similar to ser_send_z1, but handles port #0 of the Z180.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void ser_send_z0(char *buf, char *count)
+{
+    z0_send_buf   = buf;
+    z0_send_count = count;
+                             // fix ++*z0_send_count;
+    outport(CNTLA0, inport(CNTLA0) | 0x20); // enable transmitter
+    outport(STAT0, inport(STAT0) | 1); // enable xmitter interrupt, no CTS
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+ser_rec_z0                   <SERIAL.LIB>
+
+SYNTAX: void ser_rec_z0(char *buf, char *count);
+
+KEYWORDS: 
+
+DESCRIPTION: 	Similar to ser_rec_z1, but handles port #0 of the Z180
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void ser_rec_z0(char *buf, char *count)
+{
+
+    z0_rec_buf   = buf;
+    z0_rec_count = count;
+    inport(RDR0);
+    inport(RDR0);            // clear out reader registers
+    outport(CNTLA0, inport(CNTLA0) | 0x40); // enable receiverr clear EFR
+    outport(STAT0, inport(STAT0) | 8); // enable receiver interrupt, no CTS
+}
+
+/* disable Z180 port 0 */
+
+/* START FUNCTION DESCRIPTION ********************************************
+ser_kill_z0                  <SERIAL.LIB>
+
+SYNTAX: void ser_kill_z0(void);
+
+KEYWORDS: 
+
+DESCRIPTION: 	Similar to ser_kill_z1, but handles port #0 of the Z180.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void ser_kill_z0(void)
+{
+    outport(STAT0, 0);
+}
+
+/* interrupt routine for Z180 serial port 1 */
+
+#INT_VEC SER0_VEC z0_ser_int // set interrupt vector
+
+/* START _FUNCTION DESCRIPTION ********************************************
+z0_ser_int                   <SERIAL.LIB>
+
+SYNTAX: void z0_ser_int(void);
+
+KEYWORDS: 
+
+DESCRIPTION: 	Similar to z1_ser_int, but handles port #0 of the Z180.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug interrupt ret void z0_ser_int(void)
+{                            // interrupt routine
+    if (*z0_rec_count && IBIT(STAT0, 7))
+    {                                // reader ready
+        *z0_rec_buf++= inport(RDR0); // input character
+        IRES(CNTLA0, 3);             // clear error flags
+
+        if (! -- *z0_rec_count)
+        {                    // count down, if done disable
+            outport(STAT0, inport(STAT0) & 0xf7);   // interrupt off
+            outport(CNTLA0, inport(CNTLA0) & 0xbf); // disable reader
+        }
+
+    }
+
+    if ((inport(STAT0) & 3) == 3)
+    {                        // transmitter int
+
+        if (! *z0_send_count)
+        {                    // reset on count+1 time through
+            outport(STAT0, inport(STAT0) & 0xfe); // interrupt off
+            // FIX   outport(CNTLA0,inport(CNTLA0) & 0xdf);
+        }
+        else
+        {
+            outport(TDR0, *z0_send_buf++); // send next character
+            -- *z0_send_count;             // dec count of characters
+        }
+    }
+}   
+
+/*** Beginheader ser_init_s0,ser_send_s0,ser_rec_s0,ser_kill_s0   */
+
+void ser_init_s0(char mode, char baud);   // initialize
+void ser_send_s0(char *buf, char *count); // initiate send
+void ser_rec_s0(char *buf, char *count);  // initiate receive
+void ser_kill_s0(void);                   // abort all
+
+/*** Endheader    */
+/*
+
+   Driver for SIO serial port #A (Connector J8 / RS232 or J3 RS485)
+
+   *buf is a pointer to buffer for sending or receiving chars
+
+   *count is a pointer to count of characters, counted to zero
+    as characters are received/sent. Operation over when reaches zero.
+
+   baud - baud rate expressed in units of 1200 baud. (8 == 9600 baud )
+
+   mode - a bit code which determines:
+
+      bit 0 -  0- 1 stop bit
+               1- 2 stop bits
+
+      bit 1 -  0- no parity
+               1- parity on
+
+      bit 2 -  0- 7 bit data
+               1- 8 bit data
+
+      bit 3 -  not used
+
+      bit 4 -  0- even parity
+               1- odd parity
+
+   Note: The CTS input must be active or the serial channel 
+         cannot transmit.
+*/
+
+
+char *s0_send_count;
+char *s0_send_buf;
+char *s0_rec_count;
+char *s0_rec_buf;
+
+char s0_wreg5;               // keep state of SIO registers
+char s0_wreg1;
+char s0_wreg3;
+char s0_wreg4;
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+ser_init_s0                  <SERIAL.LIB>
+
+SYNTAX: void ser_init_s0(char mode, char baud);
+
+KEYWORDS: 
+
+DESCRIPTION: 	Similar to ser_init_z1, but deals with SIO port #A.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void ser_init_s0(char mode, char baud)
+{
+    outport(SIOCA, 0x18);    // reset port A
+    setctc(1, 2, siobaud(sysclock(), baud), 0); // init CTC for baud rate
+
+    s0_wreg1 = 0x40;
+    outport(SIOCA, 0x11);    // wr reg 1
+    outport(SIOCA, 0x40);    // int all rec chars, parity error special
+
+    s0_wreg3 = 0x40;         // 7 data bits
+    if (BIT(&mode, 2))
+        SET(&s0_wreg3, 7);   // data bits receive
+
+    s0_wreg5 = (s0_wreg5 & 0x80) | 2;      // RTS on
+    s0_wreg5 = s0_wreg5 | (s0_wreg3 >> 1); // data bits transmit
+
+    s0_wreg4 = 0x44;         // one stop bit, clock X 16, no parity
+    if (BIT(&mode, 0))
+        SET(&s0_wreg4, 3);   // stop bits
+
+    if (BIT(&mode, 1))       // parity selected
+        SET(&s0_wreg4, 0);   // enable parity
+
+    /* NOTE: parity bit is not stripped from characters, 
+       user code must mask off the eighth bit.           */
+
+    if (!(BIT(&mode, 4)) )   // select even parity
+        SET(&s0_wreg4, 1);
+
+    outport(SIOCA, 0x13);
+    outport(SIOCA, s0_wreg3); // set the registers
+    outport(SIOCA, 0x14);
+    outport(SIOCA, s0_wreg4);
+    outport(SIOCA, 0x15);
+    outport(SIOCA, s0_wreg5);
+    s0_send_count = NULL;
+    s0_rec_count  = NULL;
+    return;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+ser_send_s0                  <SERIAL.LIB>
+
+SYNTAX: void ser_send_s0(char *buf, char *count)
+
+KEYWORDS: 
+
+DESCRIPTION: 	Similar to ser_send_z1, but deals with SIO port #A.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void ser_send_s0(char *buf, char *count)
+{
+    static char var;
+
+    s0_send_buf   = buf;
+    s0_send_count = count;
+
+    if (*count == 0)         // test for zero char count
+    {
+        outport(SIOCA, 0x11);                       // reg 1
+        outport(SIOCA, s0_wreg1 = s0_wreg1 & 0xfd); // Tx interrupt off
+        outport(SIOCA, 0x15);                       // reg 5
+        outport(SIOCA, s0_wreg5 = s0_wreg5 & 0xf7); // Tx enb off
+        return;
+    }
+
+                             // fix ++*s0_send_count;
+    intoff(&var);            // disable interrupts if on
+    outport(SIOCA, 0x5);     // enable transmitter
+    outport(SIOCA, s0_wreg5 = s0_wreg5 | 8);
+    doint();                 // give interrupts a chance
+    outport(SIOCA, 0x1);     // enable transmitter interrupts
+    outport(SIOCA, s0_wreg1 = s0_wreg1 | 2);
+    doint();
+                             // send the first character
+    outport(SIODA, *s0_send_buf++); // send next character
+    -- *s0_send_count;       // dec count of characters
+    inton(&var);             // restore interrupt state
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+ser_rec_s0                   <SERIAL.LIB>
+
+SYNTAX: void ser_rec_s0(char *buf, char *count)
+
+KEYWORDS: 
+
+DESCRIPTION: 	Similar to ser_rec_z1, but deals with SIO port #A.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void ser_rec_s0(char *buf, char *count)
+{
+    static char var;
+
+    s0_rec_buf   = buf;
+    s0_rec_count = count;
+    intoff(&var);            // disable interrupts if on
+    outport(SIOCA, 0x33);    // reset error, register 3
+    outport(SIOCA, s0_wreg3 = s0_wreg3 | 1); // enable receiver
+    doint();
+    outport(SIOCA, 0x11);
+    outport(SIOCA, s0_wreg1 = s0_wreg1 | 0x18); // enable receiver ints
+    inton(&var);
+}
+
+/* disable SIO port 0 */
+
+/* START FUNCTION DESCRIPTION ********************************************
+ser_kill_s0                  <SERIAL.LIB>
+
+SYNTAX: void ser_kill_s0(void);
+
+KEYWORDS: 
+
+DESCRIPTION: 	Similar to ser_kill_z1, but deals with SIO port #A.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void ser_kill_s0(void)
+{
+    static char var;
+
+    intoff(&var);
+    outport(SIOCA, 0x18);    // reset the channel
+    outport(SIOCA, 0x18);
+    inton(&var);
+}
+
+/* receive interrupt routine for SIO serial port 0 */
+
+#INT_VEC SIOAR_VEC s0_rser_int  // set interrupt vector
+#INT_VEC SIOAER_VEC s0_rser_int // special receive condition
+
+/* START _FUNCTION DESCRIPTION ********************************************
+s0_rser_int                  <SERIAL.LIB>
+
+SYNTAX: void s0_rser_int(void);
+
+KEYWORDS: 
+
+DESCRIPTION: 	Similar to z1_ser_int, but deals with SIO port #A receive.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug interrupt reti void s0_rser_int(void)
+{                            // interrupt routine
+
+    outport(SIOCA, 0x30);         // reset error
+    *s0_rec_buf++= inport(SIODA); // input character
+
+    if (! -- *s0_rec_count)
+    {                        // count down, if done disable
+        outport(SIOCA, 0x11);                       // reg 1
+        outport(SIOCA, s0_wreg1 = s0_wreg1 & 0xe7); // Rx interrupt off
+        outport(SIOCA, 0x13);                       // reg 3
+        outport(SIOCA, s0_wreg3 = s0_wreg3 & 0xfe); // Rx enb off
+    }
+}                            // return
+
+#INT_VEC SIOAT_VEC s0_tser_int// set transmit interrupt vector
+
+/* START _FUNCTION DESCRIPTION ********************************************
+s0_tser_int                  <SERIAL.LIB>
+
+SYNTAX: void s0_tser_int(void);
+
+KEYWORDS: 
+
+DESCRIPTION: 	Similar to s0_tser_int, but deals with SIO port #A transmit.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug interrupt reti void s0_tser_int(void)
+{                            // interrupt routine
+
+    if (! *s0_send_count)
+    {                        // reset on count+1 time through
+        outport(SIOCA, 0x11);                       // reg 1
+        outport(SIOCA, s0_wreg1 = s0_wreg1 & 0xfd); // Tx interrupt off
+        outport(SIOCA, 0x15);                       // reg 5
+        outport(SIOCA, s0_wreg5 = s0_wreg5 & 0xf7); // Tx enb off
+    }
+    else
+    {
+        outport(SIODA, *s0_send_buf++); // send next character
+        -- *s0_send_count;              // dec count of characters
+    }
+}
+
+#INT_VEC SIOAEX_VEC s0_stat_int // status change, never happens
+
+nodebug interrupt reti int s0_stat_int(void)
+{
+}
+
+
+/*** Beginheader ser_init_s1,ser_send_s1,ser_rec_s1,ser_kill_s1   */
+
+void ser_init_s1(char mode, char baud);   // initialize
+void ser_send_s1(char *buf, char *count); // initiate send
+void ser_rec_s1(char *buf, char *count);  // initiate receive
+void ser_kill_s1(void);                   // abort all
+
+/*** Endheader    */
+/*
+
+     Driver for SIO serial port #B (Connector J9 RS485)
+
+   *buf is a pointer to buffer for sending or receiving chars
+
+   *count is a pointer to count of characters, counted to zero
+    as characters are received/sent. Operation over when reaches zero.
+
+   baud - baud rate expressed in units of 1200 baud. (8 == 9600 baud )
+
+   mode - a bit code which determines:
+
+      bit 0 -  0- 1 stop bit
+               1- 2 stop bits
+
+      bit 1 -  0- no parity
+               1- parity on
+
+      bit 2 -  0- 7 bit data
+               1- 8 bit data
+
+      bit 3 -  not used
+
+      bit 4 -  0- even parity
+               1- odd parity
+
+      This routine cooperates with the routine hitwd() in Little
+      Giant EPROM. They both share the variable sioreg5. Hitwd() is
+      used to control the watchdog timer via the DTR line.
+
+*/
+
+
+char *s1_send_count;
+char *s1_send_buf;
+char *s1_rec_count;
+char *s1_rec_buf;
+extern char sioreg5;         /* shared with hitwd() routine in EPROM
+                                keep state of SIO register 5         */
+char s1_wreg1;
+char s1_wreg3;
+char s1_wreg4;
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+ser_init_s1                  <SERIAL.LIB>
+
+SYNTAX: void ser_init_s1(char mode, char baud);
+
+KEYWORDS: 
+
+DESCRIPTION: 	Similar to ser_init_z1, but deals with SIO port #B.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void ser_init_s1(char mode, char baud)
+{
+    outport(SIOCB, 0x18);    // reset port B
+    setctc(0, 2, siobaud(sysclock(), baud), 0); // init CTC for baud rate
+
+    s1_wreg1 = 0x44;
+    outport(SIOCB, 0x11);    // wr reg 1
+    outport(SIOCB, 0x44);
+
+    s1_wreg3 = 0x40;
+    if (BIT(&mode, 2)) 
+        SET(&s1_wreg3, 7);               // data bits receive
+    sioreg5 = (sioreg5 & 0x80) | 2;      // RTS on
+    sioreg5 = sioreg5 | (s1_wreg3 >> 1); // data bits transmit
+    s1_wreg4 = 0x44;
+    if (BIT(&mode, 0))
+        SET(&s1_wreg4, 3);   // stop bits
+
+    if (BIT(&mode, 1))       // parity selected
+        SET(&s1_wreg4, 0);   // enable parity
+
+    if (!(BIT(&mode, 4)) )   // select even parity
+        SET(&s1_wreg4, 1);
+
+    outport(SIOCB, 0x13);
+    outport(SIOCB, s1_wreg3); // set the registers
+    outport(SIOCB, 0x14);
+    outport(SIOCB, s1_wreg4);
+    outport(SIOCB, 0x15);
+    outport(SIOCB, sioreg5);
+    s1_send_count = NULL;
+    s1_rec_count  = NULL;
+    return;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+ser_send_s1                  <SERIAL.LIB>
+
+SYNTAX: void ser_send_s1(char *buf, char *count);
+
+KEYWORDS: 
+
+DESCRIPTION: 	Similar to ser_send_z1, but deals with SIO port #B.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void ser_send_s1(char *buf, char *count)
+{
+    static char var;
+
+    s1_send_buf   = buf;
+    s1_send_count = count;
+
+    if (*count == 0)         // test for zero char count
+    {
+        outport(SIOCB, 0x11);                       // reg 1
+        outport(SIOCB, s1_wreg1 = s1_wreg1 & 0xfd); // Tx interrupt off
+        outport(SIOCB, 0x15);                       // reg 5
+        outport(SIOCB, sioreg5 = sioreg5 & 0xf7);   // Tx enb off
+        return;
+    }
+    
+    intoff(&var);            // disable interrupts if on
+    outport(SIOCB, 0x5);     // enable transmitter
+    outport(SIOCB, sioreg5 = sioreg5 | 8);
+    doint();                 // give interrupts a chance
+    outport(SIOCB, 0x1);     // enable transmitter interrupts
+    outport(SIOCB, s1_wreg1 = s1_wreg1 | 2);
+    doint();
+                             // send the first character
+    outport(SIODB, *s1_send_buf++); // send next character
+    -- *s1_send_count;       // dec count of characters
+    inton(&var);             // restore interrupt state
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+ser_rec_s1                   <SERIAL.LIB>
+
+SYNTAX: void ser_rec_s1(char *buf, char *count);
+
+KEYWORDS: 
+
+DESCRIPTION: 	Similar to ser_rec_z1, but deals with SIO port #B.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void ser_rec_s1(char *buf, char *count)
+{
+    static char var;
+    
+    s1_rec_buf = buf;
+    s1_rec_count = count;
+    intoff(&var);            // disable interrupts if on
+    outport(SIOCB, 0x33);    // reset error, register 3
+    outport(SIOCB, s1_wreg3 = s1_wreg3 | 1); // enable receiver
+    doint();
+    outport(SIOCB, 0x11);
+    outport(SIOCB, s1_wreg1 = s1_wreg1 | 0x18); // enable receiver ints
+    inton(&var);
+}
+
+/* disable SIO port 0 */
+
+/* START FUNCTION DESCRIPTION ********************************************
+ser_kill_s1                  <SERIAL.LIB>
+
+SYNTAX: void ser_kill_s1(void);
+
+KEYWORDS: 
+
+DESCRIPTION: 	Similar to ser_kill_z1, but deals with SIO port #B.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void ser_kill_s1(void)
+{
+    static char var;
+    
+    intoff(&var);
+    outport(SIOCB, 0x18);    // reset the channel
+    outport(SIOCB, 0x18);
+    inton(&var);
+}
+
+/* receive interrupt routine for SIO serial port 1 */
+
+#INT_VEC SIOBR_VEC s1_rser_int  // set interrupt vector
+#INT_VEC SIOBER_VEC s1_rser_int // special receive condition
+
+/* START _FUNCTION DESCRIPTION ********************************************
+s1_rser_int                  <SERIAL.LIB>
+
+SYNTAX: void s1_rser_int(void);
+
+KEYWORDS: 
+
+DESCRIPTION: 	Similar to z1_ser_int, but deals with SIO port #B receive.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+interrupt reti void s1_rser_int(void)
+{                            // interrupt routine
+
+    outport(SIOCB, 0x30);         // reset error
+    *s1_rec_buf++= inport(SIODB); // input character
+
+    if (! -- *s1_rec_count)
+    {                        // count down, if done disable
+        outport(SIOCB, 0x11);                       // reg 1
+        outport(SIOCB, s1_wreg1 = s1_wreg1 & 0xe7); // Rx interrupt off
+        outport(SIOCB, 0x13);                       // reg 3
+        outport(SIOCB, s1_wreg3 = s1_wreg3 & 0xfe); // Rx enb off
+    }
+}   
+
+#INT_VEC SIOBT_VEC s1_tser_int// set transmit interrupt vector
+
+/* START _FUNCTION DESCRIPTION ********************************************
+s1_tser_int                  <SERIAL.LIB>
+
+SYNTAX: void s1_tser_int(void);
+
+KEYWORDS: 
+
+DESCRIPTION: 	Similar to z1_ser_int, but deals with SIO port #B transmit.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+interrupt reti void s1_tser_int(void)
+{                            // interrupt routine
+
+
+    if (! *s1_send_count)
+    {                        // reset on count+1 time through
+        outport(SIOCB, 0x11);                       // reg 1
+        outport(SIOCB, s1_wreg1 = s1_wreg1 & 0xfd); // Tx interrupt off
+        outport(SIOCB, 0x15);                       // reg 5
+        outport(SIOCB, sioreg5 = sioreg5 & 0xf7);   // Tx enb off
+    }
+    else
+    {
+        outport(SIODB, *s1_send_buf++); // send next character
+        -- *s1_send_count;   // dec count of characters
+    }
+}
+
+#INT_VEC SIOBEX_VEC s1_stat_int// status change, never happens
+
+/* START _FUNCTION DESCRIPTION ********************************************
+s1_stat_int                  <SERIAL.LIB>
+
+SYNTAX: int s1_stat_int(void);
+
+KEYWORDS: 
+
+DESCRIPTION:
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+interrupt reti int s1_stat_int(void)
+{
+}
+
+

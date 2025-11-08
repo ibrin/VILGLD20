@@ -1,0 +1,2868 @@
+/* START LIBRARY DESCRIPTION *********************************************
+FK.LIB
+	Copyright (c) 1995, Z-World.
+
+DESCRIPTION: Provides support routines for 5 key programming using
+			 function blocks. 
+
+SUPPORT LIB'S:
+END DESCRIPTION **********************************************************/
+
+/*** BeginHeader _fk_requested */
+
+#define fk_MENU if(fk_newmenu)break
+
+/*** EndHeader */
+
+#asm
+_fk_requested::
+#endasm
+
+#ifdef EASYSTRT
+#funcchain _main_init fk_kkill
+#funcchain _ezLoopHead fk_monitorkeypad
+#endif
+
+/*** BeginHeader  */
+
+char *fk_default_help[]={
+//  12345678901234567890
+	"menu key = restart",
+	"use menu key to",
+	"advance menu",
+	"(menu is top line)",
+	"use the item key to",
+	"advance item in menu", 
+	"(item is 2nd line)",
+	"use field key to",
+	"advance field <-->",
+	"use up-down keys",
+	"to change value",
+	"of field selected",
+	"thank you", 
+	""
+	};
+char help_block[50];
+int fk_keyfound;
+protected unsigned long fk_sec_date, fk_set_date, fk_sec_time, fk_set_time;
+char fk_newmenu;    /* global flag to indicate new menu */
+int fk_tkey, fk_skey;
+char **fk_hptr; // help message pointer
+
+
+
+/*** EndHeader  */
+
+
+// RULES FOR ITEMS
+// The item receives the current key by examining fk_tkey
+// fk_tkey is updated on each call to the item.
+// If fk_tkey==0 there is no key to process.
+// To purge the key the item calls fk_kkill()
+// If step to the next menu is required return 1 with fk_newmenu==1
+// If step to the next item is desired return 1 (ignore fk_newmenu)
+// The item is expected to eat keys 1-5 (menu, item, field, up, down)
+// The item should not draw on the display if entered with any key
+//   except 0-5 enabled (fk_tkey in range 0-5)
+
+// routine to modify a number up or down within limits
+// string is a printf control string, *num is an integer
+
+
+/*** BeginHeader fk_kkill  */
+
+int fk_kkill();
+
+/*** EndHeader  */
+
+/* _START FUNCTION DESCRIPTION ********************************************
+fk_kkill               <fk.lib>
+
+SYNTAX: int fk_kkill(void);
+
+KEYWORDS: keypad, LCD 
+
+DESCRIPTION: reset last key hit value to 0 (no key hit)
+
+RETURN VALUE: not defined
+END DESCRIPTION **********************************************************/
+int fk_kkill(){
+	fk_tkey=0;
+}
+
+/*** BeginHeader pr_date  */
+
+pr_date(long cursor, struct tm *t);
+
+/*** EndHeader   */
+
+/* _START FUNCTION DESCRIPTION ********************************************
+pr_time_date               <fk.lib>
+
+SYNTAX: int pr_date(long cursor, struct tm *t);
+
+KEYWORDS: keypad, LCD 
+
+DESCRIPTION: routine to print time or date at cursor: "td" = 1 for time,
+"td" = 0 for date. "cursor" is cursor in form used by "lcd_printf".
+Prints a 9 character string for date, 8 char for time
+"seconds" is standard format of date expressed in seconds
+
+RETURN VALUE: not defined
+END DESCRIPTION **********************************************************/
+pr_date(long cursor, struct tm *t){
+	unsigned k;
+	char *months[13]={"???","Jan","Feb","Mar","Apr","May","Jun","Jul","Aug",
+						"Sep","Oct","Nov","Dec"};
+
+	k=t->tm_mon; // protect index to array 
+	lcd_printf(cursor,"%2d-%3s-%02d",
+					t->tm_mday,
+					((k < 0) || (k > 12))?"???":fkMonthNames[k-1],
+					t->tm_year%100);
+}
+
+
+/*** BeginHeader date_field */
+
+int date_field(int field, long sec);
+
+/*** EndHeader */
+
+/* _START FUNCTION DESCRIPTION ********************************************
+date_field               <fk.lib>
+
+SYNTAX: int date_field(int field, long sec);
+
+KEYWORDS: keypad, LCD 
+
+DESCRIPTION: Utility routine for setdate and settime. Extracts
+	"field" from "sec". Where "sec" is seconds since January 1, 1980.
+
+RETURN VALUE: day of the month (1-31) if "field" = 0, month (1-12)
+		if "field" = 1, year (e.g. 95) if "field" = 2, min (0-59) if "field" = 3,
+		 hour (0-23) if "field" = 4
+END DESCRIPTION **********************************************************/
+
+int date_field(int field, long sec){
+	struct tm sd;
+	mktm(&sd,sec);
+	switch(field){
+		case 0: return sd.tm_mday;
+		case 1: return sd.tm_mon;  // 1 month
+		case 2: return sd.tm_year; // year
+		case 3: return sd.tm_min;  // 3 minutes
+		case 4: return sd.tm_hour;  // hours
+	}
+}
+
+
+/*** BeginHeader up_shortbeep */
+up_shortbeep(); // does 40 ms beep
+/*** Endheader */
+int up_shortbeep(){ up_beep(40);}
+
+	
+/*** BeginHeader up_longbeep */
+up_longbeep(); // does 40 ms beep
+/*** Endheader */
+int up_longbeep(){ up_beep(120);}
+
+/*** BeginHeader fk_helpmsg */
+int fk_helpmsg(char **hptr);
+void fk_sethelpdelay(float sec);
+/*** Endheader fk_helpmsg */
+/* START FUNCTION DESCRIPTION ********************************************
+fk_helpmsg               <fk.lib>
+
+SYNTAX: int fk_helpmsg(char **hptr);
+
+KEYWORDS: keypad, LCD 
+
+DESCRIPTION: Display a series of help general messages when the help
+				key is hit. The background is stored and each string is
+				displayed for 1.8 seconds, then the background
+				is	restored. The input should be an array of strings
+				such as this:
+				
+				char *xxx[]={
+					"string 1",
+					"string 2",
+					" . ",
+					" . ",
+					" . ",
+					"string n",
+					""					// last string must be NULL
+				};
+ 
+RETURN VALUE: 0-help off, 1- help off
+END DESCRIPTION **********************************************************/
+
+int fk_help_delay;
+void fk_sethelpdelay(float sec){ fk_help_delay=sec*1000.; }
+
+int fk_helpmsg(char **hptr){
+	int fk_help_on; 
+	char **thptr;
+	extern char help_block[50];
+
+	#GLOBAL_INIT{ fk_help_on=0; fk_hptr=fk_default_help;fk_help_delay=1800;}
+
+	costate fkCSHelp always_on {
+		waitfor(fk_tkey==6);        // wait for help key
+		thptr = hptr;
+		fk_kkill();                // flush help key
+
+		// begin help sequence
+		lcd_savscrn(help_block);
+		fk_help_on=1;
+
+		while(**thptr && (*thptr!=0)){	// null string or null ptr
+
+			// display each string 1.8 seconds
+			//  until NULL string found or key hit 
+			lcd_erase_line(1);
+			lcd_printf(0x01000000l,*(thptr++)); 
+			fk_keyfound=1; // abort any background messages
+			if(fk_tkey) break;
+			waitfor(DelayMs(fk_help_delay) || fk_tkey);
+		}
+		lcd_resscrn(help_block);    // restore previous screen
+		if(fk_tkey && fk_tkey<=6) fk_kkill();
+		fk_help_on=0;
+		abort;                          
+	}                                       // end of costate
+	return !fk_help_on;
+}
+
+#asm
+dum: equ _fk_requested
+#endasm
+
+
+/*** BeginHeader fk_monitorkeypad, fk_backgnddelay, fk_auxkey */
+
+void fk_monitorkeypad();
+extern unsigned long fkFrGndTOMs;
+void fk_backgnddelay(unsigned long int sec);
+int fk_auxkey(int n);// return value of aux keys
+CoData fk_background,fk_auxkeyloop,fk_fivekeyloop;
+int fk_auxdone;  // used for aux keys
+
+/*** Endheader fk_monitorkeypad */
+
+/* START FUNCTION DESCRIPTION ********************************************
+fk_monitorkeypad               <fk.lib>
+
+SYNTAX: void fk_monitorkeypad(void);
+
+KEYWORDS: keypad, LCD 
+
+DESCRIPTION: Monitor the keypad for hits. Should be called as an
+				 SRTK or RTK high priority task. Sets global "fk_tkey"
+				 to 1-12 for key hit or 0 for no hit. Also monitors for
+				 2 key reset combo. If a reset combo is detected, function
+				 will not return and watchdog timeout will occur.
+					
+RETURN VALUE: not defined
+END DESCRIPTION **********************************************************/
+unsigned long fkFrGndTOMs;// resting display delay in ms
+int fk_auxkeyhit; // save aux key hits
+
+void fk_backgnddelay(unsigned long int sec){ fkFrGndTOMs=sec*1000;}
+int fk_auxkey(){ return fk_auxkeyhit;}
+
+void fk_monitorkeypad(){
+#ifdef EASYSTRT
+	struct lcd_scrn fk_fg;
+	static long MS;
+#endif
+
+#ifdef EASYSTRT
+	segchain _main_init { fkFrGndTOMs = 0L; }// no background default
+#endif
+
+
+	if (fk_tkey) {		// enter here each big loop
+		//	unhandled key (future?)
+	}
+	// following clears unhandled keys by bring next key from queue
+	fk_tkey = lc_kget(0); // remove any key from the queue
+	
+	if(fk_tkey && fk_tkey>6
+			&& fk_tkey<13) fk_auxkeyhit=fk_tkey; // aux keys
+	
+#ifdef EASYSTRT
+	costate fkCSMonitor always_on {
+		// loop here till key pressed or background display time
+		// expires if fkFrGndTOMs == 0 there is not background display
+		MS = MS_TIMER;		// + fkFrGndTOMs;
+		while (!fk_tkey &&
+				(( fkFrGndTOMs == 0L) || (MS_TIMER - MS) < fkFrGndTOMs )) {
+			CoResume(&fk_fivekeyloop);
+			yield;
+		}// while
+		if (!fk_tkey) {	// if no background fk_tkey always true here
+		// here to start background display, no key and delay expired
+			CoBegin(&fk_background);
+			CoPause(&fk_fivekeyloop);	// CoPause
+			lcd_savscrn((char*)&fk_fg);
+			lcd_erase();
+			while (!fk_tkey) {
+				CoResume(&fk_background);
+				yield;
+			}// while
+			lcd_resscrn((char*)&fk_fg);
+			CoReset(&fk_background);
+			CoResume(&fk_fivekeyloop);	//CoResume
+			fk_kkill();  // kill key that ended the background display
+		} else if (fk_tkey == 6) {
+			// here to start help display, key 6 pressed
+			up_shortbeep();
+			CoPause(&fk_fivekeyloop);
+			waitfor(fk_helpmsg(fk_hptr));
+			CoResume(&fk_fivekeyloop);
+		} else if(fk_tkey<6){
+			// process a regular key
+			CoResume(&fk_fivekeyloop);
+		} else if(fk_tkey>6) {
+			// process the aux keys here
+			CoPause(&fk_fivekeyloop); // main loop and help and background off
+			fk_auxdone=1;
+			lcd_savscrn((char*)&fk_fg);
+			lcd_erase();
+			CoBegin(&fk_auxkeyloop);
+			waitfor(fk_auxdone==0 || DelayMs(1000)); // give time to get started
+			waitfor(fk_auxdone);
+			lcd_resscrn((char*)&fk_fg);
+			CoReset(&fk_auxkeyloop);
+			CoResume(&fk_fivekeyloop);
+
+		}
+	}
+#endif
+}
+
+/*** BeginHeader fk_item_alpha */
+
+int fk_item_alpha(char *s1 ,char *var, int wdsize);
+
+/*** Endheader fk_item_alpha */
+/* START FUNCTION DESCRIPTION ********************************************
+fk_item_alpha                   <fk.lib>
+
+SYNTAX:int fk_item_alpha(char *s1 ,char *var, int wdsize);
+
+KEYWORDS:
+
+DESCRIPTION: Displays/modifies a string using the
+	5 key system. "s1" is a string containing a prompt.
+	"*var" points to the string to be displayed and/or modified.
+
+PARAMETER1: this pointer points to a prompt that is printed on the LCD
+before (to the left of) the string to be edited.
+
+PARAMETER2: this pointer points to the storage of the string to be
+displayed and possibly modified.
+
+PARAMETER3: this integer indicates the maximum length of the string to
+be edited.
+
+RETURN VALUE: 0-not done, 1- done. Returns  1 or 0 in global "fk_newmenu".
+
+END DESCRIPTION **********************************************************/
+int fk_item_alpha(char *s1, char *var, int wdsize){
+	int i, k, cursor, step, nchar; char *ptr;
+	int cursormin,cursormax,pchar;
+	int nbytes;
+	char bytes[40] = {"ABCDEFGHIJKLMNOPQRSTUVWYZ1234567890-. $"};
+
+	// change to upper case
+	for( i = 0 ; i < wdsize ; i++ ){
+		if( (var[i] < 124) && (var[i] > 96) ){
+			var[i] = var[i] - 32;
+		}   
+	}
+
+	costate fkCSItem always_on {
+		nbytes = sizeof(bytes) - 1;
+		fk_newmenu = 0;
+		k = 0;
+		cursormin = cursor = strlen(s1);    	 // start cursor on left of field
+		cursormax = cursormin + strlen(var) - 1;
+		pchar = 0;                              // point to first char
+		lcd_erase_line(1);
+
+		for( k=0; k<wdsize; k++){               // blank out invalid chars
+			if(var[k]<32 || (var[k]&0x80)){
+				var[k] = ' ';
+			}
+		}
+		var[wdsize]=0;                          // null terminator
+
+		for(pchar=0; pchar<nbytes; pchar++){	// get value pchar
+						if(var[0]==bytes[pchar]) break;}
+
+		while(1){
+			lcd_printf(0x01001100l+cursor, "%s%s", s1, var);
+			k=fk_tkey;
+			if (fk_tkey && fk_tkey < 6) fk_kkill();
+			switch(k){
+
+				case 1:                           // new item or menu
+					fk_newmenu=1;
+				case 2:
+					up_shortbeep();
+					abort;  
+
+				case 3:                           // field key
+					if(cursor==cursormax){
+						cursor=cursormin;
+					}
+					else
+					{
+						cursor++;
+					}
+					up_shortbeep();
+
+					// get the index for the char in new field
+					for(pchar=0; pchar<nbytes; pchar++){
+						if(var[cursor-cursormin]==bytes[pchar]){
+							break;
+						}
+					}
+					break;
+
+				case 4:                          // up key
+					pchar = pchar + 1;
+					if(pchar > nbytes-1){   		// cycle index
+						pchar = 0;
+					}   
+					var[cursor-cursormin] = bytes[pchar];
+					break;  
+
+				case 5:                         // down key
+					pchar = pchar - 1;
+					if(pchar < 0){               // cycle index
+						pchar = nbytes-1;
+					}   
+					var[cursor-cursormin] = bytes[pchar];
+					break;
+						
+				default:
+					k = 0;
+					while(1){
+						waitfor(DelayMs(600) || (fk_tkey && fk_tkey<6) );
+						if(fk_tkey && fk_tkey<6) break;
+						lcd_printf(0x01001100+cursor, "");
+						waitfor(DelayMs(150) || (fk_tkey && fk_tkey<6) );
+						if(fk_tkey && fk_tkey<6) break;
+						lcd_printf(0x01000100+cursor, "");
+						}
+					
+			}                                   // end of switch                                    
+			up_shortbeep();
+		}                                      // end while
+	}                                         // end of function block
+	return k;
+}
+
+#asm
+dum: equ _fk_requested
+#endasm
+
+
+/*** Beginheader fk_item_int  */
+
+int fk_item_int(char *string,int *num,int lower,int upper);
+
+/*** Endheader fk_item_int */
+
+/* START FUNCTION DESCRIPTION ********************************************
+fk_item_int                <fk.lib>
+
+SYNTAX: int fk_item_int(char *string,int *num,int lower, int upper)
+
+KEYWORDS: 
+
+DESCRIPTION: Displays/modifies an integer number using the
+	5 key system. "string" is a "printf" format string containing the
+	output of the integer in the form %nd (n is 1 digit) - example: %5d. 
+	"*num" points to the integer to be displayed and/or modified.
+ 	The arguments "upper" and "lower" are the upper and
+	lower allowed   limits.
+
+PARAMETER1: this parameter points to a string that specifies how the
+integer to be displayed/modified will be presented. It uses the
+same formatting standards as printf.
+
+PARAMETER2: this parameter points to the storage of the variable to
+be displayed and modified.
+
+PARAMETER3: this parameter specifies the lower bound of the value of
+the variable displayed/modified.
+
+PARAMETER4: this parameter specifies the upper bound of the value of
+the variable displayed/modified.
+
+RETURN VALUE: 0-not done, 1- done. Returns  1 or 0 in global "fk_newmenu".
+END DESCRIPTION **********************************************************/
+int fk_item_int(char *string, int *num,int lower, int upper){        
+	int k;  
+	int cursor, cursormax, cursormin;
+	int factor,mulfac[5]={1,10,100,1000,10000};
+							
+	costate fkCSItem always_on { // begin costatement
+		fk_newmenu=0;
+		
+		for(cursor=0; cursor<18; cursor++){
+			if(string[cursor]=='%') break;
+		}
+		if(cursor>=17) {up_longbeep(); fk_kkill(); return 1;} // bad data
+		cursormin = cursor;
+		cursormax = cursor+string[cursor+1] - 49; 
+		if(cursormax<cursormin) cursormax = cursormin; // check
+		if( (cursormax-cursormin)>4) cursormin = cursormax-4;
+		cursor=cursormax;
+		factor=1;
+		if( *num<lower) *num = lower; 
+		if( *num>upper) *num = upper;
+		lcd_erase_line(1);
+
+		while(1){ 
+			lcd_printf(0x01001100L+cursor,string,*num);
+			k=fk_tkey;                                  // get key hit
+			if (fk_tkey && fk_tkey < 6) fk_kkill();
+			switch(k){
+				case 1: fk_newmenu=1;                    // new item or new menu
+				case 2: up_shortbeep();
+							abort;
+					
+				case 3: if(cursor==cursormin){   // field key
+								cursor = cursormax;  // cycle cursor
+							} 
+							else{
+								--cursor;
+							}
+							factor=mulfac[cursormax-cursor];
+							k = 0;
+							break;
+														
+				case 4: if(*num+factor<=upper){ 		// up key
+								*num = *num+factor;     // check upper bound
+							}
+							else{
+								if(cursor < cursormax){
+									cursor++;
+									factor = mulfac[cursormax-cursor];
+								}
+							}
+							k = 0;
+							break;
+						
+				case 5: if( *num-factor>=lower){ 	// down key
+								*num=*num-factor;       // check lower bound
+						
+							}
+							else{
+								if(cursor<cursormax){
+									cursor++;
+									factor=mulfac[cursormax-cursor];
+								}   
+							}
+							k = 0;
+							break;
+
+				default:    k = 0;
+							waitfor(fk_tkey && fk_tkey<6);
+					
+			}                                           // end of switch
+			up_shortbeep();
+		}                                               // end of while
+	}                                                   // end of costatement
+	return k;
+}
+
+#asm
+dum: equ _fk_requested
+#endasm
+
+/*** Beginheader fk_item_uint  */
+
+int fk_item_uint(char *string,unsigned int *num,unsigned int lower
+						,unsigned int upper);
+
+/*** Endheader fk_item_uint */
+
+/* START FUNCTION DESCRIPTION ********************************************
+fk_item_uint                <fk.lib>
+
+SYNTAX: int fk_item_uint(char *string,unsigned int *num
+				,unsigned int lower, unsigned int upper)
+
+KEYWORDS: 
+
+DESCRIPTION: Displays/modifies an unsigned integer number using the
+	5 key system. "string" is a "printf" format string containing the
+	format code of the integer in the form %nu (n is 1 digit) - example: %5u. 
+	"*num" points to the integer to be displayed and/or modified.
+	The arguments "upper" and "lower" are the upper and
+	lower allowed   limits.
+
+PARAMETER1: this parameter points to a string that specifies how the
+unsigned integer to be displayed/modified will be presented. It uses the
+same formatting standards as printf.
+
+PARAMETER2: this parameter points to the storage of the variable to
+be displayed and modified.
+
+PARAMETER3: this parameter specifies the lower bound of the value of
+the variable displayed/modified.
+
+PARAMETER4: this parameter specifies the upper bound of the value of
+the variable displayed/modified.
+
+RETURN VALUE: 0-not done, 1- done. Returns  1 or 0 in global "fk_newmenu".
+END DESCRIPTION **********************************************************/
+int fk_item_uint(char *string, unsigned int *num, unsigned int lower
+				,unsigned int upper){
+	int key;    
+	int cursor, cursormax, cursormin;
+	unsigned int factor,mulfac[5]={1,10,100,1000,10000};
+
+	costate fkCSItem always_on {
+		fk_newmenu=0;
+		for(cursor=0; cursor<18; cursor++) if(string[cursor]=='%') break;
+		if(cursor>=17) {up_longbeep(); fk_kkill(); return 1;} // bad data
+		cursormin=cursor; cursormax=cursor+string[cursor+1]-49; 
+		if(cursormax<cursormin) cursormax=cursormin; // check
+		if( (cursormax-cursormin)>4) cursormin=cursormax-4;
+		cursor=cursormax; factor=1;
+		if( *num<lower) *num=lower; 
+		if( *num>upper) *num=upper;
+		lcd_erase_line(1);
+			
+		while(1){
+			lcd_printf(0x01001100L+cursor,string,*num); // position cursor
+			key = fk_tkey ;
+			if (fk_tkey && fk_tkey < 6) fk_kkill();
+
+			switch(key){
+
+				//------- new item or new menu ------- 
+				case 1: fk_newmenu = 1;         
+				case 2: up_shortbeep();
+							abort;  
+
+				//------- field key ------- 
+				case 3: 	if(cursor == cursormin) cursor = cursormax; 
+								else --cursor; 
+							factor = mulfac[cursormax-cursor];
+							break;
+							
+				//------- up key ------- 
+				case 4: 	if(*num+factor <= upper){
+								*num = *num+factor;
+							}
+							else{
+								if(cursor < cursormax){ 
+									cursor++;
+									factor = mulfac[cursormax-cursor];
+								}
+							}
+							break;
+							
+				//------- down key ------- 
+				case 5: if( *num >= lower+factor){ 
+								*num=*num-factor;
+							} 
+							else{
+								if(cursor < cursormax){ 
+									cursor++;
+									factor = mulfac[cursormax-cursor];
+								}
+							}
+							break;
+		
+				default:    key =0; 
+							waitfor(fk_tkey && fk_tkey<6);
+			}                           // end of switch            
+			up_shortbeep();
+		}                               // end of while
+	}                                   // end of funcblk                           
+	return key;
+}
+
+#asm
+dum: equ _fk_requested
+#endasm
+
+
+/*** Beginheader fk_item_float  */
+
+int fk_item_float(char*s1,  float *num, float lower, float upper);
+
+/*** Endheader fk_item_float */
+
+/* START FUNCTION DESCRIPTION ********************************************
+fk_item_float                <fk.lib>
+
+SYNTAX: int fk_item_float(char*s1,float *num, float lower, float upper);
+
+KEYWORDS: keypad, lcd  
+
+DESCRIPTION:  Displays/modifies a floating point number for using the 5 key
+ system."s1" is a prompt containing the format code for displaying the number.
+ The format code should be in the form of  %n.mf. Display line is as follows:
+   vvvvvv wwww.yyyy 								
+	
+ Where vvvvv is a prompt string , wwww is n chars long. yyyy is m chars long
+ (required: n >= 1). n + m cannot exceed 9 or it defaults to 5,2. "num" points
+ to floating point number to be displayed and modified. The arguments upper
+ and lower are the upper and lower allowed limits.
+
+ This function will work for numbers in the ranges [-1E6,-1E-4],[1E-4,1E6]
+ with the appropriate format specification.   
+	
+PARAMETER1: this parameter points to a string that specifies how the
+floating point number is to be displayed/modified will be presented.
+It uses the same formatting standards as printf.
+
+PARAMETER2: this parameter points to the storage of the variable to
+be displayed and modified.
+
+PARAMETER3: this parameter specifies the lower bound of the value of
+the variable displayed/modified.
+
+PARAMETER4: this parameter specifies the upper bound of the value of
+the variable displayed/modified.
+
+RETURN VALUE: 0-not done, 1- done. Returns  1 or 0 in global "fk_newmenu".
+END DESCRIPTION **********************************************************/
+// outputs in form s1%(n1+n2).n2f
+// n1+n2 <= 9  
+int fk_item_float(char *s1parm,float *num, float lower, float upper){
+	int key, n, n1, n2, pwr, sgn,j,k;   
+	int cursor, cursormax, cursormin,cursordec;
+	long p,np;
+	long factor,lnum,lupper,llower;
+	long powers[10]={1l,10l,100l,1000l,10000l,100000l,
+							1000000l,10000000l,100000000l,1000000000l};
+	char fmt[2][18];
+	char s1[20];	// prompt string
+	char s1a[10]; // terminal string after format
+	char s2=' ';
+	float ftmp,ftmp2;
+	costate fkCSItem always_on {
+
+		n1 = 2;             			 // default to %5.2f
+		n2 = 2;
+		strcpy(s1,s1parm);          //make local copy of format string
+		for(cursor=0; cursor<18; cursor++){  
+
+			if(s1[cursor]=='%'){        // look for '%' 
+
+				s1[cursor] ='\0';       // terminate local copy of string at %           
+
+				// parse next 3 chars for "n1.n2" where n1 + n2 ,+ 9
+				if( (s1[cursor+1]-48 > 0)   &&
+					 (s1[cursor+1]-48 <= 9)  &&
+					 (s1[cursor+2] == '.' )  &&
+					 (s1[cursor+3]-48 >  0)  &&
+					 (s1[cursor+3]-48 <= 9)  &&
+					 ( s1[cursor+1] <= 9+48 ) &&
+					 ( (int)s1[cursor+3] < ((int)s1[cursor+1] - 1) ) &&
+					 ( (cursor + s1[cursor+1]) < 21+48) ) {
+	
+					 n1 = (int)s1[cursor+1]-48;
+					 n2 = (int)s1[cursor+3]-48;
+					 n1 = n1 - n2 - 1;
+				}// if
+				// compute trailing string in message
+				j=cursor+4; if(s1[j]=='f') j++; // skip over 'f' in format
+				for(k=0; k<10; k++) {s1a[k]=s1[j]; if(s1[j]==0) break; j++;}
+				
+ 			 	break;
+			}// if(s1
+		}// for
+
+		if(*num < 0.0){
+			sgn = -1;
+		}
+		else{
+			sgn = 1;
+		}   
+
+		// see if bounds reversed
+		if(lower > upper){
+			ftmp = lower;
+			lower = upper;
+			upper = ftmp;
+		}    
+		// check bounds
+		if( *num<lower) *num = lower; 
+		if( *num>upper) *num = upper;
+		// avoid overflow when converting to integer
+		while((  ((float)n2) * (float)powers[n2] * (upper) ) > 2.145e9  ||
+				( ((float)n2) * (float)powers[n2] * (lower) ) < -2.145e9  
+			) {--n2;}
+			
+		fk_newmenu=0;
+		p = 1;
+
+		// create format string for lcd_printf
+		sprintf(&fmt[0][0],"%%s%%%dld.%%0%dld%%s",n1,n2);
+		sprintf(&fmt[1][0],"%%s%%-%ds.%%0%dld%%s",n1,n2);
+
+		cursormax =strlen(s1) + n1 + n2;
+		cursormin=cursormax-n1-n2;
+		cursordec=cursormax-n2;
+		cursor=cursormax;
+
+		pwr = n2;                           // index of current power to add, sub
+		np = powers[n2];
+		
+		// get long version of floating number & bounds
+		ftmp = fmod( fabs(*num) * (float)(np),1.0 );
+		ftmp2 = fabs(*num*np) - ftmp;
+		if( ftmp < 0.50 ){
+			lnum = sgn * ftmp2;     
+		}
+		else
+		{
+			lnum = sgn * (ftmp2 + 1);
+		}
+		lupper = (long)(upper*np);      
+		llower = (long)(lower*np);
+
+		lcd_erase_line(1);
+		
+		while(1){ 
+			key = fk_tkey;
+			if (fk_tkey && fk_tkey < 6) fk_kkill();
+
+			if(lnum/np==0 && lnum < 0)   // special case -0.nnn
+			{
+				lcd_printf(0x01001100L+cursor,&fmt[1][0],s1,"-0"
+						,labs(lnum%np),s1a);
+			}
+			else
+			{
+				lcd_printf(0x01001100L+cursor,&fmt[0][0],s1,lnum/np
+						,labs(lnum%np),s1a);
+			}
+
+			switch(key){
+
+				 //-------- new item or new menu --------
+				case 1: fk_newmenu=1;
+				case 2: up_shortbeep();
+						   abort;                               // exit costate 
+
+				//--------  field key --------
+				case 3:  if(cursor==cursormin){      // cycle cursor
+								cursor=cursormax;
+							}
+							else{
+								--cursor;
+							}
+							if(cursor==cursordec){      // skip decimal point
+								if(cursor==cursormin){
+									cursor=cursormax; 
+								}
+								else{
+									--cursor;
+								}
+							}
+							if(cursor>cursordec){       // find power of 10  
+								pwr=cursormax-cursor;
+							}
+							else{
+								pwr = cursormax-cursor-1;   // account decimal point
+							}
+							p=powers[pwr];
+							key = 0;
+							break;
+				
+				//--------  up key --------
+				case 4:  if(lnum+p<=lupper){         // increase number
+								lnum=lnum+p;
+								*num=((float)lnum*10.0)/((float)(np*10));
+							}
+							else{                               // unless out of bounds
+								up_longbeep(); 
+								if(cursor<cursormax){   // then move cursor right
+									cursor++;
+									p=powers[--pwr];
+									if(cursor==cursordec && cursor!=cursormax){
+										 ++cursor;        // skip decimal point
+									}
+								}
+							}
+							key = 0;
+							break;
+
+				//-------- down key --------
+				case 5:	if( lnum-p>=llower ){
+								lnum=lnum-p;
+								*num=((float)lnum*10.0)/((float)(np*10));
+							}   
+							else{
+								up_longbeep(); 
+								if(cursor<cursormax){ 
+									cursor++;
+									p=powers[--pwr];
+									if(cursor==cursordec && cursor!=cursormax){
+										 ++cursor;
+									}
+								}
+							}
+							key = 0;
+							break;
+							
+				default:    key = 0;
+							waitfor(fk_tkey && fk_tkey<6);
+			}                                   // end of switch
+			up_shortbeep();
+		}                                      // end of while
+	}                                         // end of funcblk
+	return key;
+}
+
+#asm
+dum: equ _fk_requested
+#endasm
+
+/*** BeginHeader  fk_item_setdate */
+
+int fk_item_setdate(struct tm *tmptr);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+fk_item_setdate                <fk.lib>
+
+SYNTAX: int fk_item_setdate(struct tm *tmptr)
+
+KEYWORDS: date 
+
+DESCRIPTION: Five key system function to modify the day, month
+and year elements of a "tm struct". "*tmptr" points to the "tm struct"
+to be modified. "tm_wr(struct tm *tmptr)" can be used to modify the
+real-time clock.   
+ 
+RETURN VALUE: 0-not done, 1- done. Returns  1 or 0 in global "fk_newmenu".
+END DESCRIPTION **********************************************************/
+int fk_item_setdate(struct tm *tmptr){
+	struct tm sd,sd1; 
+	unsigned long seconds, first_seconds; 
+	int sgn;
+	long int offset;
+	int k, j, cindex;
+	unsigned long curpos[5]={9l,10l,13l,16l,17l};   // positions of cursor
+	unsigned long cursor; 
+	cursor=0x01091100L;                                     // initial cursor, and in curpos
+	fk_newmenu=0;
+
+	costate{
+		waitfor(DelayMs(1000L));
+		seconds = SEC_TIMER + offset;
+		mktm(&sd,seconds); 
+		pr_date(cursor + curpos[cindex], &sd);
+	} 
+	 
+	costate fkCSItem always_on {
+		lcd_erase_line(1);
+
+		// compute the seconds parameter with time part == zero
+		seconds = SEC_TIMER;
+
+		lcd_printf(0x01000000L,"set date            ");
+		mktm(&sd,seconds); 
+		pr_date(0x01091109L,&sd);
+		cindex = 0;
+	
+		// the loop setting the date
+		while(1){
+			k = fk_tkey;
+			if (fk_tkey && fk_tkey < 6) fk_kkill();
+			sgn = 1;                                         // assume up increment
+			mktm(&sd,seconds); 
+			pr_date(cursor+curpos[cindex],&sd);
+
+			switch(k){
+				case 1:	fk_newmenu=1;                        // new menu
+				case 2: 	up_shortbeep();
+						  	mktm(tmptr, seconds); 
+							abort;                               // new item or new menu
+
+				case 3:  cindex++; if(cindex>4) cindex=0;     // step the field
+							lcd_printf(cursor+curpos[cindex],"");
+							break;
+
+				case 5:  sgn = -1;                            // down increment
+				case 4: 	switch (cindex){                   	 // up key
+
+								case 0:                           // 10 days
+											if(date_field(1,seconds)
+												==date_field(1,seconds+sgn*864000L))
+											{
+												seconds=seconds+sgn*864000L;    // advance 10 days
+												offset+=sgn*864000L;    // advance 10 days
+											}
+											break;                                              
+
+								case 1: seconds=seconds+sgn*86400L;     // 1 day
+											offset += sgn*86400L;
+											break;
+
+								case 2:     // advance exactly 1 month if possible
+											for(j=27; j<32; j++){
+												if(
+													date_field(0,seconds+sgn*j*86400L)
+													== date_field(0,seconds)
+													|| date_field(1,seconds+sgn*(j+1)*86400L)
+													== (date_field(1,seconds)+2)
+													) break;
+											}
+											seconds=seconds+sgn*86400L*j;   // month advance
+											offset += sgn*86400L*j;
+											break;                                              
+
+								case 3: if(sgn==1){                             // 10 years
+												sd.tm_year += 10;
+												if (sd.tm_year > 179) sd.tm_year -= 100;
+											}
+											else{
+												sd.tm_year -= 10;
+												if (sd.tm_year < 80) sd.tm_year += 100;
+											}
+	
+											//advance 10 years
+											for(j=0; j<3; j++)                      // compute leap days
+											{
+												if(date_field(0,seconds)
+													== date_field(0,seconds+sgn*86400L*(3650L+j)
+														)) break;
+											}
+											seconds=seconds+sgn*(86400L*(3650L +j));
+											offset+=sgn*(86400L*(3650L +j));
+											break;                                              
+											
+								case 4:  if(sgn==1){                            // advance 1 year
+												sd.tm_year += 1;
+												if (sd.tm_year > 179) sd.tm_year -= 100;
+											}
+											else{
+												sd.tm_year -= 1;
+												if (sd.tm_year < 80) sd.tm_year += 100;
+											}
+
+											// compare days 1 year apart
+											if(date_field(0,seconds)==
+												date_field(0,seconds+sgn*365*86400L)
+													) {
+													seconds=seconds+sgn*365*86400L;
+													offset += sgn*365*86400L;
+											}
+											else {
+												seconds=seconds+sgn*366*86400l;
+												offset += sgn*366*86400l;
+											}
+											break;                                              
+								
+							}                       // end of switch on cindex
+							break;              // from case 4 on k         
+				default: k = 0;
+							waitfor(fk_tkey && fk_tkey<6);          
+							up_shortbeep();
+			}                                       // end of switch on k
+		}                                           // end outer while
+	}                                               // end of funcblk
+	return k;
+}
+
+/*** BeginHeader  fk_item_settime */
+
+int fk_item_settime(int modflags);
+
+/*** EndHeader   */
+
+/* START FUNCTION DESCRIPTION ********************************************
+fk_item_settime                <fk.lib>
+
+SYNTAX: int fk_item_settime(int modflags)
+
+KEYWORDS: keypad, LCD 
+
+DESCRIPTION: Five key system function to modify the second, minute
+and hour elements of a "tm struct". "*tmptr" points to the "tm struct"
+to be modified. "modflags" is reserved for future use. 
+				 
+RETURN VALUE: 0-not done, 1- done. Returns  1 or 0 in global "fk_newmenu".
+END DESCRIPTION **********************************************************/
+
+extern char fk_newmenu;
+
+int fk_item_settime(int modflags){
+
+	struct tm sd,sd1; 
+	unsigned long seconds, cursor; 
+	int k, j, cindex, day, sgn;
+	long int offset;
+	long steps[6]={36000L,3600L,600L,60L,10L,1L}; 
+	unsigned long curpos[6]={9L,10L,12L,13L,15L,16L};  // positions of cursor
+
+	cursor=0x01091100L;  // initial cursor, and in curpos
+	costate{
+		waitfor(DelayMs(1000L));
+		seconds = SEC_TIMER + offset;
+		lcd_printf(
+			cursor+curpos[cindex],
+			"%2d:%02d:%02d",
+			(int)((seconds % 86400) / 3600),
+			(int)((seconds % 3600) / 60) ,
+			(int)(seconds % 60));
+//		pr_time(cursor + curpos[cindex],seconds);
+	} 
+		
+	costate  fkCSItem always_on {
+		offset = 0;
+		seconds = SEC_TIMER; // current time zero date
+		
+		lcd_erase_line(1);
+			
+		lcd_printf(0x01000000L,"set time            ");
+		cindex=0;
+		fk_newmenu=0;
+		lcd_printf(
+			cursor+curpos[cindex],
+			"%2d:%02d:%02d",
+			(int)((seconds % 86400) / 3600),
+			(int)((seconds % 3600) / 60) ,
+			(int)(seconds % 60));
+//		pr_time(cursor + curpos[cindex], seconds);
+			
+		while(1){
+			k = fk_tkey;
+			if (fk_tkey && fk_tkey < 6) fk_kkill();
+			if(k) up_shortbeep();
+			sgn = 1;
+
+			switch(k){
+				case 1: fk_newmenu=1;           // new item or new menu
+				case 2: fk_kkill();
+							if(modflags)SEC_TIMER = seconds; 
+							abort;
+
+				case 3:     // step the field
+							cindex++;
+							if(cindex > 5) cindex=0; 
+							lcd_printf(cursor + curpos[cindex],"");
+							break;
+
+				case 5:  // down key
+							sgn = -1;               // fall thru
+				case 4:     // up key
+							if(date_field(0,seconds + sgn*steps[cindex])
+								== date_field(0,seconds)){
+								seconds = seconds + sgn*steps[cindex];
+								offset = offset + sgn*steps[cindex];
+							}
+							lcd_printf(
+								cursor+curpos[cindex],
+								"%2d:%02d:%02d",
+								(int)((seconds % 86400) / 3600),
+								(int)((seconds % 3600) / 60) ,
+								(int)(seconds % 60));
+//							pr_time(cursor + curpos[cindex],seconds);
+							break;
+
+				default: k = 0;
+							waitfor(fk_tkey && fk_tkey<6);  // wait for next key
+			}                                                       // end of switch on k
+		}                                                           // end while
+	}                                                           // end of funcblk
+	return k;
+}
+
+/*** BeginHeader  fk_item_date */
+
+int fk_item_date(char *prompt, int *ds1980);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+fk_item_date                <fk.lib>
+
+SYNTAX: int fk_item_date(char *prompt, int *ds1980)
+
+KEYWORDS: date 
+
+DESCRIPTION: Five key system function to display and modify the date.
+
+PARAMETER1: This is the prompt to display the date. The fields are as
+follows: month (3 character string), day-of-month (unsigned int),
+year (unsigned int) and day-of-week (3 character string).
+
+PARAMETER2: This is a pointer pointing to a variable storing the date
+displayed/modified as number of days since 1980 Jan 1.
+ 
+RETURN VALUE: 0-not done, 1- done. Returns  1 or 0 in global "fk_newmenu".
+END DESCRIPTION **********************************************************/
+int fk_item_date(char *prompt, int *ds1980){
+	unsigned long seconds, first_seconds; 
+	int sgn;
+	auto int step;
+	static struct tm t;
+	int k, j, cindex;
+	unsigned long curpos[5]={9l,10l,13l,16l,17l};   // positions of cursor
+	unsigned long cursor; 
+	static int chk_mday();
+	static int dom();
+
+	cursor=0x01091100L;        // initial cursor, and in curpos
+	fk_newmenu=0;
+
+//	costate{
+//		waitfor(DelayMs(1000L));
+//		seconds = seconds + 1;
+//		pr_time_date(0, cursor + curpos[cindex], seconds);
+//	} 
+	 
+	costate fkCSItem always_on {
+		lcd_erase_line(1);
+
+		// compute the seconds parameter with time part == zero
+		_mktm_date(&t,*ds1980);
+		lcd_printf(0x01000000L,"%8s            ",prompt);
+		pr_date(0x01091109L,&t);
+		cindex = 0;
+	
+		// the loop setting the date
+		while(1){
+			k = fk_tkey;
+			if (fk_tkey && fk_tkey < 6) fk_kkill();
+			sgn = 1;                              // assume up increment
+			_mktm_date(&t,*ds1980); 
+			pr_date(cursor+curpos[cindex],&t);
+
+			switch(k){
+				case 1:	fk_newmenu=1;                        // new menu
+				case 2: 	up_shortbeep();
+							abort;                               // new item or new menu
+
+				case 3:  cindex++; if(cindex>4) cindex=0;     // step the field
+							lcd_printf(cursor+curpos[cindex],"");
+							break;
+
+				case 5:  sgn = -1;                            // down increment
+				case 4: 	switch (cindex){                   	 // up key
+
+								case 0:                           // 10 days
+									step = 10;
+								 IncDecMon:
+									if (sgn < 0) {
+										if (t.tm_mday <= step) break;
+										else t.tm_mday -= step;
+									} else {
+										if ((t.tm_mday + step) >
+												dom())
+											break;
+										else t.tm_mday+=step;
+									}
+									*ds1980 = _mktime_date(&t);
+									break;
+								case 1:
+									step = 1;
+									goto IncDecMon;
+								case 2:     // advance exactly 1 month if possible
+									if (sgn < 0) {
+										if (t.tm_mon <= 1) break;
+										else --t.tm_mon;
+									} else {
+										if (t.tm_mon >= 12) break;
+										else ++t.tm_mon;
+									}
+									chk_mday();
+									*ds1980 = _mktime_date(&t);
+									break;                                              
+
+								case 3:
+									step = 10;
+								 IncDecYear:
+								 	if (sgn < 0) {
+								 		t.tm_year -= step;
+								 		if (t.tm_year < 80) t.tm_year += 100;
+								 	} else {
+								 		t.tm_year += step;
+								 		if (t.tm_year > 179) t.tm_year -= 100;
+								 	}
+								 	chk_mday();
+								 	*ds1980 = _mktime_date(&t);
+								 	break;										
+								case 4:
+									step = 1;
+									goto IncDecYear;
+							}                       // end of switch on cindex
+							break;              // from case 4 on k         
+				default: k = 0;
+							waitfor(fk_tkey && fk_tkey<6);          
+							up_shortbeep();
+			}                                       // end of switch on k
+		}                                           // end outer while
+	}                                               // end of funcblk
+	return k;
+	subfunc dom: {
+		__dom[!(t.tm_year % 4)][t.tm_mon-1];
+	}
+	subfunc chk_mday: {
+		if (t.tm_mday > dom())
+			t.tm_mday = dom();
+	}
+}
+
+#asm
+dum: equ _fk_requested
+#endasm
+
+/*** BeginHeader  fk_item_time */
+int fk_item_time(char *prompt, long *ss12am);
+/*** EndHeader   */
+
+
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+fk_item_time                <fk.lib>
+
+SYNTAX: int fk_item_time(char *prompt,long *ss12am)
+
+KEYWORDS: keypad, LCD 
+
+DESCRIPTION: Five key system function to display and modify the time.
+
+PARAMETER1: This is the prompt to display the date. The fields are as
+follows: hours (unsigned int), minutes (unsigned int) and seconds (unsigned
+int).
+
+PARAMETER2: This is a pointer pointing to a variable storing the time
+displayed/modified as number of seconds since 12AM.
+ 
+RETURN VALUE: 0-not done, 1- done. Returns  1 or 0 in global "fk_newmenu".
+END DESCRIPTION **********************************************************/
+int fk_item_time(char *prompt, long *ss12am){
+	static long seconds;
+	static unsigned long cursor; 
+	int k, j, cindex, day, sgn;
+	long steps[6]={36000L,3600L,600L,60L,10L,1L}; 
+	unsigned long curpos[6]={9L,10L,12L,13L,15L,16L};  // positions of cursor
+	auto long tmp;
+
+	cursor=0x01091100L;		// initial cursor, and in curpos
+//	costate{
+//		waitfor(DelayMs(1000L));
+//		seconds = seconds + 1;
+//		pr_time_date(1,cursor + curpos[cindex],seconds);
+//	} 
+		
+	costate fkCSItem always_on {
+		seconds = *ss12am; // current time zero date
+		if (seconds < 0) seconds = 0;
+		else if (seconds >= 86400) seconds = 86399;
+		lcd_erase_line(1);
+			
+		lcd_printf(0x01000000L,"%8s            ",prompt);
+		cindex=0;
+		fk_newmenu=0;
+//		pr_time_date(1, cursor + curpos[cindex], seconds);
+		lcd_printf(
+			cursor+curpos[cindex],
+			"%2d:%02d:%02d",
+			(int)(seconds / 3600),
+			(int)((seconds % 3600) / 60) ,
+			(int)(seconds % 60));
+		while(1){
+			k=fk_tkey;
+
+			if(k) up_shortbeep();
+			fk_kkill();                        // flush character 
+			sgn = 1;
+
+			switch(k){
+				case 1: 	fk_newmenu=1;           // new item or new menu
+				case 2: 	fk_kkill();
+							*ss12am = seconds;
+						  	abort;
+				case 3: 	// step the field
+						  	cindex++;
+						   if(cindex > 5) cindex=0; 
+						   lcd_printf(cursor + curpos[cindex],"");
+							break;
+
+				case 5:  // down key
+							sgn = -1;               // fall thru
+				case 4:     // up key
+							tmp = seconds + sgn*steps[cindex];
+							if ((tmp >= 0) && (tmp < 86400)) {
+								seconds = tmp;
+							}
+							lcd_printf(
+								cursor+curpos[cindex],
+								"%2d:%02d:%02d",
+								(int)(seconds / 3600),
+								(int)((seconds % 3600) / 60) ,
+								(int)(seconds % 60));
+							break;
+
+				default: k = 0;
+							waitfor(fk_tkey && fk_tkey<6);  // wait for next key
+			}                                           // end of switch on k
+		}                                              // end while
+	}                                                 // end of funcblk
+	return k;
+}
+
+#asm
+dum: equ _fk_requested
+#endasm
+
+/*** BeginHeader up_beepvol */
+
+void up_beepvol(int vol);
+extern int lc_beepvol;
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+up_beepvol                   <FK.LIB>
+
+SYNTAX: void up_beepvol(int vol);
+
+KEYWORDS: beep
+
+DESCRIPTION: Sets beeper volume. vol = 1 for low volume; 2 for hi volume.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+
+nodebug void up_beepvol(int vol)
+{
+#if BOARD_TYPE==CPLC_BOARD
+	#GLOBAL_INIT{ lc_beepvol=BEEPH;}
+	if (vol)
+	{
+		if (vol == 1)
+			lc_beepvol = BEEPL;
+		else
+			lc_beepvol = BEEPH;
+	}
+	else
+		lc_beepvol = 0;
+#endif
+}
+
+/*** BeginHeader lc_setbeep */
+
+void lc_setbeep(int delay);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+lc_setbeep                   <FK.LIB>
+
+SYNTAX: void lc_setbeep(int delay);
+
+KEYWORDS: beep
+
+DESCRIPTION: Sets beeper duration for "delay" counts of 1280 Hz cycles.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+
+extern int  lc_beepcount;           // count of cycles on beeper
+
+#asm nodebug
+lc_setbeep::
+		ld      (lc_beepcount),hl
+		ret
+#endasm
+
+
+/*** BeginHeader up_beep */
+
+void up_beep(unsigned k);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+up_beep                      <FK.LIB>
+
+SYNTAX: void up_beep(unsigned int k);
+
+KEYWORDS: beep
+
+DESCRIPTION: Sets beeper on for k milliseconds.  
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+
+nodebug void up_beep(unsigned int k)
+{                              // k in milliseconds, max=20000
+#if BOARD_TYPE==CPLC_BOARD
+		lc_setbeep(k * 2 * 1.280);
+							   // 2*1.280 is the number of millisecond
+							   // per scan time (0.0003906 sec). The scan
+							   // time for the CPLC is halved because the
+							   // buzzer is software driven (on/off) every
+							   // other scan time to generate the beeper
+							   // sound.
+#endif
+#if BOARD_TYPE==L_STAR
+		lc_setbeep(k * 1.280); // 1.280 is the number of millisecond per
+							   // scan time ( 0.00078125 sec). Unlike the 
+							   // CPLC, the Little Star's buzzer is self
+							   // resonating.
+		outport(BUZZER, 0xff);
+#endif
+
+#if BOARD_TYPE == Z104ISA
+		lc_setbeep(k * 1.280); // 1.280 is the number of milliseconds per
+							   // scan time ( 0.00078125 sec).
+		outport(SPEAKER, 1);
+#endif
+
+}
+
+/*** BeginHeader fk_item_enum  */
+
+int fk_item_enum(char *prompt,  int *enum, char *s1, ...);
+
+/*** Endheader fk_item_enum */
+
+/* START FUNCTION DESCRIPTION ***************************************
+fk_item_enum                   <fk.lib>
+
+SYNTAX:int fk_item_enum(char *prompt, int *choice, char *s1,...*sn, 0);
+
+KEYWORDS: LCD, keypad
+
+DESCRIPTION: Allows user to choose from a list of  null terminated
+  strings (maximum 20).
+  The format sring "prompt" must contain a string field (%s or %nns)
+  used to print the strings. The last the strings fields (after "s1",... "sn")
+  must be null string or null pointer.
+  "*choice" is given the number of the choice made (0 - (n-1)) 
+
+PARAMETER1: this parameter points to a string that specifies how the
+integer to be displayed/modified will be presented. It uses the
+same formatting standards as printf.
+
+PARAMETER2: this parameter points to the storage of the variable to
+be displayed and modified.
+
+PARAMETER3: this and all following parameters are pointers to strings
+that specifies what to display when the variable has a value of 0,1,2
+and so on.
+
+RETURN VALUE: 0-working, 1-next item/menu, "fk_newmenu"=1 go to new menu
+END DESCRIPTION *****************************************************/
+int fk_item_enum(char *prompt, int *enum, char *s1, ...){
+	int k,j;
+	char *ptr;
+	char **p; 				// point to pointer to character
+
+	costate fkCSItem always_on {
+//		*enum = 0;
+		fk_newmenu=0; k=0;
+		p = &s1; 			// point to first field in stack
+		for(j = 0; j < 20; j++) if(*p++==0 || p==0) break;
+		p--; j--; if(*enum<0 || *enum>j) *enum=0;
+		while(1){
+			ptr=*(&s1+*enum);
+			lcd_erase_line(1);
+			lcd_printf(0x01000100l,prompt,ptr);
+			k=fk_tkey;
+			if (fk_tkey && fk_tkey < 6) fk_kkill();
+			switch(k){
+
+				case 1: 	fk_newmenu=1;
+				case 2:
+							abort;			// new item
+				case 3:
+							k = 0;
+							break;
+				case 4:  if(*enum==j)
+								*enum=0;
+					 		else
+					 			(*enum)++;
+							k = 0;
+					  		break;
+				case 5: 	if(*enum==0)
+								*enum=j;
+							else
+								(*enum)--;
+							k = 0;
+					  		break;
+				default: k = 0;
+							waitfor(fk_tkey && fk_tkey<6);
+
+			} 		// end of switch
+			up_shortbeep();
+		}  		// end of while
+	} 				// end of function block
+	return k;
+}
+
+#asm
+dum: equ _fk_requested
+#endasm
+
+/*** BeginHeader fk_pitem_enum  */
+
+int fk_pitem_enum(char *prompt,  int enum, char *s1, ...);
+
+/*** Endheader fk_pitem_enum */
+
+/* START FUNCTION DESCRIPTION ***************************************
+fk_pitem_enum                   <fk.lib>
+
+SYNTAX:int fk_pitem_enum(char *prompt, int *choice, char *s1,...*sn, 0);
+
+KEYWORDS: LCD, keypad
+
+DESCRIPTION: Displays one of a list of strings depending on value of
+  integer enum
+  strings (maximum 20).
+  The format sring "prompt" must contain a string field (%s or %nns)
+  used to print the strings. The last the strings fields (after "s1",... "sn")
+  must be null. "*choice" is given the number of the choice made (0 - "n"-1) 
+
+RETURN VALUE: 0-working, 1-next item/menu, "fk_newmenu"=1 go to new menu
+END DESCRIPTION *****************************************************/
+int fk_pitem_enum(char *prompt, int enum, char *s1, ...){
+	int k,j;
+	char *ptr;
+	char **p; 				// point to pointer to character
+
+	costate fkCSItem always_on {
+
+		fk_newmenu=0; k=0;
+		p = &s1; 			// point to first field in stack
+		
+		while(1){
+			ptr=*(&s1+enum);
+			lcd_erase_line(1);
+			lcd_printf(0x01000100l,prompt,ptr);
+			k=fk_tkey;
+			if (fk_tkey && fk_tkey < 6) fk_kkill();
+			switch(k){
+
+				case 1: 	fk_newmenu=1;
+				case 2:  up_shortbeep();
+							abort;			// new item
+				case 3:
+				case 4:
+				case 5:	up_longbeep();
+							
+				default: k = 0; 
+							waitfor(DelaySec(2) || (fk_tkey && fk_tkey<6) );
+
+			} 		// end of switch
+			
+		}  		// end of while
+	} 				// end of function block
+	return k;
+}
+
+#asm
+dum: equ _fk_requested
+#endasm
+
+
+
+/*** BeginHeader fk_setuphelp  */
+
+void fk_setuphelp(char *s1,...);
+
+/*** Endheader fk_setuphelp  */
+
+/* START FUNCTION DESCRIPTION ***************************************
+fk_setuphelp                   <fk.lib>
+
+SYNTAX:int fk_setuphelp("line 1", "line 2", ...,0);
+
+KEYWORDS: LCD, keypad
+
+DESCRIPTION:Sets the help message. Up to 15 lines of text.
+
+RETURN VALUE: 0-working, 1-next item/menu, "fk_newmenu"=1 go to new menu
+END DESCRIPTION *****************************************************/
+
+void fk_setuphelp(char *s1,...)	{
+
+	char *msgptrs[16]; // limited to 15 lines of help
+	char **j;
+	char *cnul={""};
+	int k;
+
+	j=&s1;
+
+	for(k=0; k<15; k++){
+		if(*j!=0 && **j!=0) msgptrs[k]=*j++;
+		else break;
+	}
+	msgptrs[k]=cnul;
+	fk_hptr=msgptrs;
+}
+#asm
+dum: equ _fk_requested
+#endasm		
+
+/*** BeginHeader fk_showmenu  */
+
+void fk_showmenu(char *s1);
+
+/*** Endheader fk_showmenu */
+
+/* START FUNCTION DESCRIPTION ***************************************
+fk_showmenu                   <fk.lib>
+
+SYNTAX:void fk_showmenu("menu text");
+
+KEYWORDS: LCD, keypad
+
+DESCRIPTION: Writes the menu on time line of screen
+
+RETURN VALUE: 0-working, 1-next item/menu, "fk_newmenu"=1 go to new menu
+END DESCRIPTION *****************************************************/
+
+void fk_showmenu(char *s1){
+	lcd_erase_line(0);
+	lcd_printf(0,s1);
+	fk_newmenu=0;
+	}
+#asm
+dum: equ _fk_requested
+#endasm
+
+/*** BeginHeader fk_pitem */
+
+int fk_pitem(char *s1,...);
+
+/*** Endheader fk_pitem */
+
+/* START FUNCTION DESCRIPTION ***************************************
+fk_pitem                   <fk.lib>
+
+SYNTAX:int fk_pitem(char *format, ...);
+
+KEYWORDS: LCD, keypad
+
+DESCRIPTION: Displays a printf type format updated every 2 seconds
+   		    in context of 5-key system
+
+PARAMETER1: this pointer points to a format string using the same
+field encoding scheme as printf.
+
+PARAMETER2: this is an item to be printed. Must have a matching
+field in the format string.
+
+RETURN VALUE: 0-working, 1-next item/menu, "fk_newmenu"=1 go to new menu
+END DESCRIPTION *****************************************************/
+	
+int fk_pitem(char *s1, ...){
+
+	int key;
+	auto int res;
+
+	res = 0;
+	costate fkCSItem always_on {
+		key = fk_tkey;
+		lcd_erase_line(1);
+		fk_newmenu=0;	// first time
+		yield;
+		while (1) {
+			switch(key){
+				case 0: break;
+				case 1: fk_newmenu=1; 
+				case 2: fk_kkill(); up_shortbeep(); CoBegin(&xx);
+						CoBegin(&yy); res = 1; // done
+				case 3:
+				case 4:
+				case 5: fk_kkill(); up_longbeep(); break;
+				default: ;
+			}
+			costate {
+				while(1){
+					lcd_vprintf(0x01000000L,s1, &s1+1);
+					waitfor(DelaySec(2)); // wait 2 seconds before next print
+				}
+			}
+			yield;
+		}
+	}
+	return res;
+}
+
+#asm
+dum: equ _fk_requested
+#endasm
+
+
+
+/*** BeginHeader fk_pitem_time */
+
+int fk_pitem_time(char *s1,long time);
+
+/*** Endheader fk_pitem_time */
+
+/* START FUNCTION DESCRIPTION ***************************************
+fk_pitem_time                   <fk.lib>
+
+SYNTAX:int fk_pitem_time(char *format, long time);
+
+	prints 3 numbers, hours, minutes and seconds. The format string
+	must accomodate this. For example:
+
+	fk_pitem_time(	"time %2d:%2d:%2d",time);
+
+	
+KEYWORDS: LCD, keypad
+
+DESCRIPTION: Displays time whenever time changes or 2 seconds passes.
+
+PARAMETER1: This is a format string to print the hour, minutes and
+seconds of the time represented by the "time" argument.
+
+PARAMETER2: This is the time to display in number of seconds since
+12AM.
+
+RETURN VALUE: 0-working, 1-next item/menu, "fk_newmenu"=1 go to new menu
+END DESCRIPTION *****************************************************/
+
+int fk_pitem_time(char *s1,long time){
+
+	struct tm tims;
+	long timeold;
+	int key;
+	CoData xx;
+	
+	costate yy init_on {
+		lcd_erase_line(1);
+		fk_newmenu=0;	// first time
+		yield;
+		}
+
+
+			key = fk_tkey;
+			switch(key){
+				case 0: break;
+				case 1: fk_newmenu=1; 
+				case 2: fk_kkill(); up_shortbeep(); CoBegin(&xx);
+						CoBegin(&yy); return 1; // done
+				case 3:
+				case 4:
+				case 5: fk_kkill(); up_longbeep(); break;
+				}
+
+		costate  fkCSItem always_on {	// update display loop
+			while(1){
+				mktm(&tims,time); // compute structure
+				timeold=time;
+				lcd_printf(0x01000000L,s1
+					,tims.tm_hour,tims.tm_min,tims.tm_sec );
+				waitfor(DelaySec(2) || time!=timeold); // wait next print
+			}
+
+		} // end of costate
+
+		return 0; // not done yet
+
+	} // end of function
+
+#asm
+dum: equ _fk_requested
+#endasm
+
+
+/*** BeginHeader fk_pitem_date */
+
+int fk_pitem_date(char *s1,unsigned int day);
+
+/*** Endheader fk_pitem_date */
+
+/* START FUNCTION DESCRIPTION ***************************************
+fk_pitem_date                   <fk.lib>
+
+SYNTAX:int fk_pitem_date("format string", day);
+
+KEYWORDS: LCD, keypad
+
+DESCRIPTION: Prints the date every 2 seconds. day is day number since
+1-1-1980. Prints 4 items day (integer), month (string), year (integer),
+day of week (string). Format string must accomodate these. For example:
+
+	fk_pitem_date("date %2d-%3s-%2d  %3s",day);
+	or
+	fk_pitem_date("date %2d-%3s-%2d",day);
+
+PARAMETER1: This is a format string to print the day-of-month, month,
+year and day-of-week in this particular order. day-of-month and
+year are unsigned integers, and the month and day-of-week are
+strings of 3 characters.
+
+PARAMETER2: This is the number of days since 1980 Jan 1.
+
+RETURN VALUE: 0-working, 1-next item/menu, "fk_newmenu"=1 go to new menu
+END DESCRIPTION *****************************************************/
+int fk_pitem_date(char *s1,unsigned int day){
+
+	struct tm tims;
+	int key;
+	CoData xx;
+	
+	costate yy init_on {
+		lcd_erase_line(1);
+		fk_newmenu=0;	// first time
+		yield;
+		}
+
+
+			key = fk_tkey;
+			switch(key){
+				case 0: break;
+				case 1: fk_newmenu=1; 
+				case 2: fk_kkill(); up_shortbeep(); CoBegin(&xx);
+						CoBegin(&yy); return 1; // done
+				case 3:
+				case 4:
+				case 5: fk_kkill(); up_longbeep(); break;
+				}
+
+		costate  fkCSItem always_on {	// update display loop
+			while(1){
+				mktm(&tims,day*86400L); // compute structure
+				lcd_printf(0x01000000L,s1,
+					tims.tm_mday,
+					fkMonthNames[tims.tm_mon-1],
+					tims.tm_year % 100,
+					fkDOWNames[tims.tm_wday] );
+				waitfor(DelaySec(2) ); // wait next print
+			}
+
+		} // end of costate
+
+		return 0; // not done yet
+
+	} // end of function
+
+#asm
+dum: equ _fk_requested
+#endasm
+
+/*** BeginHeader fk_printf */
+
+void fk_printf(long line ,char *fmt,...);
+
+/*** Endheader fk_printf */
+/* START FUNCTION DESCRIPTION ********************************************
+fk_printf                   <fk.lib>
+
+SYNTAX:void fk_printf(long line, char *fmt, ... [args]);
+
+KEYWORDS:
+
+DESCRIPTION: A printf to LCD with line number as first arg
+			modifies arg line and relays call to lcd_printf
+
+RETURN VALUE: void
+
+END DESCRIPTION **********************************************************/
+	
+
+#asm
+fk_printf::
+	pop	hl		;return
+	pop	de		; least line
+	pop	bc		; most line
+	ld	a,e
+	ld	b,e		; switch bytes
+	push	bc
+	push	de
+	push	hl		; return
+	ld	l,a
+	ld	h,0		; line number
+	push	hl
+	call	lcd_erase_line
+	pop hl
+	jp	lcd_printf
+#endasm
+
+
+
+
+/*** BeginHeader fk_menu_sedt */
+
+int fk_menu_sedt(char *s1);
+
+/*** Endheader fk_menu_sedt */
+/* START FUNCTION DESCRIPTION ********************************************
+fk_menu_sedt                   <fk.lib>
+
+SYNTAX:int fk_menu_sedt(char *s1);
+
+KEYWORDS: LCD
+
+DESCRIPTION: Creates a 5-key menu to allow user to change date and time.
+				Controller must be reset to install new date and time.
+				Menu provides for reset.
+
+PARAMETER1: this parameter points to a string that becomes the title of
+the menu that sets the date and time.
+
+RETURN VALUE: 0-not busy, 1- don't wait more
+
+END DESCRIPTION **********************************************************/
+
+
+fk_menu_sedt(char *s1){
+
+int NewDays,timeflag,rflag;
+long NewTime;
+char **jj;
+
+	costate {
+			jj=fk_hptr;	// save help message pointer
+			rflag=0;
+			fk_showmenu(s1); // begin next menu
+			NewDays=(int)(SEC_TIMER/86400L); NewTime=SEC_TIMER%86400L;
+		while (1) {
+			// modify the days
+			fk_setuphelp("Enter date or","goto next item.",0);
+			waitfor(fk_item_date("Date ",&NewDays));
+			fk_MENU;
+			fk_setuphelp("Enter time or","goto next item.",0);
+			waitfor(fk_item_time("Time ",&NewTime));
+			fk_MENU;
+			timeflag=0;
+			fk_setuphelp("Toggle to yes to","prepare to change","system date to"
+				,"the date/time","just entered.",0);
+			waitfor(fk_item_enum("Set New D/T? %s",&timeflag,"No","Yes",0));
+			fk_MENU;
+			if(timeflag)	{
+				 _NewClock=NewDays*86400L+NewTime;
+				 _NewClockSet=SEC_TIMER;
+			   timeflag=0;
+			   fk_setuphelp("Toggle to yes","to complete setting","new date/time",
+			   			"entered","Then next item."
+			   			,"WARNING!! - will","reset controller",0);
+				waitfor(fk_item_enum("Reset System? %s",&timeflag,"No","Yes",0));
+				if(timeflag) { DI(); while(1);}
+				}
+			fk_MENU;
+			}	// end of while
+			rflag=1; // done menu here come here on break
+			fk_hptr=jj; // restore help pointer
+		} // end of costate
+		// come here on yield or when done exit bottom of costatement
+		return rflag;
+	}// end of function
+			
+
+
+
+
+/*** BeginHeader fk_pdate_time */
+
+void fk_pdate_time(int line, int dcode, int tcode ,char *fmt,long time);
+
+/*** Endheader fk_pdate_time */
+/* START FUNCTION DESCRIPTION ********************************************
+fk_pdate_time                   <fk.lib>
+
+SYNTAX:void fk_pdate_time(int line, int dcode, int tcode, char *s1, long time);
+
+KEYWORDS: LCD
+
+DESCRIPTION:	prints the date and time (time following date) on the LCD
+screen.
+
+PARAMETER1:	this parameter specifies on which line the date and time should
+be printed.
+
+PARAMETER2: this parameter specifies how the date should be displayed.
+Defined macros are as follows:
+FK_DMsY2Ws: numeric day-of-month, string month, numeric two-digit year
+				and string day-of-week
+FK_Y2MsD: 	numeric two-digit year, string month and numeric day-of-month
+FK_Y2MD: 	numeric two-digit year, numeric month and numeric day-of-month
+FK_Y4MD: 	numeric four-digit year, numeric month and numeric day-of-month
+FK_MDY4: 	numeric month, numeric day-of-month and numeric four-digit year
+FK_MDY2: 	numeric month, numeric day-of-month and numeric two-digit year
+FK_MD:		numeric month, numeric day-of-month
+FK_MDWs:		numeric month, numeric day-of-month, string day-of-week
+FK_MsD:		string month, numeric day-of-month
+FK_DMs:		numeric day-of-month, string month
+FK_DMsWs:	numeric day-of-month, string month, string day-of-week
+
+PARAMETER3:	this parameter specifies how the time should be displayed.
+Defined macros are as follows:
+FK_H24MS:		24-hour, minute and second
+FK_H24M:			24-hour, minute
+FK_H12MSPAM:	12-hour, minute, second and am/pm
+FK_H12MAPM:		12-hour, minute and am/pm
+
+PARAMETER4:	format string. The format string should specify slots that
+will take exactly the same number and types of date or time fields as
+specified by parameter2 and parameter3. string month is a string, string
+day-of-week is a string, day-of-month is an integer, 2-digit and 4-digit
+year is an integer, 24-hour and 12-hour are integers, minutes are integers
+seconds are integers, am/pm are strings. For instance, if PARAMETER2 is
+FK_MsD and PARAMETER3 is FK_H12MAPM, the format string can be
+"%0.3s %2d %2d:%02d %0.2s"
+ |     |   |   |    |
+ |     |   |   |    |       TIME FORMAT
+ |     |   |   |    +------ "am" and "pm" takes two characters
+ |     |   |   +----------- minutes should be printed with leading 0's
+ |     |   +--------------- 12-hour format, no leading zeros
+ |     |
+ |     |                    DATE FORMAT
+ |     +------------------- day-of-month, two digits
+ +------------------------- string month, three characters
+
+PARAMETER5: number of seconds since 1980 Jan 1 0:00:00. The current time
+and date is expressed this way. The system variable SEC_TIMER should be
+passed if the current time is to be displayed.
+
+RETURN VALUE: void
+
+END DESCRIPTION **********************************************************/
+
+nouseix void fk_pdate_time( int line,int dcode, int tcode, char *s1,long int time){
+
+	auto struct tm tims;
+
+	mktm(&tims,time); // compute structure
+#asm xmemok
+	ld		hl,-16
+	add	hl,sp
+	ld		sp,hl				;	reserve space in stack
+	ld		d,h
+	ld		e,l
+;	ld		hl,16
+;	add	hl,sp			
+;	ex		de,hl				;	for the arguments,
+								;	de = buffer
+	ld		hl,@SP+dcode+16
+	add	hl,sp
+	ld		c,(hl)
+	inc	hl
+	ld		b,(hl)			;	bc = code
+	ld		hl,@SP+tims+16
+	add	hl,sp				;	hl = tm structure address
+	push	hl
+	call	fkProcDate
+	ld		hl,@SP+tcode+2+16
+	add	hl,sp
+	ld		c,(hl)
+	inc	hl
+	ld		b,(hl)
+	pop	hl
+	call	fkProcTime
+	;	de has the current address in buffer
+	ld		hl,@SP+s1+16		;	push	the format string
+	add	hl,sp
+	ld		c,(hl)
+	inc	hl
+	ld		b,(hl)
+	push	bc
+	ld		hl,@SP+line+16+2
+	add	hl,sp
+	ld		e,(hl)
+	inc	hl
+	ld		d,(hl)
+	ld		bc,0
+	push	bc						;	push the line information
+	push	de
+	call	fk_printf			;	do the print
+	ld		hl,16+4+2
+	add	hl,sp
+	ld		sp,hl					;	restore stack
+#endasm
+
+} // end of function
+
+
+
+/*** BeginHeader fk_ptime_date */
+
+void fk_ptime_date(int line, int tcode, int dcode ,char *fmt,long time);
+
+/*** Endheader fk_ptime_date */
+/* START FUNCTION DESCRIPTION ********************************************
+fk_ptime_date                   <fk.lib>
+
+SYNTAX:void fk_ptime_date(int line, int tcode, int dcode, char *s1, long time);
+
+KEYWORDS: LCD
+
+DESCRIPTION:	prints the time and date (date following time) on the LCD
+screen.
+
+PARAMETER1:	this parameter specifies on which line the date and time should
+be printed.
+
+PARAMETER2:	this parameter specifies how the time should be displayed.
+Defined macros are as follows:
+FK_H24MS:		24-hour, minute and second
+FK_H24M:			24-hour, minute
+FK_H12MSPAM:	12-hour, minute, second and am/pm
+FK_H12MAPM:		12-hour, minute and am/pm
+
+PARAMETER3: this parameter specifies how the date should be displayed.
+Defined macros are as follows:
+FK_DMsY2Ws: numeric day-of-month, string month, numeric two-digit year
+				and string day-of-week
+FK_Y2MsD: 	numeric two-digit year, string month and numeric day-of-month
+FK_Y2MD: 	numeric two-digit year, numeric month and numeric day-of-month
+FK_Y4MD: 	numeric four-digit year, numeric month and numeric day-of-month
+FK_MDY4: 	numeric month, numeric day-of-month and numeric four-digit year
+FK_MDY2: 	numeric month, numeric day-of-month and numeric two-digit year
+FK_MD:		numeric month, numeric day-of-month
+FK_MDWs:		numeric month, numeric day-of-month, string day-of-week
+FK_MsD:		string month, numeric day-of-month
+FK_DMs:		numeric day-of-month, string month
+FK_DMsWs:	numeric day-of-month, string month, string day-of-week
+
+PARAMETER4:	format string. The format string should specify slots that
+will take exactly the same number and types of date or time fields as
+specified by parameter2 and parameter3. string month is a string, string
+day-of-week is a string, day-of-month is an integer, 2-digit and 4-digit
+year is an integer, 24-hour and 12-hour are integers, minutes are integers
+seconds are integers, am/pm are strings. For instance, if PARAMETER2 is
+FK_H12MAPM and PARAMETER3 is FK_MsD, the format string can be
+"%2d:%02d %0.2s %0.3s %2d"
+ |   |    |     |     |   
+ |   |    |     |     |     DATE FORMAT
+ |   |    |     |     +---- day-of-month, two digits
+ |   |    |     +---------- string month, three characters
+ |   |    |
+ |   |    |                 TIME FORMAT
+ |   |    +---------------- "am" and "pm" takes two characters
+ |   +--------------------- minutes should be printed with leading 0's
+ +------------------------- 12-hour format, no leading zeros
+
+PARAMETER5: number of seconds since 1980 Jan 1 0:00:00. The current time
+and date is expressed this way. The system variable SEC_TIMER should be
+passed if the current time is to be displayed.
+
+RETURN VALUE: void
+
+END DESCRIPTION **********************************************************/
+
+nouseix void fk_ptime_date( int line,int tcode, int dcode, char *s1,long int time){
+
+	auto struct tm tims;
+
+	mktm(&tims,time); // compute structure
+#asm xmemok
+	ld		hl,-16
+	add	hl,sp
+	ld		sp,hl				;	reserve space in stack
+	ld		d,h
+	ld		e,l
+;	ld		hl,16
+;	add	hl,sp			
+;	ex		de,hl				;	for the arguments,
+								;	de = buffer
+	ld		hl,@SP+tcode+16
+	add	hl,sp
+	ld		c,(hl)
+	inc	hl
+	ld		b,(hl)			;	bc = code
+	ld		hl,@SP+tims+16
+	add	hl,sp				;	hl = tm structure address
+	push	hl
+	call	fkProcTime
+	ld		hl,@SP+dcode+2+16
+	add	hl,sp
+	ld		c,(hl)
+	inc	hl
+	ld		b,(hl)
+	pop	hl
+	call	fkProcDate
+	;	de has the current address in buffer
+	ld		hl,@SP+s1+16		;	push	the format string
+	add	hl,sp
+	ld		c,(hl)
+	inc	hl
+	ld		b,(hl)
+	push	bc
+	ld		hl,@SP+line+16+2
+	add	hl,sp
+	ld		e,(hl)
+	inc	hl
+	ld		d,(hl)
+	ld		bc,0
+	push	bc						;	push the line information
+	push	de
+	call	fk_printf			;	do the print
+	ld		hl,16+4+2
+	add	hl,sp
+	ld		sp,hl					;	restore stack
+#endasm
+
+} // end of function
+
+
+
+/*** BeginHeader fk_menu_pass */
+
+int fk_menu_pass(char *s1,char *s2);
+
+/*** Endheader fk_menu_pass */
+
+/* START FUNCTION DESCRIPTION ***************************************
+fk_menu_pass                   <fk.lib>
+
+SYNTAX:int fk_menu_pass(char *entry, char *password);
+
+KEYWORDS: LCD, keypad
+
+DESCRIPTION: Checks a password. Returns 1 if no match, 2 match first
+				3 match second password
+
+PARAMETER1: this parameter points to a string representing the
+primary password.
+
+PARAMETER2: this parameter points to a string representing the
+secondary password.
+
+RETURN VALUE: 0-working, 1-no pass, 2- pass first, 3-pass second
+END DESCRIPTION *****************************************************/
+
+
+int fk_menu_pass( char *s1, char *s2){
+
+	char pass[5];
+	int rflag;
+
+	costate {
+		strncpy(pass,"NNNN",4); pass[4]=0;
+		rflag=0;
+		fk_showmenu("Enter Password");
+		waitfor(fk_item_alpha("Password?? ",pass,4));
+		if(strcmp(s1,pass)==0) rflag=2;
+		else if(strcmp(s2,pass)==0) rflag=3;
+		else {rflag=1; up_longbeep(); } // no equal to password
+			
+		}// end of costate
+	return rflag;
+	}// end of function
+
+/*** BeginHeader fkMonthNames, fkSetMonthNames */
+
+extern char *fkMonthNames[12];
+void fkSetMonthNames(
+	char *Month1,
+	char *Month2,
+	char *Month3,
+	char *Month4,
+	char *Month5,
+	char *Month6,
+	char *Month7,
+	char *Month8,
+	char *Month9,
+	char *Montha,
+	char *Monthb,
+	char *Monthc
+	);
+
+/*** EndHeader */
+
+char *fkMonthNames[12];
+
+/* START FUNCTION DESCRIPTION ***************************************
+fkSetMonthNames                   <fk.lib>
+
+SYNTAX:void fkSetMonthNames(
+	char *Month1,
+	char *Month2,
+	char *Month3,
+	char *Month4,
+	char *Month5,
+	char *Month6,
+	char *Month7,
+	char *Month8,
+	char *Month9,
+	char *Month10,
+	char *Month11,
+	char *Month12
+	);
+
+PARAMETER1:	a string representing name of the first month.
+
+PARAMETER2:	a string representing name of the second month.
+
+PARAMETER3:	a string representing name of the third month.
+
+PARAMETER4:	a string representing name of the fourth month.
+
+PARAMETER5:	a string representing name of the fifth month.
+
+PARAMETER6:	a string representing name of the sixth month.
+
+PARAMETER7:	a string representing name of the seventh month.
+
+PARAMETER8:	a string representing name of the eighth month.
+
+PARAMETER9:	a string representing name of the ninth month.
+
+PARAMETER10:	a string representing name of the tenth month.
+
+PARAMETER11:	a string representing name of the eleventh month.
+
+PARAMETER12:	a string representing name of the twelth month.
+
+KEYWORDS: LCD, keypad
+
+DESCRIPTION:	Changes the names of the 12 months.
+	
+
+RETURN VALUE:	N/A
+END DESCRIPTION *****************************************************/
+
+nodebug void fkSetMonthNames(
+	char *Month1,
+	char *Month2,
+	char *Month3,
+	char *Month4,
+	char *Month5,
+	char *Month6,
+	char *Month7,
+	char *Month8,
+	char *Month9,
+	char *Montha,
+	char *Monthb,
+	char *Monthc
+	) {
+	static char *_USMonths[12] = {
+		"Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"
+		};
+	segchain _GLOBAL_INIT {
+		memcpy(fkMonthNames,_USMonths,12*sizeof(char *));
+		}
+	memcpy(fkMonthNames,&Month1,12*sizeof(char *));
+}
+
+/*** BeginHeader fkDOWNames, fkSetDOWNames */
+
+extern char *fkDOWNames[7];
+void fkSetDOWNames(
+	char *DOW1,
+	char *DOW2,
+	char *DOW3,
+	char *DOW4,
+	char *DOW5,
+	char *DOW6,
+	char *DOW7
+	);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ***************************************
+fkSetDOWNames                   <fk.lib>
+
+SYNTAX:void fkSetDOWNames(
+	char *DOW1,
+	char *DOW2,
+	char *DOW3,
+	char *DOW4,
+	char *DOW5,
+	char *DOW6,
+	char *DOW7
+	);
+
+PARAMETER1:	a string representing name of the first week day.
+
+PARAMETER2:	a string representing name of the second week day.
+
+PARAMETER3:	a string representing name of the third week day.
+
+PARAMETER4:	a string representing name of the fourth week day.
+
+PARAMETER5:	a string representing name of the fifth week day.
+
+PARAMETER6:	a string representing name of the sixth week day.
+
+PARAMETER7:	a string representing name of the seventh week day.
+
+KEYWORDS: LCD, keypad
+
+DESCRIPTION:	Changes the names of the 7 week days.
+	
+
+RETURN VALUE:	N/A
+END DESCRIPTION *****************************************************/
+
+char *fkDOWNames[7];
+
+nodebug void fkSetDOWNames(
+	char *DOW1,
+	char *DOW2,
+	char *DOW3,
+	char *DOW4,
+	char *DOW5,
+	char *DOW6,
+	char *DOW7
+	) {
+	static char *_USDOWs[7] = {
+		"Sun","Mon","Tue","Wed","Thu","Fri","Sat"
+		};
+	segchain _GLOBAL_INIT { memcpy(fkDOWNames,_USDOWs,7*sizeof(char *)); }
+	memcpy(fkDOWNames,&DOW1,7*sizeof(char *));
+}
+
+/*** BeginHeader fkSetDateFmt, fkDateFmt */
+
+extern char * fkDateFmt;
+extern int fkDateCode;
+
+#define FK_DTFIELDMASK 0x7
+#define FK_WDAY 0x1
+#define FK_MDAY 0x2
+#define FK_MON	0x3
+#define FK_YRXXXX	0x4
+#define FK_YRXX 0x5
+#define FK_DTNAMED 0x8
+
+#define FK_D FK_MDAY
+#define FK_Ms (FK_MON|FK_DTNAMED)
+#define FK_M FK_MON
+#define FK_Y2 FK_YRXX
+#define FK_Y4 FK_YRXXXX
+#define FK_Ws (FK_WDAY|FK_DTNAMED)
+
+#define FK_DMsY2Ws (FK_D | (FK_Ms<<4) | (FK_Y2<<8) | (FK_Ws<<12))
+#define FK_Y2MsD (FK_Y2 | (FK_Ms << 4) | (FK_D << 8))
+#define FK_Y2MD (FK_Y2 | (FK_M << 4) | (FK_D << 8))
+#define FK_Y4MD (FK_Y4 | (FK_M << 4) | (FK_D << 8))
+#define FK_MDY4 (FK_M | (FK_D << 4) | (FK_Y4 << 8))
+#define FK_MDY2 (FK_M | (FK_D << 4) | (FK_Y2 << 8))
+#define FK_MD (FK_M | (FK_D << 4))
+#define FK_MDWs (FK_M | (FK_D << 4) | (FK_Ws << 8))
+#define FK_MsD (FK_Ms | (FK_D << 4))
+#define FK_DMs (FK_D | (FK_Ms << 4))
+#define FK_DMsWs (FK_D | (FK_Ms << 4) | (FK_Ws << 8))
+
+void fkSetDateFmt(char *fmt, int code);
+
+/*** EndHeader */
+
+char *fkDateFmt;
+int fkDateCode;
+
+void fkSetDateFmt(char *fmt, int code) {
+	segchain _GLOBAL_INIT {
+		fmt = "%2d-%3s-%02d (%3s)";
+		code = FK_DMsYWs;
+		}
+	fkDateFmt = fmt;
+	fkDateCode = code;
+}
+
+
+/*** BeginHeader fkSetTimeFmt, fkTimeFmt */
+
+extern char *fkTimeFmt;
+extern int fkTimeCode;
+
+void fkSetTimeFmt(char *fmt, int code);
+
+#define FK_TMFIELDMASK 0x7
+#define FK_SEC 0x1
+#define FK_MIN 0x2
+#define FK_HR12 0x3
+#define FK_HR24 0x4
+#define FK_APM 0x5
+
+#define FK_H24MS (FK_HR24 | (FK_MIN << 4) | (FK_SEC << 8))
+#define FK_H24M (FK_HR24 | (FK_MIN << 4))
+#define FK_H12MSAPM (FK_HR12 | (FK_MIN << 4) | (FK_SEC << 8) | (FK_APM << 12))
+#define FK_H12MAPM (FK_HR12 | (FK_MIN << 4) | (FK_APM << 8))
+
+/*** EndHeader */
+
+char *fkTimeFmt;
+int fkTimeCode;
+
+void fkSetTimeFmt(char *fmt, int code) {
+	segchain _GLOBAL_INIT {
+		fmt = "%02d:%02d:%02d";
+		code = FK_H24MS;
+		}
+	fkTimeFmt = fmt;
+	fkTimeCode = code;
+}
+
+/*** BeginHeader fkProcDate */
+
+/*** Endheader */
+
+#asm
+fkProcDateField:
+	;	hl has address to tm structure
+	;	a has the code
+	;	de has the current buffer address
+	push	hl
+	push	de
+	ld		d,a
+	and	FK_DTFIELDMASK
+	cp		FK_WDAY
+	jr		nz,_maybeMDay
+	
+	;	week day
+	ld		bc,tm+tm_wday
+	add	hl,bc
+	ld		l,(hl)
+	ld		h,0
+	ld		a,d
+	and	FK_DTNAMED
+	jr		z,_notNamedDOW
+	;	named weekday
+	add	hl,hl		;	account for pointer size
+	ld		bc,fkDOWNames
+	add	hl,bc
+	ld		a,(hl)
+	inc	hl
+	ld		h,(hl)
+	ld		l,a
+_notNamedDOW:
+_popHLNextField:
+	pop	de
+	ld		a,l
+	ld		(de),a
+	inc	de
+	ld		a,h
+	ld		(de),a
+	inc	de
+	pop	hl
+	ret							;	<<<< returns here!
+	
+_maybeMDay:
+	cp		FK_MDAY
+	jr		nz,_maybeMon
+	;	month day
+	ld		bc,tm+tm_mday
+	add	hl,bc
+	ld		l,(hl)
+	ld		h,0
+	jr		_popHLNextField
+	
+_maybeMon:
+	cp		FK_MON
+	jr		nz,_maybeYrXXXX
+	ld		bc,tm+tm_mon
+	add	hl,bc
+	ld		l,(hl)
+	ld		h,0
+	ld		a,d
+	and	FK_DTNAMED
+	jr		z,_popHLNextField
+	;	named month
+	dec	hl
+	add	hl,hl		;	account for pointer size
+	ld		bc,fkMonthNames
+	add	hl,bc
+	ld		a,(hl)
+	inc	hl
+	ld		h,(hl)
+	ld		l,a
+	jr		_popHLNextField
+	
+_maybeYrXXXX:
+	cp		FK_YRXXXX
+	jr		nz,_mustbeYrXX
+	ld		bc,tm+tm_year
+	add	hl,bc
+	ld		l,(hl)
+	ld		h,0
+	ld		de,1900
+	add	hl,de
+	jr		_popHLNextField
+
+_mustbeYrXX:
+	ld		bc,tm+tm_year
+	add	hl,bc
+	ld		e,(hl)
+	ld		d,0
+	ld		hl,0x0064
+	call	c.div
+	ex		de,hl
+	jr		_popHLNextField
+	
+;	gotta be year
+
+fkProcDate::
+	;	hl	is pointer to tm
+	;	bc is the flag
+	;	de is the pointer to buffer
+	;	de returns the end of buffer
+	
+	ld		a,c
+	or		a
+	ret	z
+	push	bc
+	call	fkProcDateField
+	pop	bc
+	srl	c
+	srl	c
+	srl	c
+	srl	c
+	ld		a,c
+	or		a
+	ret	z
+	push	bc
+	call	fkProcDateField
+	pop	bc
+	ld		a,b
+	or		a
+	ret	z
+	push	bc
+	call	fkProcDateField
+	pop	bc
+	srl	b
+	srl	b
+	srl	b
+	srl	b
+	ld		a,b
+	or		a
+	ret	z
+	call	fkProcDateField
+	ret
+	
+#endasm
+
+/*** BeginHeader fkProcTime */
+
+/*** EndHeaer */
+
+char *_fkAM = "am";
+char *_fkPM = "pm";
+
+void _funnyDummy(){}
+
+#asm
+fkProcTimeField::
+	;	hl has address to tm structure
+	;	a has the code
+	;	de has the current buffer address
+	push	hl
+	push	de
+	ld		d,a
+	and	FK_TMFIELDMASK
+	cp		FK_SEC
+	jr		nz,_maybeMin
+	
+	;	seconds
+	ld		bc,tm+tm_sec
+	add	hl,bc
+	ld		l,(hl)
+	ld		h,0
+_popHLNextField:
+	pop	de
+	ld		a,l
+	ld		(de),a
+	inc	de
+	ld		a,h
+	ld		(de),a
+	inc	de
+	pop	hl
+	ret							;	<<<< returns here!
+	
+_maybeMin:
+	cp		FK_MIN
+	jr		nz,_maybeHr24
+	;	month day
+	ld		bc,tm+tm_min
+	add	hl,bc
+	ld		l,(hl)
+	ld		h,0
+	jr		_popHLNextField
+	
+_maybeHr24:
+	cp		FK_HR24
+	jr		nz,_maybeHr12
+	ld		bc,tm+tm_hour
+	add	hl,bc
+	ld		l,(hl)
+	ld		h,0
+	jr		_popHLNextField
+
+_maybeHr12:
+	cp		FK_HR12
+	jr		nz,_mustBeAPM
+	ld		bc,tm+tm_hour
+	add	hl,bc
+	ld		l,(hl)
+	ld		h,0
+	ld		bc,-12
+	add	hl,bc
+	jr		c,_noAddBack
+	ld		bc,12
+	add	hl,bc
+_noAddBack:
+	jr		_popHLNextField
+
+_mustBeAPM:
+	ld		bc,tm+tm_hour
+	add	hl,bc
+	ld		a,(hl)
+	cp		12
+	jr		c,_AM
+	ld		hl,(_fkPM)
+	jr		_popHLNextField
+_AM:
+	ld		hl,(_fkAM)
+	jr		_popHLNextField
+		
+fkProcTime::
+	;	hl	is pointer to tm
+	;	bc is the flag
+	;	de is the pointer to buffer
+	;	de returns the end of buffer
+	
+	ld		a,c
+	or		a
+	ret	z
+	push	bc
+	call	fkProcTimeField
+	pop	bc
+	srl	c
+	srl	c
+	srl	c
+	srl	c
+	ld		a,c
+	or		a
+	ret	z
+	push	bc
+	call	fkProcTimeField
+	pop	bc
+	ld		a,b
+	or		a
+	ret	z
+	push	bc
+	call	fkProcTimeField
+	pop	bc
+	srl	b
+	srl	b
+	srl	b
+	srl	b
+	ld		a,b
+	or		a
+	ret	z
+	call	fkProcTimeField
+	ret
+	
+#endasm

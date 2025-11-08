@@ -1,0 +1,2715 @@
+/*****************************************************************************
+
+PLC-BUS Device Specific Routines
+
+*****************************************************************************/
+
+/*** BeginHeader */
+
+#ifndef __EZIOPBDV_LIB
+#define __EZIOPBDV_LIB
+
+#ifndef EIO_NODEV
+#define EIO_NODEV 0x02
+#endif
+
+#use "eziocmmn.lib"
+
+/*** EndHeader */
+
+/*** BeginHeader _eioPlcRelayAddr, _eioPlcXP86Addr */
+
+unsigned _eioPlcRelayAddr(char BrdAddr);
+
+unsigned _eioPlcXP86Addr(char BrdAddr);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+_eioPlcRelayAddr
+
+SYNTAX: unsigned _eioPlcRelayAddr(unsigned BrdAddr);
+
+DESCRIPTION:	the low
+byte of BrdAddr should contain the logical address (i.e., PAL#*8+Jumper#).
+range is 0-63 converts bit pattern 00000000 00pqrabc to pqrc 000b 000a
+
+PARAMETER1: this is the jumper-set address of the board.
+
+RETURN VALUE:	the bit mingled address for a Relay board
+
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+_eioPlcXP86Addr
+
+SYNTAX: unsigned _eioPlcXP86Addr(unsigned BrdAddr);
+
+DESCRIPTION:	the low
+byte of BrdAddr should contain the logical address
+range is 0-64. converts bit pattern 00000000 00pqrabc to pqrc 001b 000a
+
+RETURN VALUE:	the bit mingled address for a XP86 board (physical address
+with least and most significant nibbles swapped).
+
+END DESCRIPTION **********************************************************/
+
+#asm
+_eioPlcRelayAddr::
+	ld		de,0
+_eioRelayXP86Addr::
+	
+	ld		a,l
+	bit	0,a
+	jr		z,noj1
+	set	0,d
+noj1:
+	bit	1,a
+	jr		z,noj2
+	set	4,e
+noj2:
+	bit	2,a
+	jr		z,noj3
+	set	0,e
+noj3:
+	srl	a
+	srl	a
+	and	0eh
+	or		d
+	ld		d,a
+
+	ex		de,hl
+	ret
+	
+_eioPlcXP86Addr::
+	ld		de,020h
+	jp		_eioRelayXP86Addr
+	
+#endasm
+
+/*** BeginHeader _eioPlcUIOAddr*/
+
+unsigned _eioPlcUIOAddr(char addr);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+_eioPlcUIOAddr
+
+SYNTAX: unsigned _eioPlcUIOAddr(unsigned BrdAddr);
+
+DESCRIPTION:	the low
+byte of BrdAddr should contain the logical address (i.e., PAL#*2+Jumper#).
+range is 0-31. converts bit pattern 00000000 000pqrsa to qrsa 010p 0000
+
+RETURN VALUE:	the bit mingled address for a UIO board
+
+END DESCRIPTION **********************************************************/
+
+#asm
+_eioPlcUIOAddr::	;	16
+	ld		a,l		;	4
+	and	0fh		;	6
+	ld		h,a		;	4
+	ld		a,l		;	4
+	and	010h		;	6
+	set	6,a		;	7
+	ld		l,a		;	4
+	ret				;	9
+	;	total of 
+#endasm
+
+/*** BeginHeader _eioPlcADC4Addr */
+
+unsigned _eioPlcADC4Addr(char addr);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+_eioPlcADC4Addr
+
+SYNTAX: unsigned _eioPlcADC4Addr(char BrdAddr);
+
+DESCRIPTION:	the low
+byte of BrdAddr should contain the logical address (i.e., PAL#*4+Jumper#).
+range is 0-15, changes bit pattern 00000000 0000pqxy to pqxy 1100 0000
+
+RETURN VALUE:	the bit mingled address for a Relay board
+
+END DESCRIPTION **********************************************************/
+
+#asm
+_eioPlcADC4Addr::
+	ld		a,l
+	and	0fh
+	ld		h,a
+	ld		l,0c0h
+	ret
+#endasm
+
+/*** BeginHeader _eioPlcXP81Addr */
+
+unsigned _eioPlcXP81Addr(char addr);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+_eioPlcXP81Addr
+
+SYNTAX: unsigned _eioPlcXP81Addr(char BrdAddr);
+
+DESCRIPTION:	the low
+byte of BrdAddr should contain the logical address (i.e., Jumper#).
+range is 0-7, changes bit pattern 00000000 00000pqr to r000 01pq 0001
+
+RETURN VALUE:	the bit mingled address for a Relay board
+
+END DESCRIPTION **********************************************************/
+
+#asm
+_eioPlcXP81Addr::
+	ld		a,0x7
+	and	l
+	ld		l,a
+	bit	0,l
+	jr		z,zR
+	set	3,h
+zR:
+	res	0,l
+	sla	l
+	sla	l
+	sla	l
+	set	6,l
+	set	0,l
+	ret
+#endasm
+
+/*** BeginHeader plcUIOIn, plcXP82In */
+
+extern int eioErrorCode;
+int plcUIOIn(unsigned Addr);
+int plcXP82In(unsigned Addr);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+plcXP82In                        <EZIOPBDV.LIB>
+
+SYNTAX:        int plcXP82In(unsigned address);
+
+DESCRIPTION:	This function reads the status of a protected input pin
+on a UIO/XP8200 PLC-bus expansion board.
+
+PARAMETER1:		This is the address of the input pin. The address is
+16*board_address+pin_number. board_address is the address of the PLC-bus
+board, which is PAL#*2+JUMPER. Unless special PALs are installed, an
+UIO/XP8200 board only has two options for board_address: 0 (if the address
+jumper is installed) or 1 (if the address jumper is not installed). The
+pin_number ranges from 0 (for IN0) to 15 (for IN15).
+
+RETURN VALUE:	This function returns 0 if the input pin reads low, returns
+1 if the input pin reads high, and return -1 if the input pin does not
+exist (the UIO/XP8200 board doesn't exist). If the board does not exist,
+the global variable eioErrorCode will also be bit-ored with the constant
+EIO_NODEV.
+
+END DESCRIPTION **********************************************************/
+
+#asm
+plcXP82In:: jp plcUIOIn
+#endasm
+
+int plcUIOIn(unsigned eioAddr) {
+	auto int result;
+	auto unsigned eioPAddr;
+	
+	eioPAddr = _eioPlcUIOAddr((eioAddr
+		>> EIO_DI_UIO_BS));
+//			& EIO_DI_UIO_BM);
+	eioPlcAdr12(eioPAddr);
+	if (_eioReadD0() & 1) {
+		//	error, board doesn't exist!
+		eioErrorCode |= EIO_NODEV;
+		result = -1;
+	} else {
+		//	okay, board exists, now read the bit
+		_eioWriteWR(0xe | ((eioAddr &= EIO_DI_UIO_PM) & 1));
+		if ((eioAddr &= EIO_DI_UIO_PM) & 8) {
+			result = (_eioReadD2() & (1 << ((eioAddr&7)/2))) ? 1 : 0;
+		} else {
+			result = (_eioReadD1() & (1 << (eioAddr/2))) ? 1 : 0;
+		}
+	}
+	return result;
+}
+
+/*** BeginHeader plcXP81In */
+
+#define EIO_DI_XP81_BS 5
+
+int plcXP81In(unsigned eioAddr);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+plcXP81In                   EZIOPBDV.LIB
+
+SYNTAX: 		int plcXP81In(unsigned eioAddr);
+
+DESCRIPTION:	This function attempts to read an input position on a
+XP81 PLC-bus board. If eioAddr corresponds to a valid address, but the
+controller fails to find the XP81 board, eioErrorCode is set by
+eioErrorCode = eioErrorCode | ZIO_NODEV.
+
+PARAMETER1:		eioAddr is the address of the input pin to read. eioAddr
+is the result of b*32+p, in which b is the board number (set by jumpers),
+and p is the pin number. b ranges from 0 to 7, and p ranges from 0 to 31.
+
+RETURN VALUE:	Returns 0 if the XP81 board is found and the input pin
+reads low. Returns 1 if the XP81 board is found and the input pin reads
+high. Returns -1 if the XP81 board is not found. If the board does not
+exist, the global variable eioErrorCode will also be bit-ored with the
+constant EIO_NODEV.
+
+END DESCRIPTION **********************************************************/
+
+nodebug nouseix int plcXP81In(unsigned eioAddr) {
+	auto int result;
+	auto unsigned eioPAddr;
+	
+	eioPAddr = _eioPlcXP81Addr((eioAddr				//	compute the address
+		>> EIO_DI_XP81_BS)
+			& 7);
+	eioPlcAdr12(eioPAddr);								//	release address to bus
+	if (_eioReadD0() & 1) {
+		eioErrorCode |= EIO_NODEV;
+		result = -1;
+	} else {
+		//	okay, board exists, now read the bit
+#if 1
+#asm xmemok
+		ld		hl,eioAddr+@SP
+		add	hl,sp
+		ld		a,(hl)			;	a = low byte of eioAddr
+		push	af
+		srl	a
+		srl	a
+		srl	a					;	a = a/8 = bank #
+		and	0x3				;	make sure it's in range
+		or		0x4				;	set i/o access bit
+		ld		hl,eioPAddr+@SP+3	;	
+		add	hl,sp				;	hl points to high byte of phy addr.
+		or		(hl)				;	new ADR2
+		ld		l,a
+		ld		h,0
+		call	eioPlcAdr4		;	for calling Adr4
+		pop	af					;	a = low byte of eioAddr
+		push	af
+		bit	2,a				;	high nibble?
+		jr		z,rdD0			;	no, read D0
+		call	_eioReadD1		;	yes read D1
+		jr		getBit
+rdD0:
+		call	_eioReadD0		;	read D0
+getBit:
+		pop	af					;	a = low byte of eioAddr
+		and	3					;	how many bits to shift?
+		jr		z,mask1			;	no need to shift
+		ld		b,a				;	load shift count
+sbit:
+		srl	l					;	shift
+		djnz	sbit				;	and decrement
+mask1:
+		ld		a,l
+		and	1					;	get lsb
+		ld		e,a				;	result in de
+		ld		d,0
+		ld		hl,result+@SP	;	store de into result
+		add	hl,sp
+		ld		(hl),e
+		inc	hl
+		ld		(hl),d
+#endasm
+#else
+		eioPlcAdr4((eioPAddr >> 8) | (3 & (eioAddr>>3))|0x4);
+//		printf("(%x%x:%d)",_eioReadD1(), _eioReadD0(), eioAddr&3);
+//		eioPlcAdr12(eioPAddr);	//	release further byte address
+		result = (((eioAddr & 0x4) ?					//	read the result
+							_eioReadD1() :					//	upper nibble
+							_eioReadD0())					//	lower nibble
+					  >> (eioAddr & 3)) & 1;
+//		printf("(%x%x:%d)",_eioReadD1(), _eioReadD0(), eioAddr&3);
+#endif
+	}
+	return result;
+}
+
+/*** BeginHeader plcXP81In32 */
+
+unsigned long int plcXP81In32(unsigned eioAddr);
+
+/* START FUNCTION DESCRIPTION ********************************************
+plcXP81In32                   <EZIOPBDV.LIB>
+
+SYNTAX: 		unsigned long int plcXP81In32(unsigned eioAddr);
+
+DESCRIPTION:	This function attempts to read an input position on a
+XP81 PLC-bus board. If eioAddr corresponds to a valid address, but the
+controller fails to find the XP81 board, eioErrorCode is set by
+eioErrorCode = eioErrorCode | ZIO_NODEV.
+
+PARAMETER1:		eioAddr is the address of the input pin to read. eioAddr
+is the result of b*32, in which b is the board number (set by jumpers),
+and p is the pin number. b ranges from 0 to 7.
+
+RETURN VALUE:	Returns a 32-bit mask, each bit location reflects the
+status of a position on the board. LSB = position 0 on Bank A, MSB =
+position 15 on Bank B.  If the board does not exist, the global variable
+eioErrorCode will also be bit-ored with the constant EIO_NODEV.Note that
+this function, unlike plcXP81In, cannot indicate whether the board exists
+by the returned value.
+
+END DESCRIPTION **********************************************************/
+
+/*** EndHeader */
+
+nodebug nouseix unsigned long int plcXP81In32(unsigned eioAddr) {
+	auto unsigned long int result;
+	auto unsigned eioPAddr;
+	
+	eioPAddr = _eioPlcXP81Addr((eioAddr				//	compute the address
+		>> EIO_DI_XP81_BS)
+			& 7);
+	eioPlcAdr12(eioPAddr);								//	release address to bus
+	if (_eioReadD0() & 1) {
+		eioErrorCode |= EIO_NODEV;
+		result = -1;
+	} else {
+		//	okay, board exists, now read the bit
+#asm xmemok
+		ld		hl,@SP+result
+		add	hl,sp
+		ex		de,hl			;	de has the address to put to
+
+		ld		hl,@SP+eioPAddr+1
+		add	hl,sp
+		ld		a,(hl)
+		and	0xff ^ 0x03
+		or		4
+		ld		l,a
+		ld		h,0
+
+		ld		b,4			;	b has the count
+
+readLoop:
+		push	de
+		push	hl
+		push	bc
+		call	eioPlcAdr4
+		call	_eioReadD1
+		sla	l
+		sla	l
+		sla	l
+		sla	l
+		push	hl
+		call	_eioReadD0
+		ld		a,l
+		and	0xf
+		pop	hl
+		or		l
+		pop	bc
+		pop	hl
+		pop	de
+		ld		(de),a
+		inc	de
+		inc	hl
+		djnz	readLoop
+		
+#endasm
+	}
+	return result;
+}
+
+/*** BeginHeader plcRelay6, plcXP83Out, plcXP84Out */
+
+int plcXP83Out(unsigned eioAddr, int state);
+int plcXP84Out(unsigned eioAddr, int state);
+int plcRelay6(unsigned eioAddr, int state);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+plcXP83Out						<EZIOPBDV.LIB>
+
+SYNTAX: 			int plcXP83Out(unsigned address, int state);
+
+DESCRIPTION:	This function switches a relay position on a relay6/XP8300
+or relay8/XP8400 board.
+
+PARAMETER1:		address should be board#*8+relay#. Without a special PAL,
+the board# ranges from 0 to 7, depending on the address jumpers. The
+relay# ranges from 0 to 5 for a relay6/XP8300. With special PALs, the
+board# can range from 0 to 63.
+
+PARAMETER2:		state indicates whether the relay should be energized or
+not. If this parameter is non-zero, the relay specified will be energized.
+If this parameter is zero, the relay will not be energized.
+
+RETURN VALUE:	If the relay6/XP8300 board exists, this function return 0.
+Otherwise, this function return -1. If the board does
+not exist, the global variable eioErrorCode is also bit-ored with the
+constant EIO_NODEV.
+
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+plcXP84Out						<EZIOPBDV.LIB>
+
+SYNTAX: 			int plcXP84Out(unsigned address, int state);
+
+DESCRIPTION:	This function switches a relay position on a relay6/XP8300
+or relay8/XP8400 board.
+
+PARAMETER1:		address should be board#*8+relay#. Without a special PAL,
+the board# ranges from 0 to 7, depending on the address jumpers. The
+relay# ranges from 0 to 7 for a relay8/XP8400. With special PALs, the
+board# can range from 0 to 63.
+
+PARAMETER2:		state indicates whether the relay should be energized or
+not. If this parameter is non-zero, the relay specified will be energized.
+If this parameter is zero, the relay will not be energized.
+
+RETURN VALUE:	If the relay8/XP8400 board exists, this function return 0.
+Otherwise, this function return -1. If the board does
+not exist, the global variable eioErrorCode is also bit-ored with the
+constant EIO_NODEV.
+
+END DESCRIPTION **********************************************************/
+
+#asm
+plcXP83Out::	jp	plcRelay6
+#endasm
+
+int plcRelay6(unsigned eioAddr, int state) {
+	auto int result;
+	auto unsigned eioPAddr;
+	
+	eioPAddr = _eioPlcRelayAddr((eioAddr
+		>> EIO_DO_RELAY6_BS));
+//			& EIO_DO_RELAY6_BM);
+	eioPlcAdr12(eioPAddr);
+	if (_eioReadD0() & 1) {
+		//	error, board doesn't exist!
+		eioErrorCode |= EIO_NODEV;
+		result = -1;
+	} else {
+		//	okay, board exists, now write the bit
+		if ((eioAddr &= EIO_DO_RELAY6_PM) > 5) {
+			result = -1;
+			eioErrorCode |= EIO_NODEV;
+		} else {
+			_eioWriteWR((eioAddr << 1) | (state ? 1 : 0));
+			result = 0;
+		}
+	}
+	return result;
+}
+
+int plcXP84Out(unsigned eioAddr, int state) {
+	auto int result;
+	auto unsigned eioPAddr;
+	
+	eioPAddr = _eioPlcRelayAddr((eioAddr
+		>> EIO_DO_RELAY6_BS));
+//			& EIO_DO_RELAY6_BM);
+	eioPlcAdr12(eioPAddr);
+	if (_eioReadD0() & 1) {
+		//	error, board doesn't exist!
+		eioErrorCode |= EIO_NODEV;
+		result = -1;
+	} else {
+		//	okay, board exists, now write the bit
+		eioAddr &= EIO_DO_RELAY6_PM;
+		_eioWriteWR((eioAddr << 1) | (state ? 1 : 0));
+		result = 0;
+	}
+	return result;
+}
+
+/*** BeginHeader plcUIOOut, plcXP82Out */
+
+int plcUIOOut(unsigned eioAddr, int state);
+int plcXP82Out(unsigned eioAddr, int state);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+plcXP82Out						<EZIOPBDV.LIB>
+
+SYNTAX: 			int plcXP82Out(unsigned address, int state);
+
+DESCRIPTION:	This function switches a high voltage position on an
+UIO/XP8200 board.
+
+PARAMETER1:		address should be board#*8+pin#. Without a special PAL,
+the board# ranges from 0 to 1, depending on the address jumper. The
+pin# ranges from 0 to 5. With special PALs, the board# can range from 0
+to 31.
+
+PARAMETER2:		state indicates whether the output should be enabled or
+not. If this parameter is non-zero, the pin specified will be enabled.
+If this parameter is zero, the pin will be disabled.
+
+RETURN VALUE:	If the UIO/XP8200 board exists, this function return 0.
+Otherwise, this function return -1. If the board does not exist, the
+global variable eioErrorCode is also bit-ored with the constant EIO_NODEV.
+
+END DESCRIPTION **********************************************************/
+
+#asm
+plcXP82Out:: jp plcUIOOut
+#endasm
+
+int plcUIOOut(unsigned eioAddr, int state) {
+	auto int result;
+	auto unsigned eioPAddr;
+	
+	eioPAddr = _eioPlcUIOAddr((eioAddr
+		>> EIO_DO_UIO_BS ));
+//			& EIO_DO_UIO_BM);
+	eioPlcAdr12(eioPAddr);
+	if (_eioReadD0() & 1) {
+		//	error, board doesn't exist!
+		eioErrorCode |= EIO_NODEV;
+		result = -1;
+	} else {
+		//	okay, board exists, now write the bit
+		if ((eioAddr &= EIO_DO_UIO_PM) > 5) {
+			result = -1;
+			eioErrorCode |= EIO_NODEV;
+		} else {
+			_eioWriteWR((eioAddr << 1) | (state ? 1 : 0));
+			result = 0;
+		}
+	}
+	return result;
+}
+
+/*** BeginHeader plcXP81Out */
+
+#ifndef EIO_DO_XP81_BS
+#define EIO_DO_XP81_BS 0x5
+#endif
+
+int plcXP81Out(unsigned eioAddr, int state);
+
+/* START FUNCTION DESCRIPTION ********************************************
+plcXP81Out              EZIOPBDV.LIB
+
+SYNTAX: int plcXP81Out(unsigned eioAddr, int state);
+
+DESCRIPTION:	This function writes to a output position of a XP81
+PLC-bus board. If eioAddr specifies a possible board and pin, but
+the controller fails to find the PLC-bus board, eioErrorCode is set
+by eioErrorCode = eioErrorCode | ZIO_NODEV.
+
+PARAMETER1:		eioAddr is an integer of value b*32+p, in which b is
+the board number (selected by jumpers) and p is the pin number. b
+ranges from 0 to 7, and p ranges from 0 to 31.
+
+PARAMETER2:		state is an integer to indicate whether to turn on or
+turn off the output pin. If state is zero, the pin is turned off, otherwise
+the pin is turned on.
+
+RETURN VALUE:	returns 0 if successful, otherwise returns non-zero.
+
+END DESCRIPTION **********************************************************/
+
+/*** EndHeader */
+
+int plcXP81Out(unsigned eioAddr, int state) {
+	auto int result;
+	auto unsigned eioPAddr;
+	auto int tmp;
+	
+	eioPAddr = _eioPlcXP81Addr((eioAddr
+		>> EIO_DO_XP81_BS ) & 7);
+	eioPlcAdr12(eioPAddr);
+	if (_eioReadD0() & 1) {
+		// error, board doesn't exist
+		eioErrorCode |= EIO_NODEV;
+		result = -1;
+	} else {
+		eioPlcAdr4(*((char*)&eioPAddr+1) | (3 & (eioAddr>>3))|0x4);
+//		eioPlcAdr12(eioPAddr);
+		_eioWriteWR(tmp = ((eioAddr & 0x7) << 1) | (state ? 1: 0));
+		result = 0;
+	}
+	return result;
+}
+
+/*** BeginHeader plcXP81Out32 */
+
+int plcXP81Out32(unsigned eioAddr, unsigned long state);
+
+/* START FUNCTION DESCRIPTION ********************************************
+plcXP81Out32              EZIOPBDV.LIB
+
+SYNTAX: int plcXP81Out32(unsigned eioAddr, unsigned long state);
+
+DESCRIPTION:	This function writes to all 32 output positions of a XP81
+PLC-bus board. If eioAddr specifies a pin 0 on an XP81 board. If
+the controller fails to find the PLC-bus board, eioErrorCode is set
+by eioErrorCode = eioErrorCode | ZIO_NODEV.
+
+PARAMETER1:		eioAddr is an integer of value b*32, in which b is
+the board number (selected by jumpers). b ranges from 0 to 7.
+
+PARAMETER2:		state is an unsigned long integer (32-bit) to indicate
+whether to turn on or turn off each output pin. If the corresponding bit
+is 0, the output is disable, otherwise the output is enabled.
+
+RETURN VALUE:	returns 0 if successful, otherwise returns non-zero.
+
+END DESCRIPTION **********************************************************/
+
+/*** EndHeader */
+
+int plcXP81Out32(unsigned eioAddr, unsigned long state) {
+	auto int result;
+	auto unsigned eioPAddr;
+	auto int tmp;
+	
+	eioPAddr = _eioPlcXP81Addr((eioAddr
+		>> EIO_DO_XP81_BS ) & 7);
+	eioPlcAdr12(eioPAddr);
+	if (_eioReadD0() & 1) {
+		// error, board doesn't exist
+		eioErrorCode |= EIO_NODEV;
+		result = -1;
+	} else {
+#asm xmemok
+		ld		hl,@SP+state
+		add	hl,sp
+		ex		de,hl						;	de now contains the address to state
+		
+		ld		hl,@SP+eioPAddr+1
+		add	hl,sp
+		ld		a,(hl)					;	l = ADR2 address
+		and	0x03^0xff				;	mask out lowest 2 bits to specify bank (4)
+		or		0x4						;	this bit indicates select bank
+		ld		l,a						;	l now contains the basic least sig. adr2
+
+		ld		b,4
+		
+anotherBank:
+		push	hl							;	save I/O address
+		call	eioPlcAdr4				;	select bank (should preserve bc and de)
+		ld		a,(de)					;	load 8-bit mask to send out
+		call	sendAByte				;	output the byte
+		
+		pop	hl
+		inc	hl							;	increment bank number
+		inc	de
+		djnz	anotherBank
+
+		jr		aroundSendANib
+
+sendAByte:
+		ld		c,a
+		
+		srl	c
+		ld		l,0x0
+		rl		l
+		call	_eioWriteWR				;	eioWriteWR preserves C
+		
+		srl	c
+		ld		l,0x1
+		rl		l
+		call	_eioWriteWR
+		
+		srl	c
+		ld		l,0x2
+		rl		l
+		call	_eioWriteWR
+		
+		srl	c
+		ld		l,0x3
+		rl		l
+		call	_eioWriteWR
+
+		srl	c
+		ld		l,0x4
+		rl		l
+		call	_eioWriteWR
+		
+		srl	c
+		ld		l,0x5
+		rl		l
+		call	_eioWriteWR
+		
+		srl	c
+		ld		l,0x6
+		rl		l
+		call	_eioWriteWR
+		
+		srl	c
+		ld		l,0x7
+		rl		l
+		call	_eioWriteWR
+		
+		ret
+		
+aroundSendANib:
+#endasm
+//		eioPlcAdr4(*((char*)&eioPAddr+1) | (3 & (eioAddr>>3))|0x4);
+//		eioPlcAdr12(eioPAddr);
+//		_eioWriteWR(tmp = ((eioAddr & 0x7) << 1) | (state ? 1: 0));
+		result = 0;
+	}
+	return result;
+}
+
+/******************************************************************************
+Code for debouncing UIO input
+******************************************************************************/
+
+/*** BeginHeader eioUIODbnc, eioUIODbnced */
+
+void eioUIODbnc();
+
+extern char eioUIODbnced[4];
+
+char eioUIORdDbnced(char Chan);
+
+/*** EndHeader */
+
+#if EIODBNC
+
+char eioUIODbnced[4];
+char eioUIOThis[4];
+char eioUIOLast[4];
+
+/*
+eioUIODbnced: 	first 16 (LSW) bits correspond to the first UIO card,
+					last (MSW) correspond to the second UIO card
+					LSBit is bit 0, then 2, 4, 6, 8, 10, 12, 14, 1, 3 ,5 ,7,... 15
+
+/*
+
+debounce works this way
+
+A					B					C
+old value	|	new value	|	new debounce value
+------------+--------------+--------------------
+0				|	0				|	0
+1				|	0				|	0
+0				|	1				|	0
+1				|	1				|	1
+
+C = (A AND B) OR (A AND NOT B)
+
+*/
+
+void eioUIODbncInit() {
+	auto int i;
+	memset(eioUIOThis,0,sizeof(eioUIOThis));
+	memset(eioUIOLast,0,sizeof(eioUIOLast));
+	memset(eioUIODbnced,0,sizeof(eioUIODbnced));
+}
+
+#funcchain _GLOBAL_INIT eioUIODbncInit
+
+#funcchain _eioDbnc eioUIODbnc
+
+#asm
+eioUIODbnc::					;	16
+	ld		hl,0					;	9
+	call	_eioPlcUIOAddr		;	60
+	call	eioPlcAdr12				;	135
+	call	_eioReadD0			;	47 
+	bit	0,l					;	7
+	ld		hl,eioUIOThis		;	9
+	call	z,_eioUpdUIODbnc	;	500
+	ld		hl,1					;	9
+	call	_eioPlcUIOAddr		;	60
+	call	eioPlcAdr12				;	135
+	call	_eioReadD0			;	47
+	bit	0,l					;	7
+	ld		hl,eioUIOThis+2	;	9
+	call	z,_eioUpdUIODbnc	;	500
+	ld		hl,eioUIOLast		;	9	hl = eioUIOLast
+	ld		bc,eioUIOThis		;	9	bc = eioUIOThis
+	ld		de,eioUIODbnced	;	9	de = eioUIODbnced
+	ld		a,(bc)				;	6	a = *eioUIOThis
+	and	(hl)					;	6	a = *eioUIOThis & *eioUIOLast
+	ld		(de),a				;	7	*eioUIODbnced = *eioUIOThis & *eioUIOLast
+	ld		a,(bc)				;	6	a = *eioUIOThis
+	ld		(hl),a				;	6	*eioUIOLast = *eioUIOThis
+	inc	bc						;	4
+	inc	de						;	4
+	inc	hl						;	4
+	ld		a,(bc)				;	6	a = *eioUIOThis
+	and	(hl)					;	6	a = *eioUIOThis & *eioUIOLast
+	ld		(de),a				;	7	*eioUIODbnced = *eioUIOThis & *eioUIOLast
+	ld		a,(bc)				;	6	a = *eioUIOThis
+	ld		(hl),a				;	6	*eioUIOLast = *eioUIOThis
+	inc	bc						;	4
+	inc	de						;	4
+	inc	hl						;	4
+	ld		a,(bc)				;	6	a = *eioUIOThis
+	and	(hl)					;	6	a = *eioUIOThis & *eioUIOLast
+	ld		(de),a				;	7	*eioUIODbnced = *eioUIOThis & *eioUIOLast
+	ld		a,(bc)				;	6	a = *eioUIOThis
+	ld		(hl),a				;	6	*eioUIOLast = *eioUIOThis
+	inc	bc						;	4
+	inc	de						;	4
+	inc	hl						;	4
+	ld		a,(bc)				;	6	a = *eioUIOThis
+	and	(hl)					;	6	a = *eioUIOThis & *eioUIOLast
+	ld		(de),a				;	7	*eioUIODbnced = *eioUIOThis & *eioUIOLast
+	ld		a,(bc)				;	6	a = *eioUIOThis
+	ld		(hl),a				;	6	*eioUIOLast = *eioUIOThis
+	ret							;	9
+	;	1746 states
+
+_eioUpdUIODbnc:			;	16
+	;	address already set, read bits in
+	push	hl					;	11
+	ld		hl,0eh			;	9	read even bits
+	call	_eioWriteWR		;	42	tell the UIO card
+	call	_eioReadD1		;	47	read 0 2 4 6
+	ld		a,l				;	4
+	and	0fh				;	6
+	pop	hl					;	9
+	ld		(hl),a			;	6
+	push	hl					;	11
+	call	_eioReadD2		;	47	read 8 10 12 14
+	ld		a,l				;	4
+	sla	a					;	7
+	sla	a					;	7
+	sla	a					;	7
+	sla	a					;	7
+	pop	hl					;	9
+	or		(hl)				;	6
+	ld		(hl),a			;	6
+	inc	hl					;	4
+	push	hl					;	11
+	ld		hl,0fh			;	9	read odd bits
+	call	_eioWriteWR		;	42
+	call	_eioReadD1		;	47	read 1 3 5 7
+	ld		a,l				;	4
+	and	0fh				;	6
+	pop	hl					;	9
+	ld		(hl),a			;	6
+	push	hl					;	11
+	call	_eioReadD2		;	47	read 9 11 13 15
+	ld		a,l				;	4
+	sla	a					;	7
+	sla	a					;	7
+	sla	a					;	7
+	sla	a					;	7
+	pop	hl					;	9
+	or		(hl)				;	6
+	ld		(hl),a			;	6
+	ret						;	9
+	;	506 states
+#endasm
+
+#endif
+
+/*** BeginHeader _eioAdc4EeInit */
+
+int _eioAdc4EeInit();
+
+/*** EndHeader */
+
+#asm
+_eioAdc4EeInit::
+	ld		b,0xa			;	 do 10 times
+clearAgain:
+	ld		l,ADC4_SCL0
+	call	_eioWriteWR
+	ld		l,ADC4_SDA1
+	call	_eioWriteWR
+	call	_eioReadD0
+	bit	2,l
+	jr		z,notCleared
+	;	cleared
+	ld		hl,0
+	jr		done
+notCleared:
+	ld		l,ADC4_SCL1
+	call	_eioWriteWR
+	djnz	clearAgain
+	ld		hl,1
+done:
+	ret
+#endasm
+
+/*** BeginHeader _eioAdc4EeMap */
+
+extern unsigned char _eioAdc4EeMap[8];
+
+/*** EndHeader */
+
+unsigned char _eioAdc4EeMap[8] =
+	{0xa0,0xa2,0xa4,0xa6,0xa8,0xaa,0xac,0xae}; 
+
+/*** BeginHeader _eioAdc4EeData */
+
+void _eioAdc4EeData(int data);
+
+/*** EndHeader */
+
+#asm
+_eioAdc4EeData::
+	ld		c,l
+	ld		b,8
+anotherBit:
+	ld		l,ADC4_SCL0
+	call	_eioWriteWR
+	sla	c
+	jp		nc,sda0
+	ld		l,ADC4_SDA1
+	jr		latch
+sda0:
+	ld		l,ADC4_SDA0
+latch:
+	call	_eioWriteWR
+	ld		l,ADC4_SCL1
+	call	_eioWriteWR
+	djnz	anotherBit
+	ret
+#endasm
+
+/*** BeginHeader _eioAdc4EeAck */
+
+int _eioAdc4EeAck(int v);
+
+/*** EndHeader */
+
+#asm
+_eioAdc4EeAck::
+	push	hl
+	call	_eioAdc4EeData
+	pop	hl
+	ld		l,ADC4_SCL0
+	call	_eioWriteWR
+	ld		l,ADC4_SDA1
+	call	_eioWriteWR
+	ld		l,ADC4_SCL1
+	call	_eioWriteWR
+	call	_eioReadD0
+	bit	2,l
+	ld		hl,0
+	ret	z
+	inc	hl
+	ret
+#endasm
+
+/*** BeginHeader _eioAdc4EeHdr */
+
+int _eioAdc4EeHdr(int adr);
+
+/*** EndHeader */
+
+#asm
+_eioAdc4EeHdr::
+	push	hl
+	ld		l,ADC4_SCL1
+	call	_eioWriteWR
+	pop	hl
+	ld		a,h
+	and	7
+	ld		l,h
+	ld		h,0
+	ld		de,_eioAdc4EeMap
+	add	hl,de
+	ld		c,(hl)
+	ld		b,0xa
+tryAgain:
+	ld		l,ADC4_SDA0
+	call	_eioWriteWR
+	push	bc
+	ld		h,0
+	ld		l,c
+	call	_eioAdc4EeAck
+	jr		nz,cont
+	pop	bc
+	ld		hl,0
+	jr		done
+cont:
+	pop	bc
+	djnz	tryAgain
+	ld		hl,1
+done:
+	ret
+#endasm
+
+/*** BeginHeader _eioAdc4EeWr */
+
+int _eioAdc4EeWr(int address, char byte);
+
+/*** EndHeader */
+
+int _eioAdc4EeWr(int address, char byte) {
+	if(_eioReadD0() & (1<<ADC4_ID)) return -1;      // check for board presence
+	if(_eioAdc4EeInit()) return -2;              // EEPROM busy, return error
+	if(_eioAdc4EeHdr(address)) return -2;        // EEPROM no acknowledge, return error
+	if(_eioAdc4EeAck(address)) return -2;		// no acknowledge, return error
+	if(_eioAdc4EeAck(byte)) return -3;			// no acknowledge, return error
+	_eioWriteWR(ADC4_SCL0);						// eeprom clock low
+	_eioWriteWR(ADC4_SDA0);						// eeprom data low
+	_eioWriteWR(ADC4_SCL1);						// eeprom clock high
+	_eioWriteWR(ADC4_SDA1);						// eeprom data high
+	return 0;										// data write okay
+}
+
+/*** BeginHeader _eioAdc4EeRd */
+
+int _eioAdc4EeRd(int adr);
+
+/*** EndHeader */
+
+nouseix int _eioAdc4EeRd(int adr) {
+	auto int ee_j, ee_k;
+
+	if (_eioReadD0() & (1<<ADC4_ID)) return -1;
+	if (_eioAdc4EeInit()) return -2;
+	if (_eioAdc4EeHdr(adr)) return -2;
+	if (_eioAdc4EeAck(adr)) return -2;
+
+	_eioWriteWR(ADC4_SCL0);
+	_eioWriteWR(ADC4_SCL1);
+	_eioWriteWR(ADC4_SDA0);
+	_eioWriteWR(ADC4_SCL0);
+
+	ee_k = _eioAdc4EeMap[*((char*)&adr+1)&0x7] | 1;
+	if (_eioAdc4EeAck(ee_k)) return -2;
+	ee_k = 0;
+#asm xmemok
+	ld		b,8
+	ld		c,0
+anotherBit:
+	ld		l,ADC4_SCL0
+	call	_eioWriteWR
+	ld		l,ADC4_SCL1
+	call	_eioWriteWR
+	call	_eioReadD0
+	or		a					;	clear carry
+	bit	2,l
+	jr		z,shiftBit
+	ccf						;	flip carry (set)
+shiftBit:
+	rl		c					;	shift carry to byte
+	djnz	anotherBit
+	ld		hl,@SP+ee_k
+	add	hl,sp
+	ld		(hl),c
+	xor	a
+	inc	hl
+	ld		(hl),a
+#endasm
+//	for (ee_j=0; ee_j<8; ++ee_j) {
+//		_eioWriteWR(ADC4_SCL0);
+//		_eioWriteWR(ADC4_SCL1);
+//		if (_eioReadD0() & (1 << 2))
+//			ee_k = (ee_k << 1) | 1;
+//		else
+//			ee_k = ee_k << 1;
+//	}
+	_eioWriteWR(ADC4_SCL0);
+	_eioWriteWR(ADC4_SDA1);
+	_eioWriteWR(ADC4_SCL1);
+	_eioWriteWR(ADC4_SDA1);
+	return ee_k;
+}
+
+/*** BeginHeader eioAdc4WrCoeff */
+
+int eioAdc4WrCoeff(int chan, struct _eioAdcCalib *pS);
+
+/*** EndHeader */
+
+int eioAdc4WrCoeff(int chan, struct _eioAdcCalib *pS) {
+	char *pC;
+	int i, ercode, addr;
+
+	addr = 446+chan*6;
+	pC = (char*)pS;
+	for (i = 0; i < sizeof(struct _eioAdcCalib); ++i) {
+		if ((ercode = _eioAdc4EeWr(addr++,*pC++)) < 0) {
+			return ercode;
+		}
+	}
+	return 0;
+}
+
+/*** BeginHeader eioAdc4RdCoeff */
+
+int eioAdc4RdCoeff(int chan, struct _eioAdcCalib *pS);
+
+/*** EndHeader */
+
+int eioAdc4RdCoeff(int chan, struct _eioAdcCalib *pS) {
+	char *pC;
+	int i, ercode, addr;
+
+	addr = 446+chan*6;
+	pC = (char*)pS;
+	for (i = 0; i < sizeof(struct _eioAdcCalib); ++i) {
+		if ((ercode = _eioAdc4EeRd(addr++)) < 0)
+			return ercode;
+		else *pC++ = (char)ercode;
+	}
+	return 0;
+}
+
+
+/*** BeginHeader eioAnCalib */
+
+int eioAnCalib(unsigned chan, unsigned d1, unsigned d2, float f1, float f2);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+eioAnCalib						<EZIOPBDV.LIB>
+
+SYNTAX: 			int eioAnCalib(unsigned address, unsigned d1, unsigned d2,
+						float f1, float f2);
+
+DESCRIPTION:	This function computes the calibration coefficients from
+two data points and stores the coefficients into the EEPROM on the
+ADC4/XP8500 board.
+
+PARAMETER1:		The address of the board is b*16+p. b is the board number,
+which is normally set by the address jumpers and ranges from 0 to 3. p is
+the pin number, which ranges from 0 to 10.
+
+PARAMETER2:		This is the ADC value for the first data point. It should
+be an unsigned integer ranging from 0 to 4095 (for a 12-bit ADC).
+
+PARAMETER3:		This is the analog (supposed to be) value for the first
+data point. It can be a floating point number of any value.
+
+PARAMETER4:		This is the ADC value for the second data point. It should
+be an unsigned integer ranging from 0 to 4095 (for a 12-bit ADC).
+
+PARAMETER5:		This is the analog (supposed to be) value for the second
+data point. It can be a floating point number of any value.
+
+RETURN VALUE:	This function returns 0 if the operation is successful. If
+the ADC4/XP8500 board cannot be found, this function return -1. If the
+board is not found, the global variable eioErrorCode is bit-ored with the
+constant EIO_NODEV.
+
+END DESCRIPTION **********************************************************/
+
+int eioAnCalib(unsigned eioAddr, unsigned d1, unsigned d2, float f1, float f2) {
+	auto unsigned eioPAddr;
+	auto int result;
+//	auto struct _eioSys *oldPtr, thisInstance;
+	auto char raw;
+	auto unsigned rawValue, padr, badr;
+
+	result = 0;	
+	if (eioAddr < EIO_AI_ADC4_B) {
+		//	on board A/D
+		result = (eioBrdACalib(eioAddr,d1,d2,f1,f2));
+	} else if (eioAddr < (EIO_AI_ADC4_B+EIO_AI_ADC4_X)) {
+		// can be raw or converted
+		//	adc4 Plc card
+		eioAddr -= EIO_AI_ADC4_B;
+		eioPAddr = _eioPlcADC4Addr(badr=((eioAddr
+			>> EIO_AI_ADC4_BS ));
+//			& EIO_AI_ADC4_BM));
+		eioPlcAdr12(eioPAddr);
+		if (_eioReadD0() & 1) {
+			//	error, board doesn't exist!
+			eioErrorCode |= EIO_NODEV;
+			result = -1;
+		} else {
+			padr=(eioAddr & EIO_AI_ADC4_PM);
+			if (padr > 10) {
+				eioErrorCode |= EIO_NODEV;
+				result = -1;
+			} else {
+				eioAdcMakeCoeff(&eioAICalib[badr][padr],d1,d2,f1,f2);
+				eioAdc4WrCoeff(padr,&eioAICalib[badr][padr]);
+			}
+		}
+	} else {
+		//	error
+		eioErrorCode |= EIO_NODEV;
+		result = -1;
+	}
+	return result;
+}
+
+/*** BeginHeader eioAICalib */
+
+extern struct _eioAdcCalib eioAICalib[EIO_AI_ADC4_BM+1][11];
+
+/*** EndHeader */
+
+struct _eioAdcCalib eioAICalib[EIO_AI_ADC4_BM+1][11];
+
+/*** BeginHeader eioAdc4Init, plcXP85Init */
+
+int eioAdc4Init();
+int plcXP85Init();
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+plcXP85Init							<EZIOPBDV.LIB>
+
+SYNTAX: 			int plcXP85Init(unsigned Addr);
+
+DESCRIPTION:	This function resets the ADC4/XP8500 board selected and
+reads back the calibration coefficients associated with the ADC4/XP8500
+board into an internal array.
+
+PARAMETER1:		The address of the board is jumper selected, the range
+is from 0 to 7.
+
+RETURN VALUE:	Returns 0 if the initialization is successful, otherwise
+returns -1 if the board cannot be found.
+
+END DESCRIPTION **********************************************************/
+
+#asm
+plcXP85Init:: jp eioAdc4Init
+#endasm
+
+int eioAdc4Init(unsigned Addr) {
+	unsigned int j;
+	int result;
+	
+	eioPlcAdr12(_eioPlcADC4Addr(Addr));
+	if (_eioReadD0() & 1) {
+		eioErrorCode |= EIO_NODEV;
+		result = -1;
+	} else {
+		_eioWriteWR(ADC4_CLK0);   // clock low 
+		_eioWriteWR(ADC4_CS1);    // set chip select 0
+		_eioWriteWR(ADC4_CS0);    // set chip select 1
+		for (j = 0; j < 11; ++j) {
+			eioAdc4RdCoeff(j,&eioAICalib[Addr][j]);
+		}
+		result = 0;
+	}
+	return result;
+}
+
+/*** BeginHeader eioPlcRstWait */
+
+void eioPlcRstWait();
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+eioPlcRstWait
+
+SYNTAX: 	void eioPlcRstWait();
+
+DESCRIPTION:	this function busy waits for the amount of time needed for
+PLC-bus devices to reset. The global variable MS_TIMER must be updated
+by a timer interrupt routine. If you do not use this routine, please
+make sure there is enough delay between the PLC-bus reset and the first
+access to a PLC-bus device.
+
+Call before eioPlcRstWait			if this library is used
+VdInit()									vdriver.lib
+uplc_init()								cplc.lib
+main_init()								(EasyStart C)
+
+RETURN VALUE:	N/A
+
+END DESCRIPTION **********************************************************/
+
+void eioPlcRstWait() {
+	unsigned long t1;
+
+	t1 = MS_TIMER;
+	while ((MS_TIMER - t1) < 2000) hitwd();
+}
+
+/*** BeginHeader plcXP85In */
+
+#define ADC4_CLK0    0x00
+#define ADC4_CLK1    0x01
+#define ADC4_DAT0    0x02
+#define ADC4_DAT1    0x03
+#define ADC4_CS0     0x04
+#define ADC4_CS1     0x05
+#define ADC4_SDA0    0x06
+#define ADC4_SDA1    0x07
+#define ADC4_SCL0    0x08
+#define ADC4_SCL1    0x09
+#define ADC4_EOC     0x03  // bit position of ADC4 end of conversion
+#define ADC4_ID      0x00  // bit position to detect board presence
+
+int plcXP85In(unsigned Addr);
+
+/*** EndHeader */
+
+#asm
+_plcXP85RawIn::
+	push	hl
+	ld		l,ADC4_CLK0
+	call	_eioWriteWR
+	ld		l,ADC4_CS0
+	call	_eioWriteWR
+	ld		l,ADC4_CS1
+	call	_eioWriteWR
+	ld		l,ADC4_CS0
+	call	_eioWriteWR
+waitEOC1:
+	call	_eioReadD0
+	bit	ADC4_EOC,l
+	jr		z,waitEOC1
+	pop	hl
+
+	ld		a,h
+	ld		h,l
+	ld		l,a
+
+	add	hl,hl
+	add	hl,hl
+	add	hl,hl
+	add	hl,hl
+	
+	ld		a,12
+	ld		de,ADC4_DAT1|(ADC4_DAT0<<8)
+	exx
+	ld		de,ADC4_CLK1|(ADC4_CLK0<<8)
+	exx
+	call	_eioClockOut
+
+waitEOC2:
+	call	_eioReadD0
+	bit	ADC4_EOC,l
+	jr		z,waitEOC2
+
+	ld		hl,0
+	ld		a,12
+	ld		d,0x2
+	exx
+	ld		de,ADC4_CLK1|(ADC4_CLK0<<8)
+	exx
+	call	_eioClockInD0
+	ret
+	
+#endasm
+
+/* START FUNCTION DESCRIPTION ********************************************
+plcXP85In					<EZIOPBDV.LIB>
+
+SYNTAX: 			int plcXP85In(unsigned int address);
+
+DESCRIPTION:	This function reads an ADC channel from a ADC4/XP8500
+board. Note that this function reads back the raw value only. To read
+back the calibrated value, use plcXP85InC.
+
+PARAMETER1:		The address of the ADC channel is b*16+p. b is the board
+address, which can range from 0 to 3 depending on the settings of the
+address jumpers. p is the ADC channel number, which ranges from 0 to 10.
+
+RETURN VALUE:	This function returns a natural number from 0 to 4095 if
+the ADC is read properly. If the ADC4/XP8500 board is not found, this
+function return -1. If the board is not found, the global variable
+eioErrorCode is bit-ored with the constant EIO_NODEV.
+
+END DESCRIPTION **********************************************************/
+
+int plcXP85In(unsigned int Addr) {
+	auto int result;
+
+	result = 0;
+	eioPlcAdr12(_eioPlcADC4Addr(Addr >> EIO_AI_ADC4_BS));
+	if (_eioReadD0() & 1) {
+		eioErrorCode |= EIO_NODEV;
+		result = -1;
+	} else {
+		result = _plcXP85RawIn(Addr & 0x0f);
+	}
+	return result;
+}
+
+/*** BeginHeader plcXP85InC */
+
+float plcXP85InC(unsigned address);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+plcXP85InC					<EZIOPBDV.LIB>
+
+SYNTAX: 			float plcXP85InC(unsigned int address);
+
+DESCRIPTION:	This function reads an ADC channel from a ADC4/XP8500
+board. Furthermore, this function converts the value returned by the ADC
+and convert it to a calibrated value using the constants read by
+the function eioAdc4Init. To read back only the raw value, use the
+function plcXP85In. Note that eioAdc4Init *must* be called before
+plcXP85InC is called.
+
+PARAMETER1:		The address of the ADC channel is b*16+p. b is the board
+address, which can range from 0 to 3 depending on the settings of the
+address jumpers. p is the ADC channel number, which ranges from 0 to 10.
+
+RETURN VALUE:	This function returns a floating point number that
+represents the calibrated value read by the ADC channel. If the board is
+not found, the global variable eioErrorCode is bit-ored with the constant
+EIO_NODEV.
+
+END DESCRIPTION **********************************************************/
+
+float plcXP85InC(unsigned Addr) {
+	auto float result;
+	auto unsigned raw, b;
+
+	raw = 0;
+	eioPlcAdr12(_eioPlcADC4Addr(b = Addr >> EIO_AI_ADC4_BS));
+	if (_eioReadD0() & 1) {
+		eioErrorCode |= EIO_NODEV;
+	} else {
+		raw = _plcXP85RawIn(Addr & 0x0f);
+		result = eioAdcConvert(raw,&eioAICalib[b][Addr & 0x0f]);
+	}
+	return result;
+}
+
+/**************************************************************************
+XP86 STUFF
+**************************************************************************/
+
+/*** BeginHeader plcXP86Out */
+
+int plcXP86Out(int Addr, unsigned int oValue);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+plcXP86Out
+
+SYNTAX: 	int plcXP86Out(int Addr, unsigned int oValue)
+
+DESCRIPTION:	This function sends the 12-bit value "oValue" to the
+proper DAC channel. Addr is 2*board_number+channel_number. Note that
+both board_number and channel_number start from zero. Note that
+plcXP86Init should be called before plcXP86Out is called.
+
+PARAMETER1:		This is the logical address of the DAC channel. Addr is
+2*board_number+channel_number. Note that both board_number and
+channel_number start from zero. Without a special PAL, board_number
+ranges from 0 to 7 depending on the configuration of the address jumpers.
+With a special PAL, board_number can range from 0 to 63. channel_number
+ranges from 0 to 1.
+
+PARAMETER2:		This is the 12-bit value to send to the DAC.
+
+RETURN VALUE:	-1 if the DAC doesn't exist, 0 if the operation was
+successful.
+
+END DESCRIPTION **********************************************************/
+
+int plcXP86Out(int Addr, unsigned int oValue) {
+	auto int result;
+
+	result = 0;
+	eioPlcAdr12(_eioPlcXP86Addr(Addr >> EIO_AO_XP86_BS));
+	if (_eioReadD0() & 1) {
+		eioErrorCode |= EIO_NODEV;
+		result = -1;
+	} else {
+		oValue <<= 4;
+#asm xmemok
+		ld		de,0x0001
+		ld		hl,Addr+@SP
+		add	hl,sp
+		ld		a,(hl)
+		bit	0,a
+		push	af
+		exx
+		jr		nz,ch1
+		;	channel 0
+		ld		de,0x0706
+		jr		ldValue
+ch1:
+		ld		de,0x0302
+		;	channel 1
+ldValue:
+		exx
+		ld		hl,oValue+2+@SP
+		add	hl,sp
+		ld		a,(hl)
+		inc	hl
+		ld		h,(hl)
+		ld		l,a
+		ld		a,12
+		call	_eioClockOut
+		pop	af
+		jr		nz,ldBCh1
+		;	ldBCh0
+		ld		l,00001000b
+		call	_eioWriteWR
+		ld		l,00001001b
+		call	_eioWriteWR
+		jr		done
+ldBCh1:
+		ld		l,00000100b
+		call	_eioWriteWR
+		ld		l,00000101b
+		call	_eioWriteWR
+done:
+#endasm
+	}
+	return result;
+	
+}
+
+/*** BeginHeader plcXP86Init */
+
+int plcXP86Init(int Addr);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+plcXP86Init
+
+SYNTAX: 	int plcXP86Init(int Addr)
+
+DESCRIPTION:	this function initializes and turns on a DAC board. "Addr"
+is the logical address of the board. Call this function before using
+the function plcXP86Out.
+
+PARAMETER1:		this is the logical address of the board (set by jumpers).
+Without a special PAL, the address jumpers can select up to 8 addresses,
+ranging from 0 to 7. With special PALs, the address can range from 0 to
+63.
+
+RETURN VALUE:	-1 if the board cannot be found, 0 if the initialization
+completes.
+
+END DESCRIPTION **********************************************************/
+
+int plcXP86Init(int Addr) {
+	auto int result;
+
+	result = 0;
+	eioPlcAdr12(_eioPlcXP86Addr(Addr));
+	if (_eioReadD0() & 1) {
+		eioErrorCode |= EIO_NODEV;
+		result = -1;
+	} else {
+		_eioWriteWR(0x0c);	//	clear /CLR for chan 1, clear reg b for chan 1
+		_eioWriteWR(0x0e);	//	clear /CLR for chan 0, clear reg b for chan 0
+		_eioWriteWR(0x05);	//	assert /LD1 and /LD2 for chan 1
+		_eioWriteWR(0x09);	//	assert /LD1 and /LD2 for chan 0
+		_eioWriteWR(0x0d);	//	assert /CLR for chan 1
+		_eioWriteWR(0x0f);	//	assert /CLR for chan 0
+		_eioWriteWR(0x0b);	//	turn voltage reg. on
+	}
+	return result;
+}
+
+/*** beginHeader plcXP89Addr */
+
+int plcXP89Addr(int logAddr);
+
+/*** endHeader */
+
+#asm
+plcXP89Addr::
+	ld		a,l
+	ld		hl,001000000010b
+	bit	0,a
+	jr		z,bit1
+	set	2,h
+bit1:
+	bit	1,a
+	jr		z,bit2
+	set	3,h
+bit2:
+	bit	2,a
+	jr		z,done
+	set	4,l
+done:
+	ret
+#endasm
+
+/*** beginheader plcXP89Init */
+
+int plcXP89Init(int addr);
+
+/*** endHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+plcXP89Init
+
+SYNTAX: 	int plcXP89Init(int Addr)
+
+DESCRIPTION:	this function initializes a DAC board. "Addr"
+is the logical address of the board. Call this function before using
+the functions plcXP89... This function also initialize the DACs to
+tristate their outputs. The first plcXP89Out call enables the output
+of the corresponding DAC channel. Call plcXP89Sw to turn on the voltage
+reference. Note that in order to get a proper output, both the voltage
+reference and DAC channel must be set up properly.
+
+PARAMETER1:		this is the logical address of the board (set by jumpers).
+Without a special PAL, the address jumpers can select up to 8 addresses,
+ranging from 0 to 7.
+
+RETURN VALUE:	-1 if the board cannot be found, 0 if the initialization
+completes.
+
+END DESCRIPTION **********************************************************/
+
+int plcXP89Init(int Addr) {
+	auto int baddr;
+	auto int chan;
+	auto int msn;
+
+	baddr = plcXP89Addr(Addr);				//	compute SEL address of the board
+	eioPlcAdr12(baddr);						//	select the board
+	msn = baddr >> 8;
+	if (_eioReadD0() & 1) {					//	check if the board exists
+		//	the board doesn't exist
+		eioErrorCode != EIO_NODEV;
+		return -1;								//	return error code
+	} else {
+		for (chan = 0; chan < 8; ++chan) {
+			eioPlcAdr4((msn & 0xc) | 2);	//	select state
+			_eioWriteWR(chan | 0x8);		//	select channel
+			eioPlcAdr4((msn & 0xc));		//	dac state
+#asm xmemok
+			ld		hl,0x3000			;	make DAC go tristate
+			ld		de,0x0001			;	bit 0 for data, clock default low
+			ld		a,16					;	16 bits to transmit
+			exx
+			ld		d,0x2					;	bit 1 for clock
+			exx
+			call	_eioClockOutM		;	clock data out
+#endasm
+			eioPlcAdr4((msn & 0xc) | 2);
+			_eioWriteWR(0);
+		}
+		eioPlcAdr4((msn & 0xc) | 2);		//	select state
+		_eioWriteWR(6);						//	reference output disable
+		return 0;
+	}
+}
+
+/*** beginheader plcXP89Sw */
+
+int plcXP89Sw(int addr, int state);
+
+/*** endHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+plcXP89Sw			eziopbdv.lib
+
+SYNTAX: 	int plcXP89Sw(int Addr, int state)
+
+DESCRIPTION:	this function switches the DACs and reference to op-amps.
+
+PARAMETER1:		this is the logical address of the board (set by jumpers).
+Without a special PAL, the address jumpers can select up to 8 addresses,
+ranging from 0 to 7. To output a voltage properly, both the reference
+(switch on by this call) and the DAC output (switched off by this call,
+switched on by plcXP89Out) must be set up properly.
+
+PARAMETER2:		this flag indicates whether the DAC and ref. should be
+turned on or off. If this flag is non-zero, the ref is turned on. Otherwise,
+the DACs will tristate and the reference will output 0. The output voltage
+of all channels should be about zero at the op-amp. 
+
+RETURN VALUE:	-1 if the board cannot be found, 0 if the initialization
+completes.
+
+END DESCRIPTION **********************************************************/
+
+int plcXP89Sw(int Addr, int state) {
+	auto int baddr;
+	auto int chan;
+	auto int msn;
+
+	baddr = plcXP89Addr(Addr);				//	compute SEL address of the board
+	eioPlcAdr12(baddr);						//	select the board
+	msn = baddr >> 8;
+	if (_eioReadD0() & 1) {					//	check if the board exists
+		//	the board doesn't exist
+		eioErrorCode != EIO_NODEV;
+		return -1;								//	return error code
+	} else {
+		if (!state) {
+			for (chan = 0; chan < 8; ++chan) {
+				eioPlcAdr4((msn & 0xc) | 2);	//	select state
+				_eioWriteWR(chan | 0x8);		//	select channel
+				eioPlcAdr4((msn & 0xc));		//	dac state
+#asm xmemok
+				ld		hl,0x3000			;	make DAC go tristate
+				ld		de,0x0001			;	bit 0 for data, clock default low
+				ld		a,16					;	16 bits to transmit
+				exx
+				ld		d,0x2					;	bit 1 for clock
+				exx
+				call	_eioClockOutM		;	clock data out
+#endasm
+				eioPlcAdr4((msn & 0xc) | 2);
+				_eioWriteWR(0);
+			}
+		}
+		eioPlcAdr4((msn & 0xc) | 2);			//	select state
+		_eioWriteWR(6 | (state ? 1 : 0));	//	output enable
+		return 0;
+	}
+}
+
+/*** beginHeader plcXP89Out */
+
+int plcXP89Out(int Addr, unsigned int oValue);
+
+/*** endHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+plcXP89Out
+
+SYNTAX: 	int plcXP89Out(int Addr, unsigned int oValue)
+
+DESCRIPTION:	This function sends the 12-bit value "oValue" to the
+proper DAC channel. Addr is 8*board_number+channel_number. Note that
+both board_number and channel_number start from zero. Note that
+plcXP89Init should be called before plcXP89Out is called. Also, this
+function does not switch the voltage reference. In order to output a
+voltage properly, both the DAC and voltage reference must be set up
+properly. Call plcXP89Sw to enable the voltage reference. The proper
+sequence to start an XP89xx board is as follows:
+
+plcXP89Init - disables everything, output should be 0V for all channels
+plcXP89Out - set all channels to about midpoint or some acceptable
+				 value. Note that the output will see a slight jump as
+				 the channels are being set. Remember to set all 4 or 8
+				 channels, each call only sets one channel.
+plcXP89Sw -	 enable voltage reference. At this point, the outputs will
+				 see another jump, this time the jump will jump to the
+				 expected level from the plcXP89Out calls.
+
+PARAMETER1:		This is the logical address of the DAC channel. Addr is
+8*board_number+channel_number. Note that both board_number and
+channel_number start from zero. Without a special PAL, board_number
+ranges from 0 to 7 depending on the configuration of the address jumpers.
+channel_number ranges from 0 to 1.
+
+PARAMETER2:		This is the 12-bit value to send to the DAC.
+
+RETURN VALUE:	-1 if the DAC doesn't exist, 0 if the operation was
+successful.
+
+END DESCRIPTION **********************************************************/
+
+int plcXP89Out(int Addr, unsigned int oValue) {
+	auto int baddr;
+
+	baddr = plcXP89Addr(Addr / 8);		//	compute SEL address of the board
+	eioPlcAdr12(baddr);						//	select the board
+	if (_eioReadD0() & 1) {					//	check if the board exists
+		//	the board doesn't exist
+		eioErrorCode != EIO_NODEV;
+		return -1;								//	return error code
+	} else {
+		//	the board does exist
+		_eioWriteWR(8 | (Addr & 7));		//	select a channel
+		baddr = *((char*)&baddr+1);		//	get MSB (ADR2)
+		baddr = baddr & 0xc;					//	from select state to DAC state
+		eioPlcAdr4(baddr);
+		oValue & 0x0fff;						//	mask out any bits higher
+#asm xmemok
+	ld		de,0x0001			;	bit 0 for data, clock default low
+	ld		a,16					;	16 bits to transmit
+	exx
+	ld		d,0x2					;	bit 1 for clock
+	exx
+	call	_eioClockOutM		;	clock data out
+#endasm
+		eioPlcAdr4(baddr | 2);
+		_eioWriteWR(0);
+		return 0;				//	operation seems okay
+	}
+}
+
+/*** BeginHeader plcXP89EeInit */
+
+#define XP89_BIT_DAT 0
+#define XP89_MASK_DAT 1
+#define XP89_BIT_CLK 1
+#define XP89_MASK_CLK 2
+#define XP89_BIT_OE 2
+#define XP89_MASK_OE 4
+
+int plcXP89EeInit();
+
+/*** EndHeader */
+
+int plcXP89EeInit() {
+	_eioWriteWR(0x0);
+//	eeIdle();
+}
+
+/*** BeginHeader plcXP89EeStart */
+
+void plcXP89EeStart();
+
+/*** EndHeader */
+
+void plcXP89EeStart() {
+//	eeDatHi();
+//	eeClkHi();
+	_eioWriteWR(7);
+//	delay4us();
+	_eioWriteWR(6);
+//	eeDatLo();
+//	delay4us();
+	_eioWriteWR(4);
+//	eeClkLo();
+}
+
+/*** BeginHeader plcXP89EeStop */
+
+void plcXP89EeStop();
+
+/*** EndHeader */
+
+void plcXP89EeStop() {
+//	eeDatLo();
+//	eeClkHi();
+	_eioWriteWR(6);
+//	delay4us();
+	_eioWriteWR(7);
+//	eeDatHi();
+//	delay4us();
+	_eioWriteWR(5);
+//	eeClkLo();
+}
+
+/*** BeginHeader plcXP89EeInBit */
+
+int plcXP89EeInBit();
+
+/*** EndHeader */
+
+int plcXP89EeInBit() {
+	auto int res;
+
+//	eeClkHi();
+	_eioWriteWR(2);
+	res = _eioReadD0();
+//	eeClkLo();
+	_eioWriteWR(0);
+	return (res & 0x1) != 0;
+}
+
+/*** BeginHeader plcXP89EeOutBit */
+
+void plcXP89EeOutBit(int bit);
+
+/*** EndHeader */
+
+void plcXP89EeOutBit(int bit) {
+//	eeClkHi();
+	_eioWriteWR(6 | (bit ? 1 : 0));
+//	eeClkLo();
+	_eioWriteWR(4 | (bit ? 1 : 0));
+}
+
+/*** BeginHeader plcXP89EeHeader */
+
+int plcXP89EeHeader(int hdr);
+
+/*** EndHeader */
+
+int plcXP89EeHeader(int hdr) {
+	plcXP89EeStart();
+	hdr;
+#asm xmemok
+	ld		h,l
+	ld		de,0x0405
+	ld		a,8
+	exx
+	ld		d,0x2
+	exx
+	call	_eioClockOutM
+#endasm
+	return plcXP89EeInBit() ? -1 : 0;
+}
+
+/*** BeginHeader plcXP89EeSndByte */
+
+int plcXP89EeSndByte(int byte);
+
+/*** EndHeader */
+
+#asm
+plcXP89EeSndByte::
+	ld		h,l
+	ld		de,0x0405
+	ld		a,8
+	exx
+	ld		d,0x2
+	exx
+	call	_eioClockOutM
+	call	plcXP89EeInBit
+	ld		a,h
+	or		l
+	ret	z
+	ld		hl,0xffff
+	ret
+#endasm 
+
+/*** BeginHeader plcXP89EeRecByte */
+
+int plcXP89EeRecByte();
+
+/*** EndHeader */
+
+#asm
+plcXP89EeRecByte::
+	ld		hl,0
+	ld		d,0x1
+	ld		a,8
+	exx
+	ld		de,0x0002
+	exx
+	call	_eioClockInD0
+	ret
+#endasm
+
+/*** BeginHeader plcXP89EeSetAddr */
+
+int plcXP89EeSetAddr(int memAddr);
+
+/*** EndHeader */
+
+int plcXP89EeSetAddr(int memAddr) {
+	if (plcXP89EeHeader(0xa0 | ((memAddr & 0x100) ? 2 : 0))) return -1;
+	return plcXP89EeSndByte(memAddr);
+}
+
+/*** BeginHeader plcXP89EeRdByte */
+
+int plcXP89EeRdByte(int addr);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+plcXP89EeRdByte
+
+SYNTAX:			int plcXP89EeRdByte(int addr);
+
+DESCRIPTION:	This function reads one byte from the EEPROM on the XP89xx
+PLC-bus board. Call this function only after the corresponding XP89xx
+board is properly selected and the EE state is selected. Application
+programs should use plcXP89RdCalib to get calibration constants from
+the XP89xx board.
+
+PARAMETER1:		The address to read from, 0 to 255.
+
+RETURN VALUE:	If the operation is successful, return 0-255 as the value
+of the location. Otherwise, return a negative number.
+
+END DESCRIPTION **********************************************************/
+
+int plcXP89EeRdByte(int addr) {
+	auto int res;
+	if (plcXP89EeSetAddr(addr)) return -1;
+	if (plcXP89EeHeader(0xa1 | ((addr & 0x100) ? 2 : 0))) return -1;
+	res = plcXP89EeRecByte();
+	plcXP89EeOutBit(1);
+	plcXP89EeStop();
+	return res;
+}
+
+/*** BeginHeader plcXP89EeWrByte */
+
+int plcXP89EeWrByte(int addr, int value);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+plcXP89EeWrByte
+
+SYNTAX:			int plcXP89EeWrByte(int addr, int value);
+
+DESCRIPTION:	This function writes one byte to the EEPROM on the XP89xx
+PLC-bus board. Call this function only after the corresponding XP89xx
+board is properly selected and the EE state is selected. Application
+programs should use plcXP89WrCalib to put calibration constants into
+the XP89xx board.
+
+PARAMETER1:		the address, 0 to 255.
+
+PARAMETER2:		the value, 0 to 255.
+
+RETURN VALUE:	return a negative number if the operation fails, otherwise
+returns 0.
+
+END DESCRIPTION **********************************************************/
+
+int plcXP89EeWrByte(int addr, int value) {
+	auto int retry;
+	
+	if (plcXP89EeSetAddr(addr)) return -1;
+	if (plcXP89EeSndByte(value)) return -1;
+	plcXP89EeStop();
+	//	internal write cycle begins now
+	retry = 100;
+	while (--retry && plcXP89EeHeader(0xa0));
+	plcXP89EeStop();
+	return retry ? 0 : -1;
+}
+
+/*** beginHeader plcXP89WrCalib */
+
+int plcXP89WrCalib(int addr, struct _eioAdcCalib *pCalib);
+
+/*** endHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+plcXP89WrCalib
+
+SYNTAX:			int plcXP89WrCalib(int chan, struct _eioAdcCalib *pCalib);
+
+DESCRIPTION:	This function writes a calibration structure to the EEPROM
+storage corresponding to a channel on the XP89xx board.
+
+PARAMETER1:		This is the channel number of the XP89xx DAC channel,
+valid values are from 0 to 63.
+
+PARAMETER2:		This is a pointer pointing to a calibration structure.
+The structure should be initialized by calling eioAdcMakeCoeff.
+
+RETURN VALUE:	Returns 0 if the operation is successful, otherwise returns
+a negative number.
+
+END DESCRIPTION **********************************************************/
+
+int plcXP89WrCalib(int Addr, struct _eioAdcCalib *pCalib) {
+	auto int i;
+	auto char *pWhere;
+	auto int baddr;
+
+	baddr = plcXP89Addr(Addr / 8);		//	compute SEL state address of the board
+	eioPlcAdr12(baddr);						//	select the board
+	if (_eioReadD0() & 1) {					//	check if the board exists
+		//	the board doesn't exist
+		eioErrorCode != EIO_NODEV;
+		return -1;								//	return error code
+	} else {
+		//	the board does exist
+		baddr = *((char*)&baddr+1);		//	get MSB (ADR2)
+		baddr = (baddr & 0xc) | 1;			//	from select state to EE state
+		eioPlcAdr4(baddr);
+
+		Addr = (Addr & 7) * sizeof(struct _eioAdcCalib);	//	start of EE address of
+																		//	calib coef for this channel
+		plcXP89EeInit();
+		pWhere = (char*)pCalib;
+		for (i = Addr; i < Addr+sizeof(struct _eioAdcCalib); ++i) {
+			if (plcXP89EeWrByte(i, *pWhere++)) return -1;
+		}
+		_eioWriteWR(0x0);
+		return 0;
+	}
+}
+
+/*** beginHeader plcXP89RdCalib */
+
+int plcXP89RdCalib(int addr, struct _eioAdcCalib *pCalib);
+
+/*** endHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+plcXP89RdCalib
+
+SYNTAX:			int plcXP89RdCalib(int chan, struct _eioAdcCalib *pCalib);
+
+DESCRIPTION:	Reads the calibration structure of a DAC channel from an
+XP89xx board.
+
+PARAMETER1:		This channel indicates a DAC channel on an XP89xx board.
+Valid values range from 0 to 63.
+
+PARAMETER2:		This pointer points to a calibration structure. Use
+eioAdcDigitize to use the calibration structure to compute the actual
+DAC output of a given analog value.
+
+RETURN VALUE:	Return 0 if the operation is successful, otherwise returns
+a negative number.
+
+END DESCRIPTION **********************************************************/
+
+int plcXP89RdCalib(int Addr, struct _eioAdcCalib *pCalib) {
+	auto int i;
+	auto char *pWhere;
+	auto int res;
+	auto int baddr;
+
+	baddr = plcXP89Addr(Addr / 8);		//	compute SEL state address of the board
+	eioPlcAdr12(baddr);						//	select the board
+	if (_eioReadD0() & 1) {					//	check if the board exists
+		//	the board doesn't exist
+		eioErrorCode != EIO_NODEV;
+		return -1;								//	return error code
+	} else {
+		//	the board does exist
+		baddr = *((char*)&baddr+1);		//	get MSB (ADR2)
+		baddr = (baddr & 0xc) | 1;			//	from select state to EE state
+		eioPlcAdr4(baddr);
+
+		Addr = (Addr & 7) * sizeof(struct _eioAdcCalib);	//	start of EE address of
+																		//	calib coef for this channel
+		plcXP89EeInit();
+		pWhere = (char*)pCalib;
+		for (i = Addr; i < Addr+sizeof(struct _eioAdcCalib); ++i) {
+			res = plcXP89EeRdByte(i);
+			if (res < 0) return res;
+			else *pWhere++ = res;
+		}
+		_eioWriteWR(0x0);
+		return 0;
+	}
+}
+
+/*** BeginHeader plcBusReset */
+
+void plcBusReset();
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+plcBusReset
+
+SYNTAX: 	void plcBusReset();
+
+DESCRIPTION:	This function resets the whole PLC-bus. All boards on the
+PLC-bus will be reset. Call this function before individual boards are
+reset by their PLC-bus board dependent initialization routines.
+Some PLC-bus boards require a delay between this call and the first
+access, a two-second delay after this function call will ensure all
+boards are properly reset.
+
+RETURN VALUE:	N/A
+
+END DESCRIPTION **********************************************************/
+
+#asm
+plcBusReset::	jp	eioResetPlcBus
+#endasm
+
+/*** beginHeader plcAD12Addr */
+
+int plcAD12Addr(int logAddr);
+
+/*** endHeader */
+
+#asm
+plcAD12Addr::
+	ld		a,l
+	ld		hl,000010000000b
+	bit	0,a
+	jr		z,bit1
+	set	0,h
+bit1:
+	bit	1,a
+	jr		z,done
+	set	4,l
+done:
+	ret
+#endasm
+
+/*** BeginHeader plcAD12In */
+
+#define AD12_MASK_EEDAT 2
+#define AD12_MASK_EECLK 8
+#define AD12_MASK_ADCS 4
+#define AD12_MASK_ADI 1
+#define AD12_MASK_ADO 1
+#define AD12_MASK_ADCLK 8
+
+int plcAD12In(unsigned Addr, unsigned gain, char unipolar);
+
+/*** EndHeader */
+
+#asm
+_plcAD12RawIn::
+	push	hl
+	ld		l,0						;	/CS high, reset, clock and data low
+	call	_eioWriteWR
+
+	ld		l,AD12_MASK_ADCS
+	call	_eioWriteWR				;	/CS low
+
+	exx
+	ld		d,AD12_MASK_ADCLK		;	d is clock mask
+	exx
+	ld		de,+(AD12_MASK_ADCS<<8) |(AD12_MASK_ADI|AD12_MASK_ADCS)		;	d == data low, e == data high
+	pop	hl
+;	ld		hl,0x8300
+	ld		a,9						;	latch out 9 bits, includes the idle bit
+	call	_eioClockOutM
+
+	ld		hl,0
+	ld		a,12
+	ld		d,AD12_MASK_ADO
+	exx
+	ld		de,+(AD12_MASK_ADCS << 8) | (AD12_MASK_ADCLK|AD12_MASK_ADCS)
+	exx
+	call	_eioClockInD0
+	ret
+	
+#endasm
+
+/* START FUNCTION DESCRIPTION ********************************************
+plcAD12In					<EZIOPBDV.LIB>
+
+SYNTAX: 			int plcAD12In(unsigned int address,
+						unsigned gain, char unipolar);
+
+DESCRIPTION:	This function reads an ADC channel from an EXP-AD12
+board. Note that this function reads back the raw value only. To convert
+the values, use plcAD12RdCalib to read the calibration constants on the
+board and use eioAdcConvert to convert the raw value to calibrated values.
+
+PARAMETER1:		The address of the ADC channel is b*8+p. b is the board
+address, which can range from 0 to 3 depending on the settings of the
+address jumpers. p is the ADC channel number, which ranges from 0 to 7.
+
+PARAMETER2:		gain is the index to control software-controled signal
+gain. Valid values are from 0 to 8. The index is as follows (default
+values shown along with the formula for gains if custom resistors are
+installed):
+
+0:	(INn+ - INn-) 1x (no gain)
+1:	(INn+ - INn-) 2x or 1+2*RP1/R8
+2:	(INn+ - INn-) 6x or 2*(1+R13/RP2)
+3:	(INn+ - INn-) 22x or 2*(1+R10/RP1)
+4:	(INn+ - INn-) 42x or 2*(1+R11/RP2)
+5:	(INn+ - INn-) 102x or 2*(1+R12/RP2)
+6:	(INn+ - INn-) 202x or 2*(1+R9/RP1)
+7:	INn+ sing. no gain
+8:	INn- sing. no gain
+
+PARAMETER3:		unipolar controls whether the analog value should range
+from 0 to +5 or -5 to +5. If this parameter is non-zero, the range is
+assumed from 0 to +5 at the ADC. If this parameter is non-zero, the
+function returns a number from 0x000 (for 0V at the ADC) to 0xfff (for
+5V at the ADC). If this parameter is zero, the function returns a
+number from -0x800 (for -5V at the ADC) to 0x7ff (for +5V at the ADC).
+
+RETURN VALUE:	This function returns an integer if
+the ADC is read properly. If the AD12 board is not found, this
+function return -1. If the board is not found, the global variable
+eioErrorCode is bit-ored with the constant EIO_NODEV.
+
+END DESCRIPTION **********************************************************/
+
+int plcAD12In(unsigned int Addr, unsigned gain, char unipolar) {
+	auto int result;
+	auto int adr2;
+	static char modeAChan[] = {
+		//	map AN?- and AN?+ to IN- and IN+
+		0x4,
+		0x5,
+		0x6,
+		0x7,
+		0x8,
+		0x9,
+		0xa,
+		0xb
+	};
+
+	static char gainSet[]= {
+		// +-------- start bit
+		// |+------- single/differential
+		// ||+------ odd/sign
+		// |||+----- select 1
+		// ||||+---- select 0
+		// |||||+--- unipolar/bipolar
+		// ||||||+-- most significant bit first
+		// |||||||+- power shutdown
+		'\B10000011',		//	IN+ - IN- diff. no gain, bipolar
+		'\B11001011',		//	G1 sing. 2x, bipolar
+		'\B11111011',		//	G6 sing. 6x, bipolar
+		'\B11010011',		//	G3 sing. 22x, bipolar
+		'\B11110011',		//	G4 sing. 42x, bipolar
+		'\B11011011',		//	G5 sing. 102x, bipolar
+		'\B11101011',		//	G2 sing. 202x, bipolar
+		'\B11000011',		//	IN+ sing. no gain bipolar
+		'\B11100011',		//	IN- sing. no gain bipolar
+	};
+
+	result = 0;
+	eioPlcAdr12(adr2=plcAD12Addr(Addr/8));
+	if (_eioReadD0() & 1) {
+		eioErrorCode |= EIO_NODEV;
+		result = -1;
+	} else {
+		adr2 = adr2 >> 8;
+		//	we are in mode A already
+		_eioWriteWR(0);								//	to be safe, deselect both mux
+		_eioWriteWR(modeAChan[Addr % 8]);		//	now specify the right mux
+															//	and right channel
+		mxdel18();
+		//	mux work done, now for the ADC
+		eioPlcAdr4(adr2 | 2);						//	switch to mode B
+		result = _plcAD12RawIn((gainSet[gain % 7] | (unipolar?4:0)) << 8);
+		if (!unipolar && (result & 0x800)) result |= 0xf000;
+		_eioWriteWR(0);
+	}
+	return result;
+}
+
+/*** BeginHeader plcAD12EeInit */
+
+int plcAD12EeInit();
+
+/*** EndHeader */
+
+int plcAD12EeInit() {
+	_eioWriteWR(0);
+}
+
+/*** BeginHeader plcAD12EeStart */
+
+void plcAD12EeStart();
+
+/*** EndHeader */
+
+void plcAD12EeStart() {
+	_eioWriteWR(0);
+	_eioWriteWR(AD12_MASK_EEDAT);
+	_eioWriteWR(AD12_MASK_EEDAT|AD12_MASK_EECLK);
+	_eioWriteWR(AD12_MASK_EECLK);
+	_eioWriteWR(0);
+}
+
+/*** BeginHeader plcAD12EeStop */
+
+void plcAD12EeStop();
+
+/*** EndHeader */
+
+void plcAD12EeStop() {
+	_eioWriteWR(0);
+	_eioWriteWR(AD12_MASK_EECLK);
+	_eioWriteWR(AD12_MASK_EEDAT|AD12_MASK_EECLK);
+	_eioWriteWR(AD12_MASK_EEDAT);
+	_eioWriteWR(0);
+}
+
+/*** BeginHeader plcAD12EeInBit */
+
+int plcAD12EeInBit();
+
+/*** EndHeader */
+
+int plcAD12EeInBit() {
+	auto int res;
+
+	_eioWriteWR(AD12_MASK_EEDAT);
+	_eioWriteWR(AD12_MASK_EECLK|AD12_MASK_EEDAT);
+	res = _eioReadD0();
+	_eioWriteWR(AD12_MASK_EEDAT);
+	return (res & AD12_MASK_EEDAT) != 0;
+}
+
+/*** BeginHeader plcAD12EeOutBit */
+
+void plcAD12EeOutBit(int bit);
+
+/*** EndHeader */
+
+void plcAD12EeOutBit(int bit) {
+	_eioWriteWR((bit ? AD12_MASK_EEDAT : 0));
+	_eioWriteWR((AD12_MASK_EECLK) | (bit ? AD12_MASK_EEDAT : 0));
+	_eioWriteWR((bit ? AD12_MASK_EEDAT : 0));
+}
+
+/*** BeginHeader plcAD12EeHeader */
+
+int plcAD12EeHeader(int hdr);
+
+/*** EndHeader */
+
+int plcAD12EeHeader(int hdr) {
+	plcAD12EeStart();
+	hdr;
+#asm xmemok
+	ld		h,l
+	ld		de,AD12_MASK_EEDAT
+	ld		a,8
+	exx
+	ld		d,AD12_MASK_EECLK
+	exx
+	call	_eioClockOutM
+#endasm
+	return plcAD12EeInBit() ? -1 : 0;
+}
+
+/*** BeginHeader plcAD12EeSndByte */
+
+int plcAD12EeSndByte(int byte);
+
+/*** EndHeader */
+
+#asm
+plcAD12EeSndByte::
+	ld		h,l
+	ld		de,AD12_MASK_EEDAT
+	ld		a,8
+	exx
+	ld		d,AD12_MASK_EECLK
+	exx
+	call	_eioClockOutM
+	call	plcAD12EeInBit
+	ld		a,h
+	or		l
+	ret	z
+	ld		hl,0xffff
+	ret
+#endasm 
+
+/*** BeginHeader plcAD12EeRecByte */
+
+int plcAD12EeRecByte();
+
+/*** EndHeader */
+
+#asm
+plcAD12EeRecByte::
+	ld		hl,0
+	ld		d,AD12_MASK_EEDAT
+	ld		a,8
+	exx
+	ld		de,+(AD12_MASK_EEDAT << 8) | (AD12_MASK_EECLK | AD12_MASK_EEDAT)
+	exx
+	call	_eioClockInD0
+	ret
+#endasm
+
+/*** BeginHeader plcAD12EeSetAddr */
+
+int plcAD12EeSetAddr(int memAddr);
+
+/*** EndHeader */
+
+int plcAD12EeSetAddr(int memAddr) {
+	if (plcAD12EeHeader(0xa0 | ((memAddr & 0x100) ? 2 : 0))) return -1;
+	return plcAD12EeSndByte(memAddr);
+}
+
+/*** BeginHeader plcAD12EeRdByte */
+
+int plcAD12EeRdByte(int addr);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+plcAD12EeRdByte
+
+SYNTAX:			int plcAD12EeRdByte(int addr);
+
+DESCRIPTION:	This function reads one byte from the EEPROM on the AD12xx
+PLC-bus board. Call this function only after the corresponding AD12xx
+board is properly selected and the EE state is selected. Application
+programs should use plcAD12RdCalib to get calibration constants from
+the AD12xx board.
+
+PARAMETER1:		The address to read from, 0 to 255.
+
+RETURN VALUE:	If the operation is successful, return 0-255 as the value
+of the location. Otherwise, return a negative number.
+
+END DESCRIPTION **********************************************************/
+
+int plcAD12EeRdByte(int addr) {
+	auto int res;
+	if (plcAD12EeSetAddr(addr)) return -1;
+	if (plcAD12EeHeader(0xa1 | ((addr & 0x100) ? 2 : 0))) return -1;
+	res = plcAD12EeRecByte();
+	plcAD12EeOutBit(1);
+	plcAD12EeStop();
+	return res;
+}
+
+/*** BeginHeader plcAD12EeWrByte */
+
+int plcAD12EeWrByte(int addr, int value);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+plcAD12EeWrByte
+
+SYNTAX:			int plcAD12EeWrByte(int addr, int value);
+
+DESCRIPTION:	This function writes one byte to the EEPROM on the AD12xx
+PLC-bus board. Call this function only after the corresponding AD12xx
+board is properly selected and the EE state is selected. Application
+programs should use plcAD12WrCalib to put calibration constants into
+the AD12xx board.
+
+PARAMETER1:		the address, 0 to 255.
+
+PARAMETER2:		the value, 0 to 255.
+
+RETURN VALUE:	return a negative number if the operation fails, otherwise
+returns 0.
+
+END DESCRIPTION **********************************************************/
+
+int plcAD12EeWrByte(int addr, int value) {
+	auto int retry;
+	
+	if (plcAD12EeSetAddr(addr)) return -1;
+	if (plcAD12EeSndByte(value)) return -1;
+	plcAD12EeStop();
+	//	internal write cycle begins now
+	retry = 100;
+	while (--retry && plcAD12EeHeader(0xa0));
+	plcAD12EeStop();
+	return retry ? 0 : -1;
+}
+
+/*** beginHeader plcAD12WrCalib */
+
+int plcAD12WrCalib(int addr, struct _eioAdcCalib *pCalib);
+
+/*** endHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+plcAD12WrCalib
+
+SYNTAX:			int plcAD12WrCalib(int chan, struct _eioAdcCalib *pCalib);
+
+DESCRIPTION:	This function writes a calibration structure to the EEPROM
+storage corresponding to a channel on the AD12xx board.
+
+PARAMETER1:		This is the channel number of the AD12xx DAC channel,
+valid values are from 0 to 63.
+
+PARAMETER2:		This is a pointer pointing to a calibration structure.
+The structure should be initialized by calling eioAdcMakeCoeff.
+
+RETURN VALUE:	Returns 0 if the operation is successful, otherwise returns
+a negative number.
+
+END DESCRIPTION **********************************************************/
+
+int plcAD12WrCalib(int Addr, struct _eioAdcCalib *pCalib) {
+	auto int i;
+	auto char *pWhere;
+	auto int baddr;
+
+	baddr = plcAD12Addr(Addr / 8);		//	compute SEL state address of the board
+	eioPlcAdr12(baddr);						//	select the board
+	if (_eioReadD0() & 1) {					//	check if the board exists
+		//	the board doesn't exist
+		eioErrorCode != EIO_NODEV;
+		return -1;								//	return error code
+	} else {
+		//	the board does exist
+		baddr = *((char*)&baddr+1);		//	get MSB (ADR2)
+		baddr = baddr | 2;			//	from select state to state B
+		eioPlcAdr4(baddr);
+
+		Addr = (Addr & 7) * sizeof(struct _eioAdcCalib);	//	start of EE address of
+																		//	calib coef for this channel
+		Addr += 18*4;				//	offset from established area
+		plcAD12EeInit();
+		pWhere = (char*)pCalib;
+		for (i = Addr; i < Addr+sizeof(struct _eioAdcCalib); ++i) {
+			if (plcAD12EeWrByte(i, *pWhere++)) return -1;
+		}
+		_eioWriteWR(0);
+		return 0;
+	}
+}
+
+/*** beginHeader plcAD12RdCalib */
+
+int plcAD12RdCalib(int addr, struct _eioAdcCalib *pCalib);
+
+/*** endHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+plcAD12RdCalib
+
+SYNTAX:			int plcAD12RdCalib(int chan, struct _eioAdcCalib *pCalib);
+
+DESCRIPTION:	Reads the calibration structure of a DAC channel from an
+AD12xx board.
+
+PARAMETER1:		This channel indicates a DAC channel on an AD12xx board.
+Valid values range from 0 to 63.
+
+PARAMETER2:		This pointer points to a calibration structure. Use
+eioAdcDigitize to use the calibration structure to compute the actual
+DAC output of a given analog value.
+
+RETURN VALUE:	Return 0 if the operation is successful, otherwise returns
+a negative number.
+
+END DESCRIPTION **********************************************************/
+
+int plcAD12RdCalib(int Addr, struct _eioAdcCalib *pCalib) {
+	auto int i;
+	auto char *pWhere;
+	auto int res;
+	auto int baddr;
+
+	baddr = plcAD12Addr(Addr / 8);		//	compute SEL state address of the board
+	eioPlcAdr12(baddr);						//	select the board
+	if (_eioReadD0() & 1) {					//	check if the board exists
+		//	the board doesn't exist
+		eioErrorCode != EIO_NODEV;
+		return -1;								//	return error code
+	} else {
+		//	the board does exist
+		baddr = *((char*)&baddr+1);		//	get MSB (ADR2)
+		baddr = baddr | 2;			//	from select state to state B
+		eioPlcAdr4(baddr);
+
+		Addr = (Addr & 7) * sizeof(struct _eioAdcCalib);	//	start of EE address of
+																		//	calib coef for this channel
+		Addr += 18*4;				//	offset from established area
+		plcAD12EeInit();
+		pWhere = (char*)pCalib;
+		for (i = Addr; i < Addr+sizeof(struct _eioAdcCalib); ++i) {
+			res = plcAD12EeRdByte(i);
+			if (res < 0) return res;
+			else *pWhere++ = res;
+		}
+		_eioWriteWR(0);
+		return 0;
+	}
+}
+
+/*** BeginHeader */
+
+/*** EndHeader */
+
+/*** BeginHeader */
+
+/*** EndHeader */
+
+/*** BeginHeader */
+
+#endif
+
+/*** EndHeader */
+

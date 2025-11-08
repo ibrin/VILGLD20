@@ -1,0 +1,1111 @@
+/* START LIBRARY DESCRIPTION *********************************************
+LCD2L.LIB
+	 Copyright (c) 1995, Z-World.
+
+DESCRIPTION: Support for the 2x20 LCD on the Rugged Giant or the Little
+				Star. 
+
+SUPPORT LIB'S: sys.lib, drivers.lib
+END DESCRIPTION **********************************************************/
+// 12-15-95 Use LCDRD to read LCD. Not all boards has LCDRD==LCDWR.
+// Change reference to board 9 to MicroG.
+// 4-12-95
+// Add support for any board that has LCDRD and LCDWR defined.
+
+/**********************************************************************
+NOTE on the LCD driver for the CPLC   
+	Reads and writes to the LCD register (LCDWR) is accessed through 
+	the port address LCDWR+n. With n = 0, an LCD control register is 
+	accessed. With n = 1, the LCD data register is accessed. Read and
+	write are handled with "in reg,(c)" and "out (c),reg", respectively.
+	bc has been loaded with LCDWR or LCDWR+1. The PAL in the Rugged Giant 
+	or the EPLD in the Little Star translates the data or command to the LCD.
+
+***********************************************************************/
+
+/*** BeginHeader */
+#ifndef LCDWR
+#error "LCDWR and LCDRD not defined."
+#endif
+/*** EndHeader */
+
+/*** BeginHeader lc_wr, lc_rd */
+
+/*** EndHeader  */
+
+/* START FUNCTION DESCRIPTION ********************************************
+lc_wr                        <LCD2L.LIB>
+
+SYNTAX: void lc_wr(char data);
+
+KEYWORDS: lcd
+
+DESCRIPTION: Low level routine for writing char data to a control 
+register of the LCD. The control register accessed is embedded in char data.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+lc_rd                        <LCD2L.LIB>
+
+SYNTAX: int lc_rd(void);
+
+KEYWORDS: lcd
+
+DESCRIPTION: Low level routine to read the LCD register LCDWR.
+
+RETURN VALUE: The busy flag in bit 7 and the address counter of the LCD 
+in the lower 7 bits.
+END DESCRIPTION **********************************************************/
+#asm nodebug fast
+lc_wr::
+	 ld      bc,LCDWR
+	 out     (c),l           ; reg l has the char data passed.
+	 ret
+
+lc_rd::
+; 12-15-95	 ld      bc,LCDWR   ; aoc LCDRD
+	 ld		bc, LCDRD				; aoc 12-15-95, distinguished read and write
+	 in      l,(c)      ;  hl has the returned data.
+	 ld      h,0
+	 ret
+
+#endasm
+
+/*** BeginHeader lc_init,  lc_printf, lc_pos, lc_char, lc_cmd,
+	  lc_notpresent, lc_ctrl, lc_wait */
+
+void lc_init(void);             // initialize display unit
+int  lc_putc(char x);           // send 1 char to LCD, process escape seq
+void lc_printf(char *fmt, ...); // printf to LCD, process escape seq
+void lc_pos(int line, int col); // position cursor to line, column
+void lc_char(char x);           // 2-16-94, has to define as void
+int lc_cmd(int cmd);
+int lc_wait(void);
+void lc_ctrl(char x);
+extern char lc_notpresent;
+void lc_nl(void);
+
+/* escape sequences for lc_printf(....)
+	ESC p n mm - position cursor to line n and column mm
+	Examples:  lc_printf("\x1bp234"); line 2, column 34
+				  lc_printf("\x1bp105"); line 1, column 5
+	Lines are numbered 0, 1, 2, 3. Columns 0,1,..39.
+	esc 1 - Turn on cursor
+	esc 0 - Turn off cursor
+	esc c - Erase from at cursor postion to end of line
+	esc b - Enable blinking cursor mode.
+	esc n - Disable blinking cursor mode.
+	esc e - erase display and home cursor
+
+*/
+
+/*** EndHeader  */
+
+void cdel100(void);
+void lc_nl(void);
+
+#ifndef LK_LINES             // number of lines on display
+#define LK_LINES 2           // default
+#endif
+
+#ifndef LK_COLS              // number of columns per line on display
+#define LK_COLS 20           // default
+#endif
+
+#ifndef LK_BLINK
+#define LK_BLINK 2           // set to 1 for blinking cursor
+#endif
+
+/**********************************************************************
+NOTE on the LCD driver for the CPLC     aoc 5-18-93
+	Read and write to the CPLC LCD is accessed through the port address
+	1101xxxn (0xD0).  If n is 0 (command), RS is 0 for the LCD.  Read
+	or write is handled by in a,(c)  or out (c),a, respectively.
+	If n is 1 (data), RS is 1 for the LCD.  Read or write is handled by
+	"in a,(c)" or "out (c), a", respectively. A PAL chip translates the 
+	data or command to the LCD.
+***********************************************************************/
+
+char lc_state, lc_blink, lc_line, lc_col; // current line and col position
+char lc_notpresent;
+
+/* START FUNCTION DESCRIPTION ********************************************
+lc_init                      <LCD2L.LIB>
+
+
+SYNTAX: void lc_init(void);
+
+KEYWORDS: lcd, init
+
+DESCRIPTION: Initializes the Rugged Giant or Little STAR LCD by executing
+the recommended LCD power up protocol.  Sets LCD for auto increment; 
+display and cursor on; and clears the display memory.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void lc_init(void)
+{
+	 static unsigned int j, k;
+
+	 lc_wr(0x38);            
+
+	 switch(sysclock())     // 4-10-95, delay for all clockspeed
+	 {
+			case 0x1400:
+								for(k = 0; k < 400; k++);
+								break;
+			case 0x1e00:
+								for(k = 0; k < 600; k++);
+								break;
+			case 0x2800:
+								for(k = 0; k < 800; k++);
+								break;
+			case 0x3c00:
+								for(k = 0; k < 1200; k++);
+								break;
+			case 0x5000:   
+								for(k = 0; k < 1600; k++);
+								break;
+			default:    
+								for(k = 0; k < 600; k++);
+								break;
+	 }
+//#if BOARD_TYPE==CPLC_BOARD
+//        for (k = 0; k < 400; k++)
+//            ;                // 4 ms delay
+//#elif BOARD_TYPE==L_STAR
+//        for (k = 0; k < 1200; k++)
+//            ;                // delay for higher speed, 18.432mhz
+//#elif BOARD_TYPE==SCoreZ1
+//      if(sysclock() == 0x5000)         // 4-10-95, SCoreZ1
+//         for (k = 0; k < 1600; k++);   // 4-10-95, SCoreZ1 24Mhz
+//      else                             // 4-10-95, SCoreZ1
+//         for (k = 0; k < 600; k++);    // 4-10-95, SCoreZ1, 9Mhz
+//#endif
+									  // function set 4 times per Sieko
+	 for (k = 0; k < 3; k++)
+	 {
+		  lc_wr(0x38);         
+		  cdel100();
+	 }
+									  // abort if lcd not installed, not working
+	 if (lc_notpresent = lc_cmd(0x006)) 
+		  return;              // entry mode set
+									  // auto increment counter
+															  
+	 // Turn display on. 
+	 // If LK_BLINK==2, cursor on. (default)
+	 // If LK_BLINK==1, cursor off, blink char at cursor position.
+	 // If LK_BLINK==3, cursor on,  blink char at cursor position.
+	 lc_cmd(0x00c + LK_BLINK);  
+										  
+	 lc_cmd(0x001);           // Clear display memory
+
+	 lc_state = lc_line = lc_col = 0;
+	 lc_blink = LK_BLINK;
+
+	 lc_pos(0,0);                          // 4-10-95, home cursor
+	 for(k = 0; k < LK_LINES; k++)         // 4-10-95, clear screen
+	 {                                     
+		  for (j = 0; j < LK_COLS; j++)
+		  {
+			  lc_putc(' ');
+		  }
+	 }
+	 lc_pos(0, 0);                         // 4-10-95, home cursor again
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+cdel100                      <LCD2L.LIB>
+
+SYNTAX: void cdel100(void);
+
+KEYWORDS: lcd
+
+DESCRIPTION: Software delay for the LCD during initialization.
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void cdel100(void)
+{
+	 static int k;
+	 
+	 switch(sysclock())     // 4-10-95, delay for all clockspeed
+	 {
+			case 0x1400:
+								for(k = 0; k < 8; k++);
+								break;
+			case 0x1e00:
+								for(k = 0; k < 12; k++);
+								break;
+			case 0x2800:
+								for(k = 0; k < 16; k++);
+								break;
+			case 0x3c00:
+								for(k = 0; k < 24; k++);
+								break;
+			case 0x5000:   
+								for(k = 0; k < 32; k++);
+								break;
+			default:    
+								for(k = 0; k < 12; k++);
+								break;
+	 }
+
+//#if BOARD_TYPE==CPLC_BOARD
+//        for (k = 0; k < 8; k++)
+//            ;
+//#elif BOARD_TYPE==L_STAR
+//        for (k = 0; k < 24; k++)
+//            ;                // delay for the higher speed 18.432 mhz
+//#endif
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+lc_cmd                       <LCD2L.LIB>
+
+SYNTAX: int lc_cmd(int cmd);
+
+KEYWORDS: lcd
+
+DESCRIPTION: Waits for LCD busy flag to clear, then sends cmd to LCD 
+command register.
+
+RETURN VALUE: 0, if succesful in writing to the LCD; else -1, if timeout 
+because LCD is busy.
+END DESCRIPTION **********************************************************/
+nodebug int lc_cmd(int cmd)
+{
+	 int k;
+	 
+	 switch(sysclock())     // 4-10-95, delay for all clockspeed
+	 {
+			case 0x1400:
+								k = 5000;
+								break;
+			case 0x1e00:
+								k = 7500;
+								break;
+			case 0x2800:
+								k = 10000;
+								break;
+			case 0x3c00:
+								k = 15000;
+								break;
+			case 0x5000:   
+								k = 20000;
+								break;
+			default:    
+								k = 7500;
+								break;
+	 }
+
+//#if BOARD_TYPE==CPLC_BOARD
+//    k = 5000;
+//#elif BOARD_TYPE==L_STAR
+//    k = 15000;               // delay for higher speed 18.432 mhz
+//#elif BOARD_TYPE==
+//#endif
+	 
+	 while (lc_rd() & 0x80)   // Wait for busy flag
+	 {
+		  if (!k--) 
+				return -1;
+	 }
+	 lc_wr(cmd);
+	 return 0;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+lc_wait                      <LCD2L.LIB>
+
+SYNTAX: int lc_wait(void);
+
+KEYWORDS: lcd
+
+DESCRIPTION: Waits for LCD busy flag to clear. Caution, doesn't time out.
+
+RETURN VALUE: 0, when LCD busy flag has cleared; else -1, if timeout 
+after ten tries.
+END DESCRIPTION **********************************************************/
+nodebug int lc_wait(void)
+{
+	 int timeout;
+		  
+	 timeout = 10;   
+	 while ((lc_rd() & 0x80) && --timeout)
+		  ;
+	 if(timeout)
+		  return 0;
+	 return -1;
+}
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+lc_char                      <LCD2L.LIB>
+
+SYNTAX: void lc_char(char x);
+
+KEYWORDS: lcd
+
+DESCRIPTION: Writes char x to the LCD data register.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void lc_char(char x)
+{
+	 lc_wait();               // wait forever for LCD to be ready
+	 outport(LCDWR + 1, x);   // write out the data
+}
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+lc_ctrl                      <LCD2L.LIB>
+
+SYNTAX: void lc_ctrl(char x);
+
+KEYWORDS: lcd
+
+DESCRIPTION: Write char x to the control register of the LCD. Unlike
+lc_wr(), this function waits for the busy flag of the LCD to clear before
+writing data to a control register of the LCD.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void lc_ctrl(char x)
+{
+	 lc_wait();
+	 outport(LCDWR, x);
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+lc_putc                      <LCD2L.LIB>
+
+SYNTAX: int lc_putc(char x);
+
+KEYWORDS: lcd 
+
+DESCRIPTION: Decodes char x for special command/sequence for writing to 
+the LCD command or data registers.  This function serves as the driver 
+for lc_printf().
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+indirect lc_putc(char x)
+{
+	 static int k, nl, nc;
+	 int j;
+
+	 switch (lc_state)
+	 {
+
+		  case 0:             // output a normal character 
+				if (x == 27)
+				{                // escape received
+					 lc_state = 1;
+				}
+				else if (x == 0xa)
+					 lc_nl();
+				else
+				{
+					 lc_char(x);
+					 lc_col++;
+					 if (lc_col >= LK_COLS)
+						  lc_nl();
+				}
+				return;
+
+		  case 1:             // character after escape
+				if (x == 'p')
+				{
+					 lc_state = 2;
+					 return;
+				}
+				else if (x == '1')
+					 lc_ctrl(0xc + lc_blink); // enable cursor
+				else if (x == '0')
+					 lc_ctrl(0xc); // disable cursor
+				else if (x == 'n')
+				{                // blink off
+					 lc_blink = 2;
+					 lc_ctrl(0xc + lc_blink);
+				}
+				else if (x == 'b')  // blink on 
+				{
+					 lc_blink = 1;
+					 lc_ctrl(0xc + lc_blink);
+				}
+				else if (x == 'c')  // erase to eol 
+				{
+					 for (k = lc_col; k < LK_COLS; k++)
+						  lc_char(' ');
+					 lc_pos(lc_line, lc_col);
+				}
+				else if (x == 'e')
+				{
+					// 8/4/95 RR - Copied this from MicroG.LIB. Prevents timing
+					// problem on immediate print after clear screen.
+					lc_pos(0,0);
+					for(j=0;j<LK_COLS;j++) lc_char(' ');
+					lc_pos(1,0);
+					for(j=0;j<LK_COLS;j++) lc_char(' ');
+					lc_pos(0,0);
+					lc_line = lc_col = 0;
+				}
+				lc_state = 0;
+				return;
+
+		  case 2:             // get row number 
+				nl = x - '0';
+				lc_state = 3;
+				return;
+
+		  case 3:             // get tens digit for column 
+				nc = 10 * (x - '0');
+				lc_state = 4;
+				return;
+
+		  case 4:             // and position cursor
+				lc_pos(nl, nc + (x - '0'));
+				lc_state = 0;
+				return;
+	 }
+
+}
+
+/* perform a new line */
+
+/* START FUNCTION DESCRIPTION ********************************************
+lc_nl                        <LCD2L.LIB>
+
+SYNTAX: void lc_nl(void);
+
+KEYWORDS: lcd
+
+DESCRIPTION: Move the LCD cursor to the first column of the next line. 
+If the current line is the last LCD line, then the cursor position is 
+only moved to column 0 of the current line.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void lc_nl(void)
+{
+	 if (++lc_line >= LK_LINES)
+		  lc_line = LK_LINES - 1;
+	 lc_col = 0;
+	 lc_pos(lc_line, 0);
+}
+
+/* position to a line and col */
+
+/* START FUNCTION DESCRIPTION ********************************************
+lc_pos                       <LCD2L.LIB>
+
+SYNTAX: void lc_pos(int line, int col);
+
+KEYWORDS: lcd
+
+DESCRIPTION: Position CPLC LCD cursor at the specified line (0-3) and col 
+(0-19).
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void lc_pos(int line, int col)
+{
+	 static int k, j, n;
+
+	 n = (line & 1) * 0x40 + col;
+	 lc_line = line;
+	 lc_col = col;
+
+#if (LK_COLS * LK_LINES > 80)
+	 {                        // 4 x 40 display
+		  k = lc_wait();
+
+		  if (j = ((k == 0) ^ (line < 2)))
+				lc_ctrl(0xc);    // disable current cursor
+		  lc_ctrl(0x80 + n);   // position
+
+		  if (j)
+				lc_ctrl(0xc + lc_blink); // reenable cursor
+	 }
+#else
+	 {
+		  if (line < 2)
+				lc_ctrl(0x80 + n);
+		  else
+				lc_ctrl(0x94 + n); // 4 x 20 display
+	 }
+#endif
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+lc_printf                    <LCD2L.LIB>
+
+SYNTAX: void lc_printf(char *fmt, ...);
+
+KEYWORDS: lcd
+
+DESCRIPTION: Printf analogue for the CPLC LCD.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+
+nodebug void lc_printf(char *fmt, ...)
+{
+
+	 int lc_putc();
+	 doprnt(lc_putc, fmt, (char *)( (char *)&fmt + sizeof(fmt) ), NULL );
+}
+
+/*** BeginHeader lc_cgram */
+
+void lc_cgram(char *p);      // set character generator for the CPLC
+
+/*** EndHeader lc_cgram */
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+lc_cgram                     <LCD2L.LIB>
+
+
+SYNTAX: void lc_cgram(char *p);
+
+KEYWORDS: lcd
+
+DESCRIPTION: Character matrix = 5 rows x 8 cols.  p points to a data array 
+with the following format: First character is the number of bytes to store
+(8 bytes per char) with a maximum of 64 .  The lower 5 bits of each byte 
+form one row of the character from left to right.  The 8th row per special 
+character is in the cursor position.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void lc_cgram(char *p)
+{
+	 static int k, n;
+
+
+	 n = *p++;                // get count
+	 if (n > 64) 
+		  n = 64;              // max is 64
+	 for (k = 0; k < n; k++)
+	 {
+		  lc_wr(0x040 + k);
+		  while (lc_rd() & 0x80);
+		  lc_char(*p);
+		  p++;
+	 }
+
+	 lc_pos(0, 0);            // reposition cursor to 0,0
+}
+
+/*** BeginHeader lc_stdcg  */
+
+void lc_stdcg(void);
+
+/*** EndHeader */
+
+char lc_stdchars[] =
+{
+	 64,    
+	 0x04, 0x02, 0x1f, 0x02, 0x04, 0x00, 0x00, 0x00, // 08 right arrow
+	 0x00, 0x00, 0x00, 0x04, 0x04, 0x15, 0x0e, 0x04, // 09 down arrow
+	 0x04, 0x0e, 0x15, 0x04, 0x04, 0x00, 0x00, 0x00, // 02 up arrow
+	 0x04, 0x08, 0x1f, 0x08, 0x04, 0x00, 0x00, 0x00, // 0b left arrow
+	 0x08, 0x0c, 0x0e, 0x0f, 0x0e, 0x0c, 0x08, 0x00, // 0c arrow cursor
+	 0x02, 0x07, 0x02, 0x0a, 0x0a, 0x08, 0x1c, 0x08, // 0d up down symbol
+	 0x04, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04, // 0e vertical line
+	 0x00, 0x00, 0x00, 0x1f, 0x00, 0x00, 0x00, 0x00  // 0f horizontal line
+};
+
+/* START FUNCTION DESCRIPTION ********************************************
+lc_stdcg                     <LCD2L.LIB>
+
+SYNTAX: void lc_stdcg(void);
+
+KEYWORDS: lcd
+
+DESCRIPTION: Loads 8 special characters of arrows and lines to the LCD 
+special character location.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void lc_stdcg(void)
+{
+	 lc_cgram(lc_stdchars);
+}
+
+
+/*** Beginheader lcd_init_printf,lcd_printf */
+
+void lcd_init_printf(void);
+void lcd_printf(long cursor, char *fmt, ...);
+void lcd_vprintf(long cursor, char *fmt, void *FirstArg);
+void lcd_erase(void);        // Erases screen and homes cursor
+void lcd_erase_line(int line); // Erases line 0, or line 1
+void lcd_savscrn(char *p);   // Pass pointer to 4 + number of characters
+									  // on the screen array
+void lcd_resscrn(char *p);   // Pass pointer to previous save array
+
+struct lcd_cur
+{
+	 char cur[4];
+};
+
+/*** Endheader */
+
+extern char lc_notpresent;
+
+#ifndef LK_LINES             // number of lines on display
+#define LK_LINES 2           // default
+#endif
+
+#ifndef LK_COLS              // number of columns per line on display
+#define LK_COLS 20           // default
+#endif
+
+struct lcd_scrn
+{
+	 char lcd_save[LK_LINES][LK_COLS];
+	 struct lcd_cur lcd_cur_save;
+} ;
+
+#ifndef LK_BLINK
+#define LK_BLINK 2           // set to 1 for blinking cursor
+#endif
+
+struct lcd_scrn lcd_s;
+
+#define lcd_row lcd_s.lcd_cur_save.cur[1]
+#define lcd_col lcd_s.lcd_cur_save.cur[0]	
+
+/* START FUNCTION DESCRIPTION ********************************************
+lcd_init_printf              <LCD2L.LIB>
+
+SYNTAX: void lcd_init_printf(void);
+
+KEYWORDS: lcd, init
+
+DESCRIPTION: Initialize the LCD with lcd_init(). Also initialize related 
+variables to allow for saving duplicate image of the LCD screen.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void lcd_init_printf(void)
+{
+	 int k, j;
+
+	 lc_init();               // init lcd unit
+	 if (lc_notpresent)
+		  return;
+
+	 lc_pos(0, 0);            // home cursor
+
+	 *( (long *)&lcd_s.lcd_cur_save) = 0x00001000L; // set cursor home
+	 for(k = 0; k < LK_LINES; k++)
+	 {
+		  for (j = 0; j < LK_COLS; j++)
+		  {
+				lcd_s.lcd_save[k][j] = ' ';
+				lc_putc(' ');
+		  }
+	 }
+	 lc_pos(0, 0);            // home cursor again
+									  // lc_putc(27);
+									  // lc_putc('e');            // erase and home
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+lcd_putc                     <LCD2L.LIB>
+
+SYNTAX: int lcd_putc(char x);
+
+KEYWORDS: lcd
+
+DESCRIPTION: Decodes char x for special command/sequence for writing to 
+the LCD command or data registers. Serves as the driver for lcd_printf().  
+Like lc_putc() except that shadow variables for are also updated.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+indirect int lcd_putc(char x)
+{
+	 if (lc_notpresent)
+		  return;
+
+	 if (x == '\n')
+	 {
+		  if (lcd_row < LK_LINES-1)
+				++lcd_row;
+	 }
+	 else
+	 {
+		  lcd_s.lcd_save[lcd_row][lcd_col] = x;
+		  if (lcd_col < (LK_COLS - 1))
+				++lcd_col; 
+	 }
+	 lc_putc(x);              // Decode and send character
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+lcd_erase                    <LCD2L.LIB>
+
+SYNTAX: void lcd_erase(void);
+
+KEYWORDS: lcd
+
+DESCRIPTION: Erases entire LCD and homes cursor. LCD shadow variables are
+updated.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void lcd_erase(void)
+{
+	 int k, j;
+
+	 if (lc_notpresent)
+		  return;
+
+	 lc_pos(0, 0);            // home cursor
+	 *( (long *)&lcd_s.lcd_cur_save) = 0L; // set cursor home
+
+	 for( k = 0; k< LK_LINES; k++)
+	 {
+		  for (j = 0; j < LK_COLS; j++)
+		  {
+				lcd_s.lcd_save[k][j] = ' ';
+				lc_putc(' ');
+		  }
+	 }
+									  // lc_putc(27);
+									  // lc_putc('e');
+	 lc_pos(0, 0);            // home cursor
+									  // lc_putc(27);
+									  // lc_putc('e');           // erase and home
+
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+lcd_erase_line               <LCD2L.LIB>
+
+SYNTAX: void lcd_erase_line(int line);
+
+KEYWORDS: lcd
+
+DESCRIPTION: Erases a specified line on the LCD and updates shadow 
+variables.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void lcd_erase_line(int line)
+{
+	 int k;
+
+	 if (lc_notpresent)
+		  return;
+
+	 lc_pos(line, 0);         // position to start of line
+	 lc_putc(27);
+	 lc_putc('c');            // erase line
+
+	 for (k = 0; k < LK_COLS; k++)
+		  lcd_s.lcd_save[line][k] = ' '; //  erase save
+	 
+	 // restore cursor position
+	 lc_pos(lcd_s.lcd_cur_save.cur[1] & 0xf, lcd_s.lcd_cur_save.cur[0]);
+}
+
+
+// ****  Masks for 1st arg of lcd_printf() ****
+#define LCROW0   0x03000000L // 3 is max number of rows
+#define LCCOL0   0x007f0000L // 40 (0x28) is max
+#define LCCURS   0x00001000L // b3 = 1 => cursor is visible
+#define LCROW1   0x00000300L // 3 is max number of rows
+#define LCCOL1   0x0000003fL // 40 (0x28) is max
+#define INITROW1 0x01000000L // Initial row #1
+#define FINROW1  0x00000100L // Final row #1
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+lcd_printf                   <LCD2L.LIB>
+
+SYNTAX: void lcd_printf(long cursor, char *fmt, ...);
+
+KEYWORDS: display, lcd
+
+DESCRIPTION: Printf analogue for the LCD screen.  Displays a string at a
+specified starting position and leaves the cursor at a specified end 
+position.  "cursor" bytes are: Y1,X1,Y2,X2, where the most significent 
+byte, Y1, is the start line number (0, 1, 2 or 3); X1 the is start column 
+number (0, 1, 2...); and Y2 and X2 are the final line and column coord's.
+The upper 4 bits of Y2 are used to specify the final state of the cursor 
+(1 = on, 0 = off).  If *fmt is a null string, only cursor positioning 
+takes place.
+
+
+When lcd_printf prints to the LCD display, a duplicate copy of the 
+display contents and the cursor location is updated in memory.  The 
+lcd_savscrn() copies this image to a user specified area.  lcd_resscrn() 
+copies the user save area back to the screen and the image area.  Using 
+these routines, a task can interrupt the current thread and save the 
+current display, use the display in a new thread, and then restore the 
+original display.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void lcd_vprintf(long cursor, char *fmt, void *firstArg)
+{
+	auto int r,c;
+	#GLOBAL_INIT{ lcd_init_printf();}
+	if (lc_notpresent)
+		  return;
+
+									  // Save cursor positioning
+	 lcd_s.lcd_cur_save = *( (struct lcd_cur *)&cursor);
+
+	 if (lcd_s.lcd_cur_save.cur[3] >= LK_LINES) lcd_s.lcd_cur_save.cur[3] = LK_LINES-1;
+	 if (lcd_s.lcd_cur_save.cur[2] >= LK_COLS) lcd_s.lcd_cur_save.cur[2] = LK_COLS-1;
+	 r = lcd_s.lcd_cur_save.cur[1];
+	 c = lcd_s.lcd_cur_save.cur[0];
+	 lc_pos(
+	 	lcd_row=lcd_s.lcd_cur_save.cur[3],
+	 	lcd_col=lcd_s.lcd_cur_save.cur[2]); // initial cursor position
+	lc_putc(27);
+	lc_putc('0'+ ((cursor & LCCURS)?1:0) );
+	 if (fmt && *fmt)
+		  // printf it
+		  doprnt(lcd_putc, fmt, firstArg, NULL );
+
+	lcd_row = r & 0xf;	//	ignore the upper 4 bits for cursor control
+	lcd_col = c;
+	 if (lcd_row >= LK_LINES) lcd_row = LK_LINES-1;
+	 if (lcd_col >= LK_COLS) lcd_col = LK_COLS-1;
+	 lc_pos(
+	 	lcd_row,
+	 	lcd_col); // initial cursor position
+}
+
+nodebug void lcd_printf(long cursor, char *fmt,...) {
+	lcd_vprintf(cursor, fmt, &fmt+1);
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+lcd_savscrn                  <LCD2L.LIB>
+
+SYNTAX: void lcd_savscrn(char *s);
+
+KEYWORDS: lcd
+
+DESCRIPTION: Saves LCD screen image to character array pointed by s.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void lcd_savscrn(char *s)
+{
+	 auto struct lcd_scrn *ss;
+
+	 ss = (struct lcd_scrn *)s;
+	 if (lc_notpresent)
+		  return;
+
+	 *ss = lcd_s;             // save image of screen
+}
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+lcd_resscrn                  <LCD2L.LIB>
+
+SYNTAX: void lcd_resscrn(char *ss);
+
+KEYWORDS: lcd
+
+DESCRIPTION: Restores image, stored in char array pointed by ss, to the 
+LCD.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void lcd_resscrn(char *ss)
+{
+	 int  k, j;
+	 auto struct lcd_scrn *s;
+
+	 s = (struct lcd_scrn *)ss;
+	 if (lc_notpresent)
+		  return;
+
+	 lcd_s = *s;              // restore image of screen
+									  // Redraw screen
+	 for (k = 0; k < LK_LINES; k++)
+	 {
+		  lc_pos(k, 0);        // position to first column
+		  for (j = 0; j < LK_COLS; j++)
+				lc_putc(lcd_s.lcd_save[k][j]);
+	 }
+	 lcd_printf(*((long *) &lcd_s.lcd_cur_save), ""); // reposition cursor
+}
+
+/*** BeginHeader lc_kget */
+
+	int lc_kget(char mode);
+
+/*** EndHeader lc_kget */
+
+/* START FUNCTION DESCRIPTION ********************************************
+lc_kget                      <LCD2L.LIB>
+
+SYNTAX: int lc_kget(char mode);
+
+KEYWORDS: lcd
+
+DESCRIPTION: Gets a key from the keypad.  if "mode" is non-zero, it is
+non destructive.  Otherwise the read clears the key scanned.
+mode==0 destructive get of key code
+mode==1 get key code but don't destroy it
+
+RETURN VALUE: Key previously scanned.
+END DESCRIPTION **********************************************************/
+
+extern char lg_wd_code;
+
+int lc_kget(char mode){
+
+	int k,j,n,prevkey;
+	#GLOBAL_INIT{ prevkey=0;}
+
+	k=0;
+	if(prevkey){
+		if(mode) return prevkey;   // non destructive read;
+		else {k=prevkey; prevkey=0; return k; } // destructive read
+	}
+
+
+	costate{
+		k = 0;
+		while(1){
+			waitfor( (j=lc_get12key())>0 || DelayMs(500L));
+			
+			if(j<0){            // check for 2 keys in first row held 1/2 second
+
+#if BOARD_TYPE==CPLC_BOARD
+				// perform reset
+				if(inport(UINP)&0x80) continue;  // ignore if no watchdog
+#endif
+				DI(); user_pwrdown(); for(;;); // timeout wd
+			}
+
+			waitfor(DelayMs(20L));  // debounce
+			if(j==lc_get12key()){
+
+				// now have a good key
+				k=j;                                         // key to return
+				if(mode) prevkey=k;                          // save key for non destructive read
+
+				// dead time before next key if repeating key
+				waitfor(DelayMs(1000L) || j!=lc_get12key()); 
+
+				if(j==lc_get12key()){ 
+					// begin repeat key
+					while(j==lc_get12key()){
+						k=j; if(mode) prevkey=k;
+						waitfor(DelayMs(180L) || j!=lc_get12key());
+					}
+				}  
+			}     // end if (j==lc_get12key())
+		}        // end while(1)
+	}           // end of costate
+	return k;
+}
+
+/*** BeginHeader lc_get12key */
+
+	int lc_get12key();
+
+/*** EndHeader lc_get12key */
+
+// NOTE: The following lc_get12key routines are reenterable
+	
+#if BOARD_TYPE==CPLC_BOARD
+// return rugged giant keys 1-12 for keys 1-12
+// return 0 for no key
+// return -1 for 2 keys pressed in first row
+
+extern char SKEYR1, SKEYR2, SKEYR3; // shadow registers
+lc_get12key(){
+	auto int k1,k2,k3,rvar;
+	auto char s1,s2,s3;
+	
+	k1=0; // first row
+	s1=SKEYR1; s2=SKEYR2; s3=SKEYR3; // save shadow registers
+	SKEYR3=0; SKEYR2=1; SKEYR1=0;    // new shadows
+	outport(KEYR3,0); outport(KEYR2,1); outport(KEYR1,0);
+	k2= ((~inport(DREG1))>>2) & 0x3f;
+	if(!k2)
+		{
+		k1=6;
+		SKEYR1=1; SKEYR2=0;
+		outport(KEYR1,1); outport(KEYR2,0);
+		k2=((~inport(DREG1))>>2) & 0x3f;
+		}
+	SKEYR1=0;
+	outport(KEYR1,0); // turn off drive
+	if(!k2) goto doret0; // no key
+	
+	switch(k2){       // translate key code
+
+		case 1: k3=6; break;
+		case 2: k3=5; break;
+		case 4: k3=4; break;
+		case 8: k3=3; break;
+		case 16: k3=2; break;
+		case 32: k3=1; break;
+		default: if(!k1 && ( (k2&31) && (k2&15) )  )
+												{rvar=-1; goto doret;} // 2 keys
+					else {doret0: rvar=0; goto doret;} // garbage keys
+		}
+	rvar= k3+k1;   // return valid keys
+	doret:
+	SKEYR1=s1; SKEYR2=s2; SKEYR3=s3; // restore shadow registers
+	// restore hardware registers
+	outport(KEYR1,SKEYR1); outport(KEYR2,SKEYR2); outport(KEYR3,SKEYR3);
+	return rvar;
+}
+
+#endif
+
+#if BOARD_TYPE==L_STAR
+
+// read little star keys, return 1-12 for keys 1-12
+// return 0 for no key
+// return -1 for 2 keys pressed in first row
+
+lc_get12key(){
+
+	auto int k1,k2,k3;
+
+	k1=0; // first row
+	k2=((inport(KROW2L)>>4)&0xf) | (inport(KROW2H) & 0x30);
+	if(k2==63)
+		{
+		k1=6;
+		k2=((inport(KROW1L)>>4) & 0xf) | (inport(KROW1H) & 0x30);
+		}
+	if(k2==63) return 0; // no key
+	
+	switch(k2){       // translate key code
+
+		case 63-1: k3=6; break;
+		case 63-2: k3=5; break;
+		case 63-4: k3=4; break;
+		case 63-8: k3=3; break;
+		case 63-16: k3=2; break;
+		case 63-32: k3=1; break;
+		default: if(!k1 && ( !(k2&32) && (k2&15)!=15 )  ) return -1; // 2 keys
+					else return 0; // garbage keys
+		}
+	return k3+k1;  // return valid keys
+}
+#endif
+
+

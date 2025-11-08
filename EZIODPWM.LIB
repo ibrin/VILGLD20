@@ -1,0 +1,578 @@
+/*** BeginHeader */
+
+#ifndef _EZIODPWM_LIB
+#define _EZIODPWM_LIB
+
+/*** EndHeader */
+
+/*** BeginHeader dmapwmInit, _dmapwmInit, _eioBrdAORf */
+
+void dmapwmInit(
+		unsigned phyBuffer256,
+		unsigned bufSize256,
+		unsigned resSize256,
+		unsigned ioAddr,
+		char cka1rate);
+
+void _dmapwmInit();
+
+struct _eioDMAPWM {
+	unsigned buffer;		//	starting address in 256 byte pages
+	unsigned overflow;	//	overflow address in 256 byte pages
+	char size;				//	total size (including overFlow)
+	char lsbBound;			//	do page switch if DMA SAR0 LSB is less than this
+	unsigned ioAddr;
+	char cka1Rate;
+};
+
+//extern char _eioZ1SS;
+
+extern struct _eioDMAPWM _eioBrdAOInfo;
+
+int _eioBrdAORf();
+
+/*** EndHeader */
+
+struct _eioDMAPWM _eioBrdAOInfo;
+
+/* START FUNCTION DESCRIPTION ********************************************
+dmapwmInit				EZIOCMMN.LIB
+
+SYNTAX: void dmapwmInit(
+		unsigned phyBuffer256,
+		unsigned bufSize256,
+		unsigned resSize256,
+		unsigned ioAddr,
+		char cka1rate);
+
+KEYWORDS:	PWM, buffer, setup
+
+DESCRIPTION:	This function sets up the DMA-driven PWM driver. The
+function sets up CKA1 to clock every 120 states, and DMA will be enabled
+when this function returns. The application must have set up the buffer
+before calling this function.
+
+PARAMETER1:		this is a 20-bit absolute physical address pointing to a
+256-byte page aligned logical address that
+is the beginning of the buffer to be transferred to an I/O port via DMA.
+
+PARAMETER2:		this is the size of the primary buffer in units of 256-byte
+pages.
+
+PARAMETER3:		this is the size of the overflow area in units of 256-byte
+pages.
+
+PARAMETER4:		this is the I/O address to which the contents of the buffer
+will be transferred to via DMA.
+
+PARAMETER5:		this is the rate at which DREQ0 is toggled in 1.92kHz units.
+The suggested number is 4 (for 7.68kHz).
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+
+void dmapwmInit(
+		unsigned phyBuffer256,
+		unsigned bufSize256,
+		unsigned resSize256,
+		unsigned ioAddr,
+		char cka1rate) {
+	_eioBrdAOInfo.buffer = phyBuffer256;
+	_eioBrdAOInfo.overflow = _eioBrdAOInfo.buffer + bufSize256;
+	_eioBrdAOInfo.size = bufSize256+resSize256;
+	_eioBrdAOInfo.ioAddr = ioAddr;
+	_eioBrdAOInfo.lsbBound = 250;
+	_eioBrdAOInfo.cka1Rate = cka1rate;
+	_dmapwmInit();
+}
+
+#asm
+_dmapwmInit::
+	;	first, we make sure DMA0 is turned off to avoid
+	;	spilling over
+	
+	in0	a,(DSTAT)		;	make sure DMA0 is off
+	and	10101000b
+	or		00000001b		
+	out0	(DSTAT),a
+
+	;	then, we initialize port Z1 to generate pulses
+	;	at CKA1 to drive DREQ0
+
+	ld		a,(_eioBrdAOInfo+_eioDMAPWM+cka1Rate)
+	ld		l,a
+	ld		h,0
+	push	hl
+	call	sysclock
+	push	hl
+	call	z180baud
+	pop	de
+	pop	de
+	out0	(CNTLB1),l		;	by this time, we should see
+								;	CKA1 generate pulses
+	in0	a,(CNTLA1)
+	and	11101111b
+	out0	(CNTLA1),a
+
+	;	now, we set up DMA0
+
+	ld		hl,(_eioBrdAOInfo+_eioDMAPWM+buffer)	;	load starting memory address
+	xor	a
+	out0	(SAR0L),a
+	out0	(SAR0H),l
+	out0	(SAR0B),h
+
+;	ld		hl,_OUT_BANKS			;	load destination
+;	ld		hl,_PWMDMAPort			;	load destination
+	ld		hl,(_eioBrdAOInfo+_eioDMAPWM+ioAddr)
+	out0	(DAR0L),l
+	out0	(DAR0H),h
+	xor	a
+	out0	(DAR0B),a
+
+	;	at this point, we are ready to start the DMA driven PWM
+
+	ld		a,00110000b		;	memory increment to fixed I/O
+	out0	(DMODE),a		;
+	
+	in0	a,(DCNTL)		;	specify edge sensitive transfer
+	
+	and	11111011b
+	or		00000100b
+	out0	(DCNTL),a
+
+	ld		hl,_eioBrdAOInfo+_eioDMAPWM+size	;	load count
+	xor	a
+	out0	(BCR0L),a
+	ld		a,(hl)
+	out0	(BCR0H),a
+
+	in0	a,(DSTAT)
+	and	10101000b
+	or		01000001b
+	out0	(DSTAT),a
+
+	ret
+	;	interrupt should be turned on shortly after this function
+#endasm
+
+#INT_VEC DMA0_VEC _eioBrdAOTO
+
+#asm
+_eioBrdAOTO::
+	;	if I execute this, the DMA counters are not refreshed
+	;	quickly enough! Not a good sign!
+	ei
+	ret
+#endasm
+
+//#funcchain _srtk_hightask _eioBrdAORf
+
+/* START FUNCTION DESCRIPTION ********************************************
+_eioBrdAORf			EZIOCMMN.LIB
+
+SYNTAX: int _eioBrdAORf();
+
+KEYWORDS:	PWM, DMA, refresh
+
+DESCRIPTION:	
+It's tricky business to refresh the DMA counters.
+This routine, triggered as the part of the fastcall chain, must
+capture the DMA counter when it is in the overflow area of the
+pulse buffer. Then it will decrement the 2nd LSB to point to
+pages (of 256 bytes) below, and adjust the byte count register.
+This implies that the buffer must be page (256 byte) aligned.
+
+1.		busy wait till the low byte counter is less than some number
+2.		check if the buffer has already passed the overflow mark
+3.		if not, nothing to do, return
+4.		decrement the 2nd LSB, increments the byte count
+5.		return
+
+RETURN VALUE:	-1 if DMA count is zero, 0 otherwise
+END DESCRIPTION **********************************************************/
+
+#asm
+_eioBrdAORf::
+	in0	a,(DSTAT)
+	and	01000001b
+	cp		01000001b
+	ld		hl,-1
+	ret	nz
+	;	refreshing the DMA counters, tricky business
+	;
+	;
+	ld		hl,_eioBrdAOInfo+_eioDMAPWM+lsbBound
+_LeBound:
+	in0	a,(SAR0L)		;	12
+	cp		(hl)			;	6
+	jr		nc,_LeBound	;	6/8	SAR0L >= lsbBound, wait
+
+	in0	l,(SAR0H)		;	12
+	in0	h,(SAR0B)		;	12
+	
+	ld		de,(_eioBrdAOInfo+_eioDMAPWM+overflow)	;	18
+	or		a			;	4
+	sbc	hl,de		;	10
+	jp		nc,overflown			;	5/10	overflow >= DMA SAR0, ret
+	ld		hl,0
+	ret
+overflown:
+	;	at this point hl is overflown amount
+	ex		de,hl				;	3
+	ld		hl,(_eioBrdAOInfo+_eioDMAPWM+buffer)		;	15
+	add	hl,de				;	10	hl=base+overflown
+	in0	a,(SAR0L)		;	final scan of lsb change
+rescanSAR0L:
+	in0	b,(SAR0L)		;	13 make sure no DMA occurs when SAR0H and SAR0B are changed
+	cp		b					;	4
+	jr		z,rescanSAR0L	;	6/8
+	out0	(SAR0H),l		;	13
+	out0	(SAR0B),h		;	13		;	reset the source address
+	
+	;	at most 61 one states from last LSB change to here
+	ld		a,(_eioBrdAOInfo+_eioDMAPWM+size)
+	sub	e
+	out0	(BCR0H),a		;	13
+	;	delay (in states) between reading SAR0 and writing SAR0B is
+	;	144 states, with 5 I/O instructions (add to I/O wait states)
+	;	with 0 memory wait and 0 I/O wait, 136 states is exactly the
+	;	time taken to execute the routine. If DMA is setup to transfer
+	;	every 120 states, allowing 3 bytes for buffering is more than
+	;	sufficient.
+	;
+	ld		hl,0
+	ret
+#endasm
+
+/*** BeginHeader dmapwmSetBuf */
+
+void dmapwmSetBuf(
+		char *pBufStart,
+		char bufLength256,
+		unsigned step,
+		char outChar);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+dmapwmSetBuf
+
+SYNTAX: void dmapwmSetBuf(
+		char *pBufStart,
+		char bufLength256,
+		unsigned step,
+		char outChar);
+
+KEYWORDS:	PWM, buffer, setup
+
+DESCRIPTION:	This function sets up a buffer for use with PWM. This
+function is always in the root, therefore the caller can set up the
+xmem region for storing patterns in non-root area. However, the size
+of the actual buffer must be less than or equal to 4k.
+
+PARAMETER1:		this is a character pointer that points to the first
+location to be modified.
+
+PARAMETER2:		this is the total (including overflow area) size of the
+buffer, in number of 256-byte pages.
+
+PARAMETER3:		this indicates how many steps to increment when the buffer
+is being modified.
+
+PARAMETER4:		this byte indicates what should be sent to the I/O address.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+
+root speed useix void dmapwmSetBuf(
+		char *pBufStart,
+		char bufLength256,
+		unsigned step,
+		char outChar) {
+#asm
+
+		ld		a,(ix+pBufStart+1)		
+		add	a,(ix+bufLength256)
+		ld		c,a
+		ld		e,(ix+step)	;	de = step
+		ld		d,(ix+step+1)
+		ld		l,(ix+pBufStart)
+		ld		h,(ix+pBufStart+1)
+		ld		b,(ix+outChar)
+		
+;		pPWM = pBufStart;
+
+loadLoop:
+		ld		a,b						;	output byte
+		ld		(hl),a
+		add	hl,de						;	increment address
+		ld		a,h
+		cp		c							;	are we at the end?
+		jr		z,endLoop				;	if so, go to the end
+		;	otherwise go for another round
+		jr		loadLoop
+
+endLoop:
+#endasm
+	return;
+}
+
+/*** BeginHeader dmapwmSwBuf */
+
+void dmapwmSwBuf(unsigned newBufPage);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+dmapwmSwBuf
+
+SYNTAX: nouseix void dmapwmSwBuf(unsigned newBufPage)
+
+KEYWORDS:	PWM, buffer, switch
+
+DESCRIPTION:	As one buffer is being used DMA mechanism to generate
+the PWM output and after the other is modified with the new PWM pattern,
+this function will switch the buffers, align the pointers and match the
+buffers.
+
+PARAMETER1:		character pointer that points to the new location in
+256-byte units.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+char dbCnt;
+
+nouseix void dmapwmSwBuf(unsigned newBufPage) {
+	auto unsigned bufoffset;
+#asm xmemok
+	
+	ld		a,i
+	push	af
+	in0	a,(DSTAT)
+	and	01000001b
+	cp		01000001b
+	jr		nz,_end
+	;	refreshing the DMA counters, tricky business
+	;
+	;
+	ld		hl,_eioBrdAOInfo+_eioDMAPWM+lsbBound
+_LeBound:
+	in0	a,(SAR0L)		;	12
+	cp		(hl)			;	6
+	jr		nc,_LeBound	;	6/8	SAR0L >= lsbBound, wait
+
+	di
+	ld		hl,dbCnt
+	inc	(hl)
+	in0	l,(SAR0H)		;	12	get current Source address
+	in0	h,(SAR0B)		;	12
+	ld		de,(_eioBrdAOInfo+_eioDMAPWM+buffer)	;	18 get buffer
+	or		a					;	4	clear carry flag
+	sbc	hl,de				;	10	difference (offset SAR0-buffer)
+	ld		c,l				;	4
+	ld		b,h				;	4	bc = difference (SAR0-buffer)
+	
+	ld		hl,(_eioBrdAOInfo+_eioDMAPWM+overflow)	;	18 get overflow
+	or		a			;	4
+	sbc	hl,de		;	10	hl = overflow-buffer
+	push	hl			;	11
+	ld		hl,@SP+newBufPage+4	;	9
+	add	hl,sp		;	7
+	ld		a,(hl)	;	6
+	inc	hl			;	4
+	ld		h,(hl)	;	6
+	ld		l,a		;	4	hl = newBufPage
+	ld		(_eioBrdAOInfo+_eioDMAPWM+buffer),hl	;	15
+	pop	de			;	9	de = overflow difference
+	push	hl
+	add	hl,de		;	7	hl = new overflow	
+	ld		(_eioBrdAOInfo+_eioDMAPWM+overflow),hl	;	15
+	pop	hl
+	in0	a,(SAR0L)	;	13
+rescanSAR0L:
+	in0	d,(SAR0L)	;	13
+	cp		d				;	4
+	jr		z,rescanSAR0L	;	6/8
+
+	add	hl,bc			;	7	add the offset of current point
+	out0	(SAR0H),l	;	13	and write the new offset
+	out0	(SAR0B),h	;	13
+	;	at most 73 states from last LSB change
+	;	about 440 states from 
+_end:
+	pop	af
+	jp		po, noEI
+	ei
+noEI:
+#endasm
+}
+
+/*** BeginHeader dmapwmBufBeg */
+
+char *dmapwmBufBeg(char *p);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+dmapwmBufBeg
+
+SYNTAX: char *dmapwmBufBeg(char *p);
+
+KEYWORDS:	PWM, buffer, setup
+
+DESCRIPTION:	This function computes a the first 256-byte page aligned
+address for a given logical address.
+
+PARAMETER1:		this is the root address
+
+RETURN VALUE:	the first 256-byte page aligned address after paramter 1.
+END DESCRIPTION **********************************************************/
+
+char *dmapwmBufBeg(char *p) {
+	*((char*)&p+1) += *((char*)&p)?1:0;
+	*((char*)&p) = 0;
+	return p;
+}
+
+/*** BeginHeader _eioSetupAO1st, _eioDMABuf */
+
+void _eioSetupAO1st();
+
+#ifndef DMA_PER_REFRESH
+#define DMA_PER_REFRESH 0x1000
+#endif
+
+#define EIO_PWM_RES 256
+#define EIO_NUM_PWM 4
+
+extern char _eioDMABuf[2][DMA_PER_REFRESH*2+256];
+extern unsigned _eioPWMDutyCycle[4];
+extern char _eioDMABufSw;
+
+/*** EndHeader */
+
+unsigned _eioPWMDutyCycle[EIO_NUM_PWM];
+char _eioDMABufSw;
+char _eioDMABuf[2][DMA_PER_REFRESH*2+256];
+
+/* START FUNCTION DESCRIPTION ********************************************
+_eioSetupAO1st
+
+SYNTAX: 	void _eioSetupAO1st()
+
+KEYWORDS:	PWM, buffer, setup
+
+DESCRIPTION:	Sets up DMA for pulse width modulation on outputs 0-3.
+
+RETURN VALUE:	none
+END DESCRIPTION **********************************************************/
+
+void _eioSetupAO1st() {
+
+	memset(_eioDMABuf,NOOP,sizeof(_eioDMABuf));
+	memset(_eioPWMDutyCycle,0,sizeof(_eioPWMDutyCycle));
+	_eioDMABufSw = 0;
+	dmapwmInit(
+		(unsigned)((xmadr(_eioDMABuf[0])+255) >> 8),
+		DMA_PER_REFRESH/EIO_PWM_RES,
+		DMA_PER_REFRESH/EIO_PWM_RES,
+		PWMBANK,
+		4);
+}
+
+/*** BeginHeader eioBrdAO */
+
+int eioBrdAO(unsigned eioAddr, unsigned state);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+_eioModBuf
+
+SYNTAX: 	void _eioModBuf(unsigned eioAddr, unsigned state, char index)
+
+DESCRIPTION:	Modifies buffer according to the duty cycle
+
+PARAMETER1:  an output number 0 to 3
+
+PARAMETER2:  a number from 0 (turns off) to 256 (100% duty cycle) to define
+a duty cycle.  ie:  duty cycle = state/256; so 128/256 is a 50% duty cycle
+and 64/256 is a 25% duty cycle.
+
+PARAMETER3:  buffer to modify
+
+RETURN VALUE:	none
+END DESCRIPTION **********************************************************/
+void _eioModBuf(unsigned eioAddr, unsigned state, char index) {
+
+		if (_eioPWMDutyCycle[eioAddr]) {
+			//	there is a on somewhere
+			dmapwmSetBuf(
+				dmapwmBufBeg(_eioDMABuf[index])
+					+eioAddr+EIO_NUM_PWM*(EIO_PWM_RES-_eioPWMDutyCycle[eioAddr]),	//	proper offset to base addr
+				DMA_PER_REFRESH*2/256,					//	size of buffer in 256 bytes
+				EIO_NUM_PWM*EIO_PWM_RES,				//	skip count
+				NOOP);			//	don't care character
+			//	this channel has no on edge
+		}
+		if (state) {
+			//	now put back the on edge
+			dmapwmSetBuf(
+				dmapwmBufBeg(_eioDMABuf[index])
+					+eioAddr+4*(EIO_PWM_RES-state),	//	proper offset to base addr
+				DMA_PER_REFRESH*2/256,					//	size of buffer in 256 bytes
+				EIO_NUM_PWM*EIO_PWM_RES,				//	skip count
+				BRDON(eioAddr));				//	on character
+		}
+		if ((!state) || ((state < EIO_PWM_RES) && ((_eioPWMDutyCycle[eioAddr]&0xff) == 0))) {
+			//	now specify when to turn off
+			dmapwmSetBuf(
+				dmapwmBufBeg(_eioDMABuf[index])
+					+eioAddr,	//	proper offset to base addr
+				DMA_PER_REFRESH*2/256,					//	size of buffer in 256 bytes
+				EIO_NUM_PWM*EIO_PWM_RES,				//	skip count
+				state?(BRDOFF(eioAddr)):NOOP);			//	off character
+		}
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+eioBrdA0
+
+SYNTAX: 	int eioBrdAO(unsigned eioAddr, unsigned state)
+
+KEYWORDS:	PWM
+
+DESCRIPTION:	Assigns an output with a duty cycle for pulse width modulation.
+
+PARAMETER1:  an output number of 0 to 3.
+
+PARAMETER2:  a number from 0 (turns off) to 256 (100% duty cycle) to define
+a duty cycle.  ie:  duty cycle = state/256; so 128/256 is a 50% duty cycle
+and 64/256 is a 25% duty cycle.
+
+RETURN VALUE:	0 if chosen output is in range and -1 if not.
+END DESCRIPTION **********************************************************/
+int eioBrdAO(unsigned eioAddr, unsigned state) {
+
+	// first four channels only 0-3
+	if (eioAddr >= 0 && eioAddr < EIO_NUM_PWM) {
+		if (state > EIO_PWM_RES) state = EIO_PWM_RES;
+		_eioDMABufSw = !_eioDMABufSw;
+		_eioModBuf(eioAddr, state,_eioDMABufSw);
+		dmapwmSwBuf((unsigned)((xmadr(_eioDMABuf[_eioDMABufSw])+255) >> 8));
+		_eioModBuf(eioAddr, state,!_eioDMABufSw);
+		if (!state) eioBrdDO(eioAddr,0);	//	turn off the channel
+		_eioPWMDutyCycle[eioAddr] = state;
+		return 0;
+	} else {
+		eioErrorCode |= EIO_NODEV;
+		return -1;
+	}
+}
+
+/*** BeginHeader */
+
+#endif
+
+/*** endHeader */

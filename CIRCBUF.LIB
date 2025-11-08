@@ -1,0 +1,947 @@
+/*
+circbuf.lib
+*/
+
+/*** BeginHeader 	circbufInit,circbufReset */
+
+#ifndef VERIFY
+#define VERIFY 0
+#endif
+
+#define CB_NOINT 0x0001
+
+struct _CircBuffer {
+	char *Where;
+	unsigned Length;
+	unsigned QHead;
+	unsigned QEnd;
+	unsigned Free;
+	unsigned Used;
+	char Lock;
+	};
+
+void circbufReset(struct _CircBuffer *pBuf);
+
+void circbufInit(
+	struct _CircBuffer *pBuf,
+	void *Storage,
+	unsigned size
+	);
+
+extern struct _CircBuffer playPad;
+
+/*** EndHeader */
+
+struct _CircBuffer playPad;
+
+/* START FUNCTION DESCRIPTION ********************************************
+circbufInit                  <CIRCBUF.LIB>
+
+SYNTAX:			void circbufInit(struct _CircBuffer *pBuf, void *Storage,
+										  unsigned size);
+
+DESCRIPTION:	Initializes a circular buffer structure.  "pBuf" points to
+the circular buffer to initialize, "Storage" points to a location where
+the circular buffer will hold information, and "size" specifies the number
+of bytes allocated at "Storage". Should be contained in critical section
+wrt other access the the same circular buffer. The buffer has nothing in
+the buffer after the call and all "size" many bytes should be free, non
+is used.
+
+RETURN VALUE:	None.
+
+END DESCRIPTION **********************************************************/
+
+void circbufInit(
+	struct _CircBuffer *pBuf,
+	void *Storage,
+	unsigned size
+	) {
+	pBuf->Where = Storage;
+	pBuf->Length = size;
+	pBuf->Lock = 0;
+	circbufReset(pBuf);
+	}
+
+/* START FUNCTION DESCRIPTION ********************************************
+circbufReset                 <CIRCBUF.LIB>
+
+SYNTAX:			void circbufReset(struct _CircBuffer *pBuf);
+
+DESCRIPTION:	Resets the circular buffer pointed to by "pBuf".
+There should no used bytes, and the free bytes should equal the size of
+the buffer passed in circbufInit. Any call to this function should be
+contained in a critical section wrt other accesses to this buffer.
+
+RETURN VALUE:	None.
+
+END DESCRIPTION **********************************************************/
+
+void circbufReset(struct _CircBuffer *pBuf) {
+	pBuf->QHead = pBuf->QEnd = pBuf->Used = 0;
+	pBuf->Free = pBuf->Length;
+	pBuf->Lock = 0;
+	}
+
+/*** BeginHeader circbufChk */
+
+int circbufChk(struct _CircBuffer *pBuf);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+circbufChk                   <CIRCBUF.LIB>
+
+SYNTAX:			int circbufChk(struct _CircBuffer *pBuf);
+
+DESCRIPTION:	Checks the integrity of the buffer.
+
+RETURN VALUE:	0 if okay, 1 if the Free and Used amount do not add up to
+total length, 2 if the head exceeds the size of the buffer, 3 if the tail
+exceeds the size of the buffer, 4 if head, tail, total size, and used are
+not consistent. Any call to this function should be contained in a critical
+section w.r.t. other accesses to this circular buffer except the read,
+write scan function.
+
+END DESCRIPTION **********************************************************/
+
+int circbufChk(struct _CircBuffer *pBuf) {
+	if (pBuf->Used != (pBuf->Length - pBuf->Free)) return 1;
+	else if (pBuf->QHead >= pBuf->Length) return 2;
+	else if (pBuf->QEnd >= pBuf->Length) return 3;
+	else if (((pBuf->QHead - pBuf->QEnd + pBuf->Length) %
+					pBuf->Length) != pBuf->Used) return 4;
+	else return 0;
+	}
+
+
+/*** BeginHeader circbufPutByte */
+
+unsigned circbufPutByte(struct _CircBuffer *pBuf, char ToPut);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+circbufPutByte               <CIRCBUF.LIB>
+
+SYNTAX:			unsigned circbufPutByte(
+						struct _CircBuffer *pBuf,
+						char ToPut);
+
+DESCRIPTION:	Put one byte into the circular buffer pointed to by "pBuf".
+"ToPut" is the character to put.
+
+RETURN VALUE:	0 if there is no space to put the character, 1 if the
+character is entered into the buffer. Call to this function should be
+in a critical section w.r.t. the rest of circbuf access to this buffer
+except all read functions and scan functions.
+
+END DESCRIPTION **********************************************************/
+
+fast speed nodebug useix unsigned circbufPutByte(struct _CircBuffer *pBuf, char ToPut) {
+	//	at this point, we have locked out put access to this circular buffer
+#asm xmemok
+	ex		af,af'			;	4
+	push	af					;	11
+	ld		a,i				;	6
+	ex		af,af'			;	4
+	ld		l,(ix+pBuf)		;	14
+	ld		h,(ix+pBuf+1)	;	14	hl=*pBuf
+	push	hl					;	11
+	pop	iy					;	12	iy=*pBuf
+	;	we have to lock out get access to freeze the free count
+	di							;	3
+	ld		a,(iy+_CircBuffer+Free)	;	14
+	or		(iy+_CircBuffer+Free+1)	;	14
+	;	it's okay now to be interrupted and do get access
+	jr		nz,putbyte100				;	6/8	if still free, jp
+	ex		af,af'			;	4
+	jp		po,putbyte099	;	6/8+40
+	ei							;	3
+putbyte099:					;	40
+	ld		hl,0				;	9	otherwise, return 0
+	jp		putbyte500		;	9+22
+putbyte100:
+	ex		af,af'
+	jp		po,putbyte101
+	ei
+putbyte101:
+	ex		af,af'
+	;	no need to protect: only put access use QHead
+	;	and Where is constant
+	ld		e,(iy+_CircBuffer+QHead)	;	de = QHead
+	ld		d,(iy+_CircBuffer+QHead+1)
+	ld		l,(iy+_CircBuffer+Where)	;	hl = Where
+	ld		h,(iy+_CircBuffer+Where+1)
+	add	hl,de								;	where to put the byte
+	ld		a,(ix+ToPut)
+	ld		(hl),a
+	ld		l,(iy+_CircBuffer+Length)	;	hl = Length
+	ld		h,(iy+_CircBuffer+Length+1)
+	scf
+	sbc	hl,de								;	Length -= QHead
+	jr		nz,putbyte_nowrap				;	if !0, no wrap around
+	di
+	xor	a									;	otherwise, QHead = 0
+	ld		(iy+_CircBuffer+QHead),a	;	and store 0 to QHead
+	ld		(iy+_CircBuffer+QHead+1),a
+	jr		putbyte_update					;	update Free
+putbyte_nowrap:							;	no need to wrap around
+	di
+	inc	(iy+_CircBuffer+QHead)		;	just increment QHead
+	jr		nz,putbyte_update
+	inc	(iy+_CircBuffer+QHead+1)
+putbyte_update:
+	inc	(iy+_CircBuffer+Used)		;	one more byte used
+	jr		nz,putbyte_updfree
+	inc	(iy+_CircBuffer+Used+1)		;	
+putbyte_updfree:
+	ld		a,(iy+_CircBuffer+Free)		;	one fewer byte free
+	or		a
+	jr		nz,putbyte_onedec
+	dec	(iy+_CircBuffer+Free+1)
+putbyte_onedec:
+	dec	(iy+_CircBuffer+Free)
+	ld		hl,1
+	ex		af,af'
+	jp		po,putbyte500
+	ei
+putbyteend:
+	ex		af,af'
+putbyte500:				;	22 clocks from here to end
+	pop	af				;	9
+	ex		af,af'		;	4
+#endasm
+	}						//	9
+
+/*** BeginHeader circbufGetByte */
+
+unsigned circbufGetByte(struct _CircBuffer *pBuf, char *pToGet);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+circbufGetByte               <CIRCBUF.LIB>
+
+SYNTAX:			unsigned circbufGetByte(
+						struct _CircBuffer *pBuf,
+						char *ToGet);
+
+DESCRIPTION:	Get one byte from the circular buffer pointed to by "pBuf".
+"ToGet" is where the character is to be put.
+
+RETURN VALUE:	0 if there is nothing in the buffer, 1 if the
+character is gotten out of the buffer. Call to this function should be
+in a critical section w.r.t. the rest of circbuf access to this buffer
+except all write functions.
+
+END DESCRIPTION **********************************************************/
+
+fast speed nodebug useix unsigned circbufGetByte(struct _CircBuffer *pBuf, char *pToGet) {
+	//	at this point, we have locked out put access to this circular buffer
+#asm xmemok
+	ex		af,af'
+	push	af
+	ld		a,i
+	ex		af,af'
+	ld		l,(ix+pBuf)
+	ld		h,(ix+pBuf+1)					;	hl=*pBuf
+	push	hl
+	pop	iy									;	iy=*pBuf
+	;	we have to lock out get access to freeze the free count
+	di
+	ld		a,(iy+_CircBuffer+Used)
+	or		(iy+_CircBuffer+Used+1)
+	;	it's okay now to be interrupted and do get access
+	jr		nz,getbyte100					;	if still free, jp
+	ex		af,af'
+	jp		po,getbyte099
+	ei
+getbyte099:
+	ld		hl,0								;	otherwise, return 0
+	jp		getbyte500
+getbyte100:
+	ex		af,af'
+	jp		po,getbyte101
+	ei
+getbyte101:
+	ex		af,af'
+	;	no need to protect: only get access use QEnd
+	;	and Where is constant
+	ld		e,(iy+_CircBuffer+QEnd)	;	de = QEnd
+	ld		d,(iy+_CircBuffer+QEnd+1)
+	ld		l,(iy+_CircBuffer+Where)	;	hl = Where
+	ld		h,(iy+_CircBuffer+Where+1)
+	add	hl,de								;	where to get the byte
+	ld		a,(hl)
+	ld		l,(ix+pToGet)
+	ld		h,(ix+pToGet+1)
+	ld		(hl),a
+	ld		l,(iy+_CircBuffer+Length)	;	hl = Length
+	ld		h,(iy+_CircBuffer+Length+1)
+	scf
+	sbc	hl,de								;	Length -= QEnd
+	jr		nz,getbyte_nowrap				;	if !0, no wrap around
+	di
+	xor	a									;	otherwise, QEnd = 0
+	ld		(iy+_CircBuffer+QEnd),a	;	and store 0 to QEnd
+	ld		(iy+_CircBuffer+QEnd+1),a
+	jr		getbyte_update					;	update Used
+getbyte_nowrap:							;	no need to wrap around
+	di
+	inc	(iy+_CircBuffer+QEnd)		;	just increment QEnd
+	jr		nz,getbyte_update
+	inc	(iy+_CircBuffer+QEnd+1)
+getbyte_update:
+	inc	(iy+_CircBuffer+Free)		;	one more byte freed
+	jr		nz,getbyte_updfree
+	inc	(iy+_CircBuffer+Free+1)		;	
+getbyte_updfree:
+	ld		a,(iy+_CircBuffer+Used)		;	one fewer byte used
+	or		a
+	jr		nz,getbyte_onedec
+	dec	(iy+_CircBuffer+Used+1)
+getbyte_onedec:
+	dec	(iy+_CircBuffer+Used)
+	ld		hl,1
+	ex		af,af'
+	jp		po,getbyte500
+	ei
+getbyteend:
+	ex		af,af'
+getbyte500:
+	pop	af
+	ex		af,af'
+#endasm
+	}
+
+/*** BeginHeader circbufPut */
+
+unsigned circbufPut(
+	struct _CircBuffer *pBuf,
+	void *Content,
+	unsigned size,
+	char All);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+circbufPut                   <CIRCBUF.LIB>
+
+SYNTAX:			unsigned circbufPut(
+						struct _CircBuffer *pBuf,
+						void *Content,
+						unsigned size,
+						char All);
+
+DESCRIPTION:	Tries to put "size" many bytes pointed to by "Content" to
+buffer pointed to by "pBuf".  If "All" is non zero, either all "size"
+many bytes or none will be put. Call to this function should be
+in a critical section w.r.t. the rest of circbuf access to this buffer
+except all read functions and scan functions.
+
+RETURN VALUE:	Actual number of bytes (out of "size") actually put into
+the buffer.
+
+END DESCRIPTION **********************************************************/
+
+speed useix nodebug unsigned circbufPut(
+		struct _CircBuffer *pBuf,
+		void *Content,
+		unsigned size,
+		char All) {
+	//	at this point, we have locked out put access to this circular buffer
+#asm xmemok
+	ex		af,af'
+	push	af
+	ld		a,i
+	ex		af,af'
+	
+	ld		l,(ix+pBuf)		;	use iy as structure ptr
+	ld		h,(ix+pBuf+1)
+	push	hl
+	pop	iy
+
+	;	we need to make sure the compare is atomic
+	di	
+	ld		a,(iy+_CircBuffer+Free+1)
+	cp		(ix+size+1)
+	jr		nz,put0101
+	jr		c,put0102
+	ld		a,(iy+_CircBuffer+Free)
+	cp		(ix+size)
+put0101:
+	jr		nc,put0200
+put0102:
+	ld		a,(ix+All)
+	or		a
+	jp		nz,put0103
+	ld		a,(iy+_CircBuffer+Free)
+	ld		(ix+size),a
+	ld		a,(iy+_CircBuffer+Free+1)
+	ld		(ix+size+1),a
+	jr		put0200
+	
+put0103:
+	ex		af,af'
+	jp		po,put0104
+	ei
+put0104:
+	ex		af,af'
+	xor	a
+	ld		(ix+size),a
+	ld		(ix+size+1),a
+	jp		put0410
+	
+put0200:
+	ex		af,af'
+	jp		po,put0201
+	ei
+put0201:
+	ex		af,af'
+	;	size has the right size
+	;	and about to copy bytes
+	;	1st segment size = (qhead + size) - length
+	;	if negative, just size
+	;	if 1st segment is positive, 2nd segment size
+	;	is size - 1st segment size
+	ld		l,(iy+_CircBuffer+QHead)	;	hl = QHead
+	ld		h,(iy+_CircBuffer+QHead+1)
+	ld		e,(ix+size)						;	de = size
+	ld		d,(ix+size+1)
+	push	hl									;	|QHead|
+	add	hl,de								;	hl = new QHead
+	push	hl									;	|QHead|nQHead|
+	ld		c,(iy+_CircBuffer+Length)	;	bc = Length
+	ld		b,(iy+_CircBuffer+Length+1)
+	xor	a
+	sbc	hl,bc								;	hl = size of wrapped seg
+	jr		c,put0300						;	negative,
+	pop	bc
+	push	hl									;	|QHead|WSegSize|
+	ex		de,hl
+	xor	a
+	sbc	hl,de								;	hl = size of first seg
+	ld		c,l
+	ld		b,h								;	bc = size of first seg
+	pop	de									;	|QHead|
+	pop	hl									;	pop hl = QHead
+	push	de									;	|WSegSize|
+	ld		e,(iy+_CircBuffer+Where)
+	ld		d,(iy+_CircBuffer+Where+1)
+	push	de									;	|WSegSize|Where|
+	add	hl,de								;	hl = dest
+	ld		e,(ix+Content)
+	ld		d,(ix+Content+1)
+	ex		de,hl
+	ld		a,b
+	or		c
+	jr		z,put0202
+	ldir
+put0202:
+
+	pop	de									;	|WSegSize|
+	pop	bc
+	push	bc									;	|WSegSize|
+	ld		a,b
+	or		c
+	jr		z,put0203
+	ldir
+put0203:
+	jr		put0400
+	
+	
+put0300:										;	|QHead|nQHead|
+	ld		c,e			;	bc = size
+	ld		b,d
+	pop	de				;	pop nQHead		|QHead|
+	pop	hl				;	pop	QHead
+	push	de				;						|nQHead|
+	ld		e,(iy+_CircBuffer+Where)
+	ld		d,(iy+_CircBuffer+Where+1)
+	add	hl,de
+	ex		de,hl
+	ld		l,(ix+Content)
+	ld		h,(ix+Content+1)
+	ld		a,b
+	or		c
+	jr		z,put0301
+	ldir
+put0301:
+
+put0400:
+	;		recalculate free and used
+	pop	de
+	di
+	ld		(iy+_CircBuffer+QHead),e
+	ld		(iy+_CircBuffer+QHead+1),d
+	ld		e,(ix+size)
+	ld		d,(ix+size+1)
+	ld		l,(iy+_CircBuffer+Used)
+	ld		h,(iy+_CircBuffer+Used+1)
+	add	hl,de
+	ld		(iy+_CircBuffer+Used),l
+	ld		(iy+_CircBuffer+Used+1),h
+	ld		l,(iy+_CircBuffer+Free)
+	ld		h,(iy+_CircBuffer+Free+1)
+	xor	a
+	sbc	hl,de
+	ld		(iy+_CircBuffer+Free),l
+	ld		(iy+_CircBuffer+Free+1),h
+	ex		af,af'
+	jp		po,put9999
+	ei
+put0410:
+	ex		af,af'
+	
+put9999:
+	pop	af
+	ex		af,af'
+#endasm
+	return size;
+	}
+
+/*** BeginHeader circbufGet */
+
+unsigned circbufGet(
+	struct _CircBuffer *pBuf,
+	void *Content,
+	unsigned size,
+	char All);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+circbufGet                   <CIRCBUF.LIB>
+
+SYNTAX:			unsigned circbufGet(
+						struct _CircBuffer *pBuf,
+						void *Content,
+						unsigned size,
+						char All);
+
+DESCRIPTION:	Tries to get "size" many bytes to "Content" from
+buffer pointed to by "pBuf".  If "All" is non zero, either all "size"
+many bytes or none will be extracted. Call to this function should be
+in a critical section w.r.t. the rest of circbuf access to this buffer
+except all write functions.
+
+RETURN VALUE:	Actual number of bytes (out of "size") actually gotten from
+the buffer.
+
+END DESCRIPTION **********************************************************/
+
+speed useix nodebug unsigned circbufGet(
+		struct _CircBuffer *pBuf,
+		void *Content,
+		unsigned size,
+		char All) {
+	//	at this point, we have locked out put access to this circular buffer
+#asm xmemok
+	ex		af,af'
+	push	af
+	ld		a,i
+	ex		af,af'
+	
+	ld		l,(ix+pBuf)		;	use iy as structure ptr
+	ld		h,(ix+pBuf+1)
+	push	hl
+	pop	iy
+
+	;	we need to make sure the compare is atomic
+	di	
+	ld		a,(iy+_CircBuffer+Used+1)
+	cp		(ix+size+1)
+	jr		nz,get0101
+	jr		c,get0102
+	ld		a,(iy+_CircBuffer+Used)
+	cp		(ix+size)
+get0101:
+	jr		nc,get0200
+get0102:
+	ld		a,(ix+All)
+	or		a
+	jp		nz,get0103
+	ld		a,(iy+_CircBuffer+Used)
+	ld		(ix+size),a
+	ld		a,(iy+_CircBuffer+Used+1)
+	ld		(ix+size+1),a
+	jr		get0200
+	
+get0103:
+	ex		af,af'
+	jp		po,get0104
+	ei
+get0104:
+	ex		af,af'
+	xor	a
+	ld		(ix+size),a
+	ld		(ix+size+1),a
+	jp		get0410
+	
+get0200:
+	ex		af,af'
+	jp		po,get0201
+	ei
+get0201:
+	ex		af,af'
+	;	size has the right size
+	;	and about to copy bytes
+	;	1st segment size = (qhead + size) - length
+	;	if negative, just size
+	;	if 1st segment is positive, 2nd segment size
+	;	is size - 1st segment size
+	ld		l,(iy+_CircBuffer+QEnd)	;	hl = QEnd
+	ld		h,(iy+_CircBuffer+QEnd+1)
+	ld		e,(ix+size)						;	de = size
+	ld		d,(ix+size+1)
+	push	hl									;	|QEnd|
+	add	hl,de								;	hl = new QEnd
+	push	hl									;	|QEnd|nQEnd|
+	ld		c,(iy+_CircBuffer+Length)	;	bc = Length
+	ld		b,(iy+_CircBuffer+Length+1)
+	xor	a
+	sbc	hl,bc								;	hl = size of wrapped seg
+	jr		c,get0300						;	negative,
+	pop	bc
+	push	hl									;	|QEnd|WSegSize|
+	ex		de,hl
+	xor	a
+	sbc	hl,de								;	hl = size of first seg
+	ld		c,l
+	ld		b,h								;	bc = size of first seg
+	pop	de									;	|QEnd|
+	pop	hl									;	pop hl = QEnd
+	push	de									;	|WSegSize|
+	ld		e,(iy+_CircBuffer+Where)
+	ld		d,(iy+_CircBuffer+Where+1)
+	push	de									;	|WSegSize|Where|
+	add	hl,de								;	hl = dest
+	ld		e,(ix+Content)
+	ld		d,(ix+Content+1)
+;	ex		de,hl
+	ld		a,b
+	or		c
+	jr		z,get0202
+	ldir
+get0202:
+
+	pop	hl									;	|WSegSize|
+	pop	bc
+	push	bc									;	|WSegSize|
+	ld		a,b
+	or		c
+	jr		z,get0203
+	ldir
+get0203:
+	jr		get0400
+	
+	
+get0300:										;	|QEnd|nQEnd|
+	ld		c,e			;	bc = size
+	ld		b,d
+	pop	de				;	pop nQEnd		|QEnd|
+	pop	hl				;	pop	QEnd
+	push	de				;						|nQEnd|
+	ld		e,(iy+_CircBuffer+Where)
+	ld		d,(iy+_CircBuffer+Where+1)
+	add	hl,de
+	ex		de,hl
+	ld		l,(ix+Content)
+	ld		h,(ix+Content+1)
+	ex		de,hl
+	ld		a,b
+	or		c
+	jr		z,get0301
+	ldir
+get0301:
+
+get0400:
+	;		recalculate free and used
+	pop	de
+	di
+	ld		(iy+_CircBuffer+QEnd),e
+	ld		(iy+_CircBuffer+QEnd+1),d
+	ld		e,(ix+size)
+	ld		d,(ix+size+1)
+	ld		l,(iy+_CircBuffer+Free)
+	ld		h,(iy+_CircBuffer+Free+1)
+	add	hl,de
+	ld		(iy+_CircBuffer+Free),l
+	ld		(iy+_CircBuffer+Free+1),h
+	ld		l,(iy+_CircBuffer+Used)
+	ld		h,(iy+_CircBuffer+Used+1)
+	xor	a
+	sbc	hl,de
+	ld		(iy+_CircBuffer+Used),l
+	ld		(iy+_CircBuffer+Used+1),h
+	ex		af,af'
+	jp		po,get9999
+	ei
+get0410:
+	ex		af,af'
+	
+get9999:
+	pop	af
+	ex		af,af'
+#endasm
+	return size;
+	}
+
+// similar to the above, but terminate with a character
+
+/*** BeginHeader circbufChkTerm */
+	
+unsigned circbufChkTerm(
+		struct _CircBuffer *pBuf,
+		char TermChar);
+
+/*** EndHeader */
+		
+/* START FUNCTION DESCRIPTION ********************************************
+circbufChkTerm               <CIRCBUF.LIB>
+
+SYNTAX:			unsignd circbufChkTerm(
+						struct _CircBuffer *pBuf,
+						char TermChar);
+
+DESCRIPTION:	Tries to determine if a terminal-character delimited
+package is available in the buffer.  Does not remove any information
+from the buffer.  Should call circbufGet[Byte] to remove information.
+Call to this function should be
+in a critical section w.r.t. the rest of circbuf access to this buffer
+except all write functions and scan functions.
+
+RETURN VALUE:	The size of the packet terminating with the specified
+character "TermChar" (including the terminator character).
+
+END DESCRIPTION **********************************************************/
+
+nodebug unsigned circbufChkTerm(
+		struct _CircBuffer *pBuf,
+		char TermChar) {
+	auto char *pContent;
+	auto unsigned BufSize;
+	auto unsigned Ptr;
+   auto unsigned SegSize;
+   auto unsigned size;
+   auto char *Occur;
+
+	BufSize = pBuf->Length;
+	size = pBuf->Used;			//	number of filled characters
+	Ptr = pBuf->QEnd;
+	if (!size) goto End;
+	
+	SegSize=(((Ptr+size)>BufSize)?BufSize-Ptr:size);
+	pContent = (char *)pBuf->Where;
+	Occur = memchr(pContent+Ptr,TermChar,SegSize);
+	if (!Occur && (Ptr+size>BufSize)) {
+		Occur = memchr(pContent,TermChar,size-SegSize);
+		if (!Occur) {
+			size = 0;
+			}
+		else {
+			size = (BufSize - Ptr) + (unsigned)(Occur - pContent) + 1;
+			}
+		}
+	else if (Occur) {
+		size = (unsigned)(Occur - pContent) - Ptr + 1;
+		}
+	else {
+		size = 0;
+		}
+ End:
+	return size;
+	}
+
+/*** BeginHeader circbufPeekMatch */
+
+unsigned circbufPeekMatch(
+		struct _CircBuffer *pBuf,
+		void* pMatchee,
+		unsigned size);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+circbufPeekMatch             <CIRCBUF.LIB>
+
+SYNTAX:			unsignd circbufPeekMatch(
+						struct _CircBuffer *pBuf,
+						void* pMatchee,
+						unsigned size) {
+
+DESCRIPTION:	Tries to match portions of a matching pattern to the
+tail of the buffer.  Pattern is pointed to by "pMatchee", length of
+pattern is "size" (note: not null character terminated).  Should use
+circbufGet or circbufGetByte to extract the information from the buffer.
+Call to this function should be
+in a critical section w.r.t. the rest of circbuf access to this buffer
+except all write functions and scan functions.
+
+RETURN VALUE:	The number of bytes in the buffer that actually match
+the pattern.
+
+END DESCRIPTION **********************************************************/
+
+
+speed useix nodebug unsigned circbufPeekMatch(
+		struct _CircBuffer *pBuf,
+		void* pMatchee,
+		unsigned size) {
+#asm xmemok
+	ld		l,(ix+pBuf)		;	use iy as structure ptr
+	ld		h,(ix+pBuf+1)
+	push	hl
+	pop	iy
+	
+	ld		a,(iy+_CircBuffer+Used+1)
+	cp		(ix+size+1)
+	jr		nz,peek0101
+	jr		c,peek0102
+	ld		a,(iy+_CircBuffer+Used)
+	cp		(ix+size)
+peek0101:
+	jr		nc,peek0200
+peek0102:
+	ld		a,(iy+_CircBuffer+Used)
+	ld		(ix+size),a
+	ld		a,(iy+_CircBuffer+Used+1)
+	ld		(ix+size+1),a
+	
+peek0200:
+	;	size has the right size
+	;	and about to copy bytes
+	;	1st segment size = (qhead + size) - length
+	;	if negative, just size
+	;	if 1st segment is positive, 2nd segment size
+	;	is size - 1st segment size
+	ld		l,(iy+_CircBuffer+QEnd)	;	hl = QEnd
+	ld		h,(iy+_CircBuffer+QEnd+1)
+	ld		e,(ix+size)						;	de = size
+	ld		d,(ix+size+1)
+	ld		a,e
+	or		d
+	jr		z,peek9950
+	push	hl									;	|QEnd|
+	add	hl,de								;	hl = new QEnd
+	push	hl									;	|QEnd|nQEnd|
+	ld		c,(iy+_CircBuffer+Length)	;	bc = Length
+	ld		b,(iy+_CircBuffer+Length+1)
+	xor	a
+	sbc	hl,bc								;	hl = size of wrapped seg
+	jr		c,peek0300						;	negative,
+	pop	bc									;	|QEnd|
+	push	hl									;	|QEnd|WSegSize|
+	ex		de,hl
+	xor	a
+	sbc	hl,de								;	hl = size of first seg
+	ld		c,l
+	ld		b,h								;	bc = size of first seg
+	pop	de									;	|QEnd|
+	pop	hl									;	pop hl = QEnd
+	push	de									;	|WSegSize|
+	ld		e,(iy+_CircBuffer+Where)
+	ld		d,(iy+_CircBuffer+Where+1)
+	push	de									;	|WSegSize|Where|
+	add	hl,de								;	hl = dest
+	ld		e,(ix+pMatchee)
+	ld		d,(ix+pMatchee+1)
+	ld		a,b
+	or		c
+	jr		z,peek0202
+	;		at this point
+	;		bc = max count, > 0
+	;		de = pMatchee
+	;		hl = start of buffer
+peek02011:
+	ld		a,(hl)
+	ex		de,hl
+	cp		(hl)
+	ex		de,hl
+	jr		z,peek02012
+	pop	hl									;	two more items on the stack to pop
+	pop	bc
+	jr		peek9900
+peek02012:
+	inc	hl
+	inc	de
+	dec	bc
+	ld		a,b
+	or		c
+	jr		nz,peek02011
+	;		at this point, all of bc are matched!
+	
+peek0202:
+
+	pop	hl									;	|WSegSize|
+	pop	bc
+	ld		a,b
+	or		c
+	jr		z,peek9900
+	
+peek02021:
+	ld		a,(hl)
+	ex		de,hl
+	cp		(hl)
+	ex		de,hl
+	jr		nz,peek9900
+	inc	hl
+	inc	de
+	dec	bc
+	ld		a,b
+	or		c
+	jr		nz,peek02021
+	;		at this point, all of bc are matched!
+	jr		peek9900
+	
+peek0300:										;	|QEnd|nQEnd|
+	ld		c,e			;	bc = size
+	ld		b,d
+	pop	de				;	pop nQEnd		|QEnd|
+	pop	hl				;	pop	QEnd
+	ld		e,(iy+_CircBuffer+Where)
+	ld		d,(iy+_CircBuffer+Where+1)
+	add	hl,de
+;	ex		de,hl
+	ld		e,(ix+pMatchee)
+	ld		d,(ix+pMatchee+1)
+	ld		a,b
+	or		c
+	jr		z,peek0301
+peek03001:
+	ld		a,(hl)
+	ex		de,hl
+	cp		(hl)
+	ex		de,hl
+	jr		nz,peek9900
+	inc	hl
+	inc	de
+	dec	bc
+	ld		a,b
+	or		c
+	jr		nz,peek03001
+
+peek0301:
+	;		at this point, all of bc are matched!
+
+peek9900:
+	;		de is the current pMatchee
+	ld		l,(ix+pMatchee)
+	ld		h,(ix+pMatchee+1)
+	ex		de,hl
+	xor	a
+	sbc	hl,de
+	jr		peek9999
+
+peek9950:
+	ld		hl,0
+	
+peek9999:
+#endasm
+	}
+	
+/***************************************/
+/******* END OF CIRCBUF ROUTINES *******/
+/***************************************/
+

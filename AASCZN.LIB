@@ -1,0 +1,579 @@
+/*** BeginHeader */
+
+#ifndef __AASCZN_LIB
+#define __AASCZN_LIB
+
+/*** EndHeader */
+
+
+/*** BeginHeader */
+#use znpakfmt.lib
+#use vdriver.lib
+//#use network.lib
+#use aasc.lib
+#define USE_ZNET 1
+
+#asm
+zndum: equ znInit
+#endasm
+
+/*** EndHeader */
+
+/*** BeginHeader znInit */
+
+#define ZNCHAN 0x01
+void znInit(unsigned long Param, char CRTS, struct _Channel *Channel, int reopen);
+struct _Channel *pAllZn;
+char znBuffer[ZNBUFSIZ];
+char znInCount;
+char znOutCount;
+long znError;
+char znListen;
+char znID;
+char *pZnInPtr;
+char *pZnEchoPtr;
+char *pZnOutPtr;
+
+unsigned znTxTmOut;
+unsigned znReplyWait;
+unsigned znRxTmOut;
+unsigned znQuickTmOut;
+
+#ifndef ZNMASTER
+#define ZNMASTER 0
+#endif
+
+#if ZNMASTER
+char znMap[256];
+#endif
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+znInit                       <AASCZN.LIB>
+
+SYNTAX: void znInit(unsigned long Param, char CRTS,
+			struct _Channel *Channel, int reopen)
+
+KEYWORDS:
+
+DESCRIPTION:	Initializes the driver.  If Channel is non-zero, also
+initialize the particular channel (should only be called from aascOpen
+in this case).  Param should be ZN1200*n, where n is the multiple of
+1200bps (to specify the baud rate).
+
+RETURN VALUE:	None.
+
+END DESCRIPTION **********************************************************/
+
+void znInit(unsigned long Param,char CRTS,struct _Channel *Channel,int reopen){
+	char baud;
+#GLOBAL_INIT {
+		pAllZn = NULL;
+		znRxTmOut = znTxTmOut = 1500;
+		znState = 0;
+		znStateChange = //	znDefStateChange;
+#if ZNMASTER
+			znPollMaster;
+#else
+			znPollSlave;
+#endif
+#if ZNMASTER
+		memset(znMap,0,256);
+		znID = 0;
+#else
+#endif
+		off_485();
+		}
+		
+	segchain _aascInitDF {
+		DevFunc[DEV_ZNET].DevOpen = znInit;
+		DevFunc[DEV_ZNET].DevClose = znClose;
+		DevFunc[DEV_ZNET].TxSwitch = znTxSwitch;
+		DevFunc[DEV_ZNET].RxSwitch = znRxSwitch;
+		DevFunc[DEV_ZNET].DevGetError = znGetErr;
+		DevFunc[DEV_ZNET].DevClrError = znClrErr;
+	}
+
+	if (pAllZn == NULL) {
+		znInitZ1(baud=*((char*)&Param+1));
+#if ZNMASTER
+//		znPollMaster();
+#else
+		znPollSlave();
+#endif
+		znRxTmOut = znTxTmOut =
+			(unsigned)(((255L*16*1000+1200)/1200+(unsigned)baud)/(unsigned)baud+100);
+			//	sufficient time for 255 bytes
+		znQuickTmOut =
+			(unsigned)(((5L*16*1000+1200)/1200+(unsigned)baud)/(unsigned)baud+50);
+			//	sufficient time for 5 bytes
+		}
+#if ZNMASTER
+	znMap[(unsigned)(char)Param] = ZNCHAN;
+#endif
+	if (Channel && ((char)Param != znID)) {
+		Channel->nextSameDevice = pAllZn;
+		pAllZn = Channel;
+		znError = Channel->Error = 0;
+		Channel->FreeLong1 = 0;
+		}
+	}
+
+/*** BeginHeader znClose */
+
+void znClose(struct _Channel *Channel);
+
+/*** EndHeader */
+
+void znClose(struct _Channel *Channel) {
+#if ZNMASTER
+	znMap[(unsigned)(char)Channel->Params] = 0;
+#endif
+	aascCloseSub(Channel, &pAllZn);
+	if (!pAllZn && znID) {
+		op_kill_z1();
+		}
+	}
+
+/*** BeginHeader znTxSwitch */
+
+void znTxSwitch(char OnOff, struct _Channel *Channel);
+
+/*** EndHeader */
+
+void znTxSwitch(char OnOff, struct _Channel *Channel) {
+	if (OnOff) {
+		Channel->FreeLong1 |= ZNTXMASK;
+		}
+	else {
+		Channel->FreeLong1 ^= ZNTXMASK;
+		}
+	}
+
+/*** BeginHeader znRxSwitch */
+
+void znRxSwitch(char OnOff, struct _Channel *Channel);
+
+/*** EndHeader */
+
+
+void znRxSwitch(char OnOff, struct _Channel *Channel) {
+	if (OnOff) {
+		Channel->FreeLong1 |= ZNRXMASK;
+		}
+	else {
+		Channel->FreeLong1 ^= ZNRXMASK;
+		}
+	}
+
+/*** BeginHeader znPollSlave */
+
+int znPollSlave();
+
+/*** EndHeader */
+
+#asm
+dummy: equ _znInt	;	to trigger compiling the ISR
+#endasm
+
+nodebug useix speed int znPollSlave() {
+	static struct _Channel *pTmp;
+	auto unsigned Length;
+	static char flag;
+	static char Err;
+	static char Src;
+	static char IMVacant;
+	static struct _Channel *pLastSent;
+	static char AlreadyIn;
+	auto struct _Channel *pStart;
+#GLOBAL_INIT {
+	pLastSent = NULL;
+	AlreadyIn = 0;
+	IMVacant = 1;
+	Err = 0;
+	}
+
+	DI();
+	if (AlreadyIn) {
+		EI();
+		return;
+		}
+	else AlreadyIn = 1;
+	EI();
+	costate { while (1) {
+#asm xmemok
+		rst	28h
+#endasm
+		if (Err != ZNOKAY) znReceive(znBuffer);
+//		if (znState == 0) znReceive(znBuffer);
+		Err = 0;
+		waitfor(znHasRxMessage());	//	wait for message
+					//	now handle the reply
+		if (1) {
+			if (znState > 4) {
+				*((char*)&znError+1) |= (Err = ZNTXERR);
+			} else if (!znCheck(znBuffer)) {
+				*((char*)&znError+1) |= (Err = ZNCHKSUMERR);
+			}
+			else {
+				Src = znBuffer[2];	//	[dest(znID)][size][Src][message][crclo][crchi]
+				pTmp = pAllZn;
+				//	find the channel for this slave, not necessary to have
+				//	a channel.  But without a channel, cannot use circular
+				//	buffer routines to buffer incoming and outgoing messages
+				while (pTmp && (char)(pTmp->Params) != Src) {
+					pTmp = pTmp->nextSameDevice;
+					}
+				if (pTmp) {
+					//	has a channel for it
+					if ((znBuffer[1]>3) &&
+							(!circbufPut(pTmp->InBuf,znContent(znBuffer),
+									znBuffer[1]-3,1))) {
+						//	overflow!
+						*((char*)&pTmp->Error+1) |= ZNOVFLOW;
+						}
+					else {
+						//	successful!
+						}
+					}
+
+				//	okay we're got a message, reply it now.
+				
+				if (!Src) {
+					//	from the master, I can now bounce a emssae to someone else.
+//					printf("bounce");
+					if (!pLastSent) pLastSent = pAllZn;
+					pStart = pLastSent;
+					do  {
+						pLastSent = pLastSent->nextSameDevice;
+						if (!pLastSent) pLastSent = pAllZn;
+						} while ((pStart != pLastSent) && (!pLastSent->OutBuf->Used));
+					if (!pLastSent->OutBuf->Used) {
+						//	nothing to send, reply null message to master
+						Length = 0;
+						znFormat(znBuffer,0, Length);	//	format with checksum and stuff
+						}
+					else {
+						Length = circbufGet(pLastSent->OutBuf,znContent(znBuffer),
+													ZNCONTENTMAX,0);
+						znFormat(znBuffer,(char)pLastSent->Params,Length);
+						}
+					}
+				else {
+					//	from another slave, must reply to master
+					Length = 0;
+					znFormat(znBuffer,0, Length);	//	format with checksum and stuff
+					}
+				znSend(znBuffer,znBuffer);
+				waitfor(Err = 	(znState != 0) ? ZNOKAY :
+									(DelayMs(znTxTmOut)) ? ZNTXTMOUT :
+									0);	//	wait till sent
+				if (znState > 4) {
+					Err = ZNTXERR;
+				}
+				if (Err != ZNOKAY)
+					*((char*)&znError+1) |= Err;		//	can't transmit
+				}
+			}
+		else *((char*)&znError+1) |= Err;		//	can't transmit
+		} }
+	AlreadyIn = 0;
+	return Err;
+	}
+
+//#funcchain _aascPollChain znPollSlave
+
+/*** BeginHeader znPollMaster, znPollVacant */
+
+int znPollMaster();
+extern char znPollVacant;
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+znPollMaster                 <AASCZN.LIB>
+
+SYNTAX: int znPollMaster(void)
+
+ KEYWORDS:
+
+DESCRIPTION:	Operates a state machine to drive the master of a Z-Net.
+This function should be called periodically so that the slaves on the
+network get polled periodically.  The frequency of calling this function
+determines the frequency of slaves being polled.  This function is also
+called by the interrupt routine _znInt.  If periodical polling of vacant
+slaves is desired, set znPollVacant to non-zero (default is zero and
+disables polling vacant slaves).
+
+RETURN VALUE:	Error number.
+
+END DESCRIPTION **********************************************************/
+
+char znPollVacant;
+
+#asm
+dummy: equ _znInt	;	to trigger compiling the ISR
+#endasm
+
+nodebug int znPollMaster() {
+	static char znLastPolled;
+	static char znLastTested;
+	static struct _Channel *pTmp;
+	auto unsigned Length;
+	static char flag;
+	static char Err;
+	static unsigned ThisTxTmOut;	
+
+	static int incZnLastPolled();
+	static int incZnLastTested();
+
+	static char AlreadyIn;
+	static char Slave;
+
+	static char *pLastPolledMap;
+	
+#GLOBAL_INIT {
+	znLastPolled = znLastTested = 1;
+	AlreadyIn = 0;
+	znPollVacant = 0;
+	}
+
+	DI();
+	if (AlreadyIn) {
+		EI();
+		return;
+		}
+	else AlreadyIn = 1;
+	EI();
+	costate { while (1) {
+		Err = 0;
+		pTmp = NULL;
+		flag = 0;
+		while (!flag) {
+			flag = 0;
+			ThisTxTmOut = znTxTmOut;
+			pLastPolledMap = znMap+znLastPolled;
+			switch (*pLastPolledMap) {
+				case ZNCHAN:
+					pTmp = pAllZn;
+					//	find the channel for this slave, not necessary to have
+					//	a channel.  But without a channel, cannot use circular
+					//	buffer routines to buffer incoming and outgoing messages
+					while (pTmp && (char)(pTmp->Params) != znLastPolled) {
+						pTmp = pTmp->nextSameDevice;
+						}
+					//	a logical channel does exist!
+					if (pTmp->FreeLong1 & ZNTXMASK) {
+						//	transmission to this channel is on
+						Length = circbufGet(pTmp->OutBuf,
+										znContent(znBuffer),ZNCONTENTMAX,0);
+						znFormat(znBuffer,znLastPolled, Length);	//	format with checksum and stuff
+						flag = 1;
+						if (znLastPolled == znLastTested) incZnLastTested();
+						}
+					else incZnLastPolled();
+					break;
+				case ZNACTIVE:
+				case ZNMUSTPOLL:
+					//	a logical channel doesn't exist, but alive and on poll list
+					znFormat(znBuffer,znLastPolled,0);
+					flag = 1;
+					if (znLastPolled == znLastTested) incZnLastTested();
+					break;
+				default:
+					if (znPollVacant && (znLastPolled == znLastTested)) {
+						//	not on poll list, but time to check for existence
+						ThisTxTmOut = znQuickTmOut;
+						znFormat(znBuffer,znLastPolled,0);
+						flag = 1;
+						}
+					else {
+						incZnLastPolled();
+						}
+					break;
+				}
+			}
+			
+		//	something to send
+		//	with 9-th bit used
+		znSend(znBuffer,znBuffer);	//	setup hardware and software to
+						//	send
+		//	wait for reply
+		//	with 9-th bit used
+		waitfor(Err = 	(znState != 0) ? ZNOKAY :
+							(DelayMs(ThisTxTmOut)) ? ZNTXTMOUT :
+							0);	//	wait till sent
+		if (Err == ZNOKAY) {
+			waitfor(Err = 	znHasRxMessage() ? ZNOKAY :
+								(DelayMs(ThisTxTmOut)) ? ZNRXTMOUT :
+								0);	//	wait for reply7
+			//	now handle the reply
+			if (Err == ZNOKAY) {
+				if (!znCheck(znBuffer)) {
+					if (pTmp) *((char*)&pTmp->Error+1) |= ZNCHKSUMERR;
+					else *((char*)&znError+1) |= ZNCHKSUMERR;
+					}
+				else if (znState > 4) {
+					//	still a problem
+					}
+				else {
+					Slave = znBuffer[2];
+					pTmp = pAllZn;
+					//	find the channel for this slave, not necessary to have
+					//	a channel.  But without a channel, cannot use circular
+					//	buffer routines to buffer incoming and outgoing messages
+					while (pTmp && (char)(pTmp->Params) != Slave) {
+						pTmp = pTmp->nextSameDevice;
+						}
+					if (pTmp) {
+						//	has a channel for it
+						if ((znBuffer[1]>3) &&
+							(!circbufPut(pTmp->InBuf,znContent(znBuffer),
+									znBuffer[1]-3,1)))
+							{
+							//	overflow!
+							*((char*)&pTmp->Error+1) |= ZNOVFLOW;
+							}
+						else {
+							//	successful!
+							}
+						}
+					else {
+						//	no channel for it
+						if (!znMap[Slave]) znMap[Slave] = ZNACTIVE;	//	this slave is alive
+						if (!*pLastPolledMap)
+							if (Slave != znLastPolled)
+								*pLastPolledMap = ZNACTIVE;
+						}
+					}
+				}
+			else {
+				//	no reply is okay if the slave is not in poll list
+				if (pTmp) *((char*)&pTmp->Error+1) |= Err;	//	no reply
+				else if (*pLastPolledMap == ZNACTIVE) {
+					*pLastPolledMap = 0;	//	take out of poll list
+					}
+				}
+			}
+		else *((char*)&znError+1) |= Err;		//	can't transmit
+		incZnLastPolled();
+		} }
+	AlreadyIn = 0;
+	return Err;
+	subfunc incZnLastTested: {
+#asm
+		ld		a,(znLastTested)
+		inc	a
+		and	ZNADDRMASK
+		jr		nz,inc2
+		ld		a,1
+inc2:
+		ld		(znLastTested),a
+		ld		l,a
+		ld		h,0
+#endasm
+		}
+	subfunc incZnLastPolled: {
+#asm
+		ld		a,(znLastPolled)
+		inc	a
+		and	ZNADDRMASK
+		jr		nz,inc3
+		ld		a,1
+inc3:		
+		ld		(znLastPolled),a
+		ld		l,a
+		ld		h,0
+		call	z,incZnLastTested
+#endasm
+		}
+	}
+	
+//#funcchain _aascPollChain znPollMaster
+
+/*** BeginHeader znSetMap */
+
+void znSetMap(char nodeID, char code);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+znSetMap                     <AASCZN.LIB>
+
+SYNTAX: void znSetMap(char nodeID, char code)
+
+KEYWORDS:	MASTER-ONLY
+
+DESCRIPTION:	Changes the status of a slave in the map (of the master).
+"nodeID" is the address of the slave, and "code" is one of the following:
+0 if the slave is taken out of the network, ZNACTIVE if the slave should
+be polled in the next poll cycle, ZNMUSTPOLL if the slave should be polled
+always.  The program should not alter the status of a node for which a
+channel is already established, otherwise the channel will not be able to
+receive or transmit.  The status of a slave can be checked by znGetMap.
+
+RETURN VALUE:	None.
+
+END DESCRIPTION **********************************************************/
+
+void znSetMap(char nodeID, char code) {
+	znMap[nodeID] = code;
+	}
+
+/*** BeginHeader znGetMap */
+
+char znGetMap(char nodeID);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+znGetMap                     <AASCZN.LIB>
+
+SYNTAX: char znGetMap(char nodeID)
+
+KEYWORDS:	MASTER-ONLY
+
+DESCRIPTION:	Checks the status of a slave in the map (of the master).
+"nodeID" is the address of the slave, and the return value is one of the
+following: 0 if the slave is taken out of the network, ZNACTIVE if the
+slave is recognized to be active in the last poll cycle, ZNMUSTPOLL if
+the slave should be polled always, and ZNCHAN if a channel is already
+established to this slave.  The program should not alter the
+status of a node for which a channel is already established, otherwise the
+channel will not be able to receive or transmit.  The status of a slave
+can be checked by znGetMap.
+
+RETURN VALUE:	The status of a slave.
+
+END DESCRIPTION **********************************************************/
+
+char znGetMap(char nodeID) {
+	return znMap[nodeID];
+	}
+
+/*** BeginHeader znGetErr */
+
+long znGetErr(struct _Channel *pChan);
+
+/*** EndHeader */
+
+long znGetErr(struct _Channel *pChan) {
+	return znError | pChan->Error;
+}
+
+/*** BeginHeader znClrErr */
+
+void znClrErr(struct _Channel *pChan);
+
+/*** EndHeader */
+
+void znClrErr(struct _Channel *pChan) {
+	znError = pChan->Error = 0;
+}
+
+/*** BeginHeader */
+
+#endif
+
+/*** EndHeader */

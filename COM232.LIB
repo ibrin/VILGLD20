@@ -1,0 +1,2305 @@
+// 1-26-96, Allow transmitter to overflow receiver beyond CTS not ready.
+// 7-13-95, compute 80% and 20% of buffer with float multiply.
+// 9-5-94, rearrange calling sequence in Dinit_com1 and Dinit_com2.
+// 8-27-94, resturcture to expose the interrupt routines.
+
+/* START LIBRARY DESCRIPTION *********************************************
+com232.LIB
+    Copyright (c) 1994, Z-World.
+
+DESCRIPTION:  Drivers for com1 and com2 of a PC standard serial card on the
+PC104 or ISA bus. Com1 interrupt comes in at IRQ4 (INT0 of the Z180). Jumper    
+JP19-2 to JP18-2. Com2 interrupt comes in at IRQ3 (INT2 of the Z180). Jumper
+JP20 2-3.
+
+If using Z104:
+    The PC104 serial card should be able to run without the +-12 volts from
+the PC104 bus ( Ampro modem card and Xecom modem card).
+
+If using Z104/ISA:
+    Any standard pc serial card can be used with the Z104/ISA since the 
+Z104/ISA brings out +-12 volts to the ISA and the PC104 bus.
+
+SUPPORT LIB'S: modem232.lib, rtk.lib
+END DESCRIPTION **********************************************************/
+
+/*** BeginHeader */
+#if BOARD_TYPE!=Z104ISA
+#error "Z104/ZISA only."
+#endif
+/*** EndHeader */
+
+/************************************************************************
+pc comport 1 support
+*************************************************************************/
+/*** Beginheader  Dinit_com1, Dwrite_com1, Dread_com1, Dkill_com1, Dwrite_com11ch,
+                  Dread_com11ch, Dreset_com1tbuf, Dreset_com1rbuf, com1modemstat,
+                  com1modemset, com1binaryset, com1binaryreset,  
+                  Drestart_com1modem*/
+
+#define     _zRBR1      0xe3f8
+#define     _zTHR1      0xe3f8
+#define     _zIER1      0xe3f9
+#define     _zIIR1      0xe3fa
+#define     _zLCR1      0xe3fb      
+#define     _zMCR1      0xe3fc
+#define     _zLSR1      0xe3fd
+#define     _zMSR1      0xe3fe
+#define     _zSCR1      0xe3ff
+
+
+int  Dinit_com1(char *rbuf, char *tbuf, int rsize, int tsize,
+     char mode, char baud, char ismodem, char isecho);
+int  Dwrite_com1(char *buf, int count);     // initiate send
+int  Dread_com1(char *buf, char terminate); // initiate receive
+int  Dwrite_com11ch(char data);
+int  Dread_com11ch(char *data);
+void Dreset_com1tbuf(void);
+void Dreset_com1rbuf(void);
+void Dcom1send_prompt(void);
+void Drestart_com1modem(void);
+void Dkill_com1(void);
+int  Dcom1modem_chk(char *buf);
+void Dcom1_circ_int(void);
+int  com1modemstat(void);
+int  com1modemset(void);
+void com1binaryset(void);
+void com1binaryreset(void);
+
+/*** Endheader */
+
+char *com1_write_buf;          // Static pointer to the transmit buffer
+char *com1_read_buf;           // Static pointer to the receive buffer
+shared int com1_rx_head;       // Head pointer for the receive buffer
+shared int com1_rx_tail;       // Tail pointer for the receive buffer
+shared int com1_tx_head;       // Head pointer for the transmit buffer
+shared int com1_tx_tail;       // Tail pointer for the transmit buffer
+int com1_rx_size;              // Static storage of receive buffer size
+int com1_tx_size;              // Static storage of transmit buffer size
+                             // if 1, in xmodem file xfer mode; else 0
+shared int com1_80rbuf;
+shared int com1_20rbuf;
+shared int com1_rbufcnt;
+shared int com1_tbufcnt;
+char com1_CRTS_ENB;
+char com1_CTS_ON;
+char com1_echo;
+char com1Binary;               // 1 if serial receive is in binary mode.
+                             // 0 (default) if serial receive is in text mode.
+char com1CmdOrData;            // 1 if modem is in command mode
+char com1UseModem;             // 1 if using modem
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+com1binaryset                  <com232.lib>
+
+SYNTAX: void com1binaryset(void);
+
+DESCRIPTION: Sets serial communication mode to binary.  All receive data
+are stuffed directly into the receive buffer.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void com1binaryset(void)
+{
+    com1Binary = 1;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+com1binaryreset                <com232.lib>
+
+SYNTAX: void com1binaryreset(void);
+
+DESCRIPTION: Resets serial communication to ASCII mode. Backspace char
+is tracked to adjust the receive buffer head index.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void com1binaryreset(void)
+{
+    com1Binary = 0;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+com1modemstat                  <com232.lib>
+
+SYNTAX: int com1modemstat(void);
+
+DESCRIPTION: Returns the status of the modem.
+
+RETURN VALUE: 1, if modem is in command mode; else 0, if modem in
+data mode (i.e. open to communication).
+END DESCRIPTION **********************************************************/
+nodebug int com1modemstat(void)
+{
+    return (com1CmdOrData);
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+com1modemset                   <com232.lib>
+
+SYNTAX: int com1modemset(void);
+
+DESCRIPTION: Returns information about modem selection.
+
+RETURN VALUE: 1, if modem option is selected; else 0.
+END DESCRIPTION **********************************************************/
+nodebug int com1modemset(void)
+{
+    return (com1UseModem);
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+Dcom1send_prompt               <com232.lib>
+
+SYNTAX: void Dcom1send_prompt(void);
+
+DESCRIPTION: Sends 'CR','LINEFEED' and '>' .  Does not 
+check for available space in the transmit buffer.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void Dcom1send_prompt(void)
+{
+    static char prompt[4] = {"\r\n>"};
+    Dwrite_com1(prompt, 3);
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+Dinit_com1                     <com232.lib>
+
+SYNTAX: int Dinit_com1(char *rbuf, char *tbuf, int rsize, int tsize, 
+            char mode, char baud, char ismodem, char isecho);
+
+DESCRIPTION: Initializes com1 (IRQ3) for serial communication. "rbuf" 
+points to a user defined (receive) character array; "tbuf" points to a 
+user defined (transmit) character array; "rsize" is the size of rbuf; 
+"tsize" is the size of tbuf; "mode" is defined as follows: bit0 = 0 for 1 
+stop bit, 1 for 2 stop bits;  bit1 = 0 for no parity, 1 for parity;
+bit2 = 0 for 7 data bits, 1 for 8 data bits; bit3 = 0 for even parity, 
+1 for odd; bit4 = 0/1 for CTS, RTS control disabled/enabled; "baud" is the 
+baud rate in multiples of 1200 (e.g. 8 for 9600 baud). "ismodem" is 0, if 
+no modem is used; 1, if modem is used. "isecho" is 0, if no char echoing; 
+1 for automatic echoing.
+
+RETURN VALUE: Returns 1 if the serial channel is found.
+              Returns -1 if the serial channel is not found.
+END DESCRIPTION **********************************************************/
+nodebug int Dinit_com1(char *rbuf, char *tbuf, int rsize, int tsize,
+            char mode, char baud, char ismodem, char isecho)
+{
+    
+
+    com1Binary = 0;
+    com1UseModem = ismodem;
+    com1_echo    = isecho;
+    com1_read_buf  = rbuf;      // initialize receive buffer
+    com1_write_buf = tbuf;
+    com1_rx_size = rsize;
+    com1_tx_size = tsize;
+    Dreset_com1tbuf();
+    Dreset_com1rbuf();
+
+    // check serial channel by writing and reading from the scratch register
+    // of the serial channel chip 8450.
+
+    WritePCPort(_zSCR1, 0x55);
+    if(ReadPCPort(_zSCR1) != 0x55) return -1;
+
+    if (mode & '\B00010000') // CTS  and RTS ON
+    {
+        com1_CRTS_ENB = 1;
+        com1_80rbuf = rsize * 0.80 ;   // 7-13-95 (rsize * 80) / 100;
+        com1_20rbuf = rsize * 0.20 ;   // 7-13-95 (rsize * 20) / 100;
+    }
+    else 
+        com1_CRTS_ENB = 0;
+
+    com1_CTS_ON = 1;
+        
+    WritePCPort(_zLCR1, 0x80);                      // DLAB=1     
+    WritePCPort(_zRBR1, (96/baud) & 0xff);          // divisor low         
+    WritePCPort(_zIER1, ((96/baud) >> 8 ) & 0xff);  // divisor high
+    WritePCPort(_zIER1, 0x00);                      // DLAB=0
+    com1Binary = '\B00000010';  // set to seven data bit           
+                                // 1 stop bit
+                                // no parity
+                                // use as dummy        
+        
+    if(mode & '\B00000001')     // 2 stop bit?
+        com1Binary = com1Binary | '\B00000100';
+    if(mode & '\B00000010')     // parity on ?
+    {    
+        com1Binary = com1Binary | '\B00001000';
+        if( mode & '\B00001000');   // odd parity    
+        else                                             
+            com1Binary = com1Binary | '\B00010000';     // even parity
+    }
+    if(mode & '\B00000100') // eight data bit    
+        com1Binary = com1Binary | '\B00000001';   
+    WritePCPort(_zLCR1, com1Binary);     // data bits, stop bits, parity,
+    WritePCPort(_zMCR1, 0x0f);           // RTS, DTR, OUT1, OUT2 enable
+    
+    WritePCPort(_zIER1, 0x01);           // receive interrupt on
+    ReadPCPort(_zRBR1);                 // read to reset the 8250     
+    ReadPCPort(_zIER1);
+    ReadPCPort(_zIIR1);
+    ReadPCPort(_zLCR1);
+    ReadPCPort(_zMCR1);
+    ReadPCPort(_zLSR1);
+
+    WritePCPort(_zIER1, 0x0d);          // enable receive, modem and error
+                                        // interrupts
+    
+#asm xmemok
+    IM      1
+#endasm
+
+    ISET(ITC, 0);      // enable INT1 interrupt to service IRQ4  
+
+    com1Binary = 0;
+    if (com1UseModem)
+       Drestart_com1modem();
+    else 
+        com1CmdOrData = 0;
+
+    return 1;
+}
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+Dreset_com1rbuf                <com232.lib>
+
+Reset the receive buffer for the com1 serial channel.
+
+SYNTAX: void Dreset_com1rbuf(void);
+
+DESCRIPTION: Resets receive buffer for com1 serial channel.  Sets head and 
+tail indexes to zero.  Sets com1_rbufcnt to zero.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void Dreset_com1rbuf(void)
+{
+    com1_rbufcnt = com1_rx_head = com1_rx_tail = 0;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+Dreset_com1tbuf                <com232.lib>
+
+SYNTAX: void Dreset_com1tbuf(void);
+
+DESCRIPTION: Resets com1 serail transmit buffer. Sets head and 
+tail indexes to zero.  Sets com1_tbufcnt to zero.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void Dreset_com1tbuf(void)
+{
+    com1_tbufcnt = com1_tx_head = com1_tx_tail = 0;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+Dwrite_com1                    <com232.lib>
+
+SYNTAX: int Dwrite_com1(char *buf, int count);
+
+DESCRIPTION: Writes character data array of length "count" to transmit 
+buffer.  "buf" is pointer to character array.  "count" is number of char's 
+to send.  Transmit interrupt is automatically turned on, if off.
+
+RETURN VALUE: 1, if array is succesfully copied; 0, if there's no space 
+in transmit buffer.
+END DESCRIPTION **********************************************************/
+nodebug int Dwrite_com1(char *buf, int count)
+{
+    int dum_tail, dum_head;
+    int i;
+
+    if (!count) 
+        return 1;            // no need to write
+    if ((com1_tbufcnt + count) >= com1_tx_size) 
+        return 0;            // not enough space
+    dum_head = com1_tx_head;
+    i = 0;
+    do
+    {
+        *(com1_write_buf + dum_head++) = *(buf + i++);
+        if (dum_head == com1_tx_size) 
+            dum_head = 0; 
+    } while (i < count);
+    DI();                   // disable interrupt, 5-3-94
+    if (com1_tx_tail == com1_tx_head)
+    {
+        com1_tx_head = dum_head;
+        com1_tbufcnt = count;  
+        WritePCPort(_zIER1, ReadPCPort(_zIER1) | 0x02); // Transmits on
+    }
+    else
+    {
+        com1_tx_head = dum_head;
+        com1_tbufcnt = com1_tbufcnt + count;
+    }
+    EI();
+    return 1;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+Dread_com1                     <com232.lib>
+
+SYNTAX: int Dread_com1(char *buf, char terminate);
+
+DESCRIPTION: Reads serial receive buffer for stream with specified 
+terminate character.  "buf" points to user defined character array.
+"terminate" is the terminating character of the stream, which is replaced 
+by '\0'.  If modem option is selected with Dinit_com1(...), receive 
+stream is automatically parsed for modem messages.  The latter are 
+automatically processed and the serial service routines are automatically 
+called.  Note that modem messages are terminated with 'CR'.
+
+RETURN VALUE: 1, if stream is found and copied to buf; 0, if no stream 
+is found or if modem option is selected and stream matched a modem message.
+END DESCRIPTION **********************************************************/
+nodebug int Dread_com1(char *buf, char terminate)
+{
+    int i;
+    int dum_head, dum_tail;
+    
+    dum_head = com1_rx_head;
+    dum_tail = com1_rx_tail;
+    i = 0;
+    if (dum_head == dum_tail) 
+        return 0;
+    else
+    {
+        do
+        {
+            *(buf + i) = *(com1_read_buf + dum_tail++);
+            if (dum_tail == com1_rx_size) 
+                dum_tail = 0;          // Wrap around circ rec'v buffer.
+            if (*(buf + i++) == terminate)
+            {
+                *(buf + i - 1) = '\0'; // Replace terminate char w '\0'
+                // **** Service receive buffer ********
+                com1_rx_tail = dum_tail; // Reset circ rec'v buffer tail.
+                if (com1_CRTS_ENB)
+                {
+                    com1_rbufcnt = com1_rbufcnt - i;
+                    if (! com1_CTS_ON)
+                    {
+                        if (com1_rbufcnt <= com1_20rbuf)
+                        {
+                            DI();
+                            WritePCPort( _zMCR1, '\B00001111');
+                            EI();
+                            com1_CTS_ON = 1;
+                        }
+                    }
+                }
+                if (com1UseModem)
+                {
+                    if (Dcom1modem_chk(buf) == -1) 
+                        return 1;        // Not a modem msg
+                    else 
+                        return 0;        // A modem msg
+                }
+                return 1;
+            }
+        } while (dum_tail != dum_head);  // 'til inbuf is empty
+        return 0;
+    }
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+Dwrite_com11ch                 <com232.lib>
+
+SYNTAX: Dwrite_com11ch(char data);
+
+DESCRIPTION: Writes a character to the transmit buffer.  Transmit 
+interrupt is turned on, if off.
+
+RETURN VALUE: 1, if data is succesfully written to transmit buffer;
+0, if there's no space in buffer.
+END DESCRIPTION **********************************************************/
+nodebug int Dwrite_com11ch(char data)
+{
+    int dum_tail, dum_head;
+    
+    if ((com1_tbufcnt + 1) >= com1_tx_size) 
+        return 0;
+    dum_head = com1_tx_head;
+    *(com1_write_buf + dum_head++) = data;
+    if (dum_head == com1_tx_size) 
+        dum_head = 0; 
+    DI();                       // disable interrupt, 5-3-94
+    if (com1_tx_tail == com1_tx_head)
+    {
+        com1_tbufcnt = 1;
+        com1_tx_head = dum_head;
+        WritePCPort(_zIER1, ReadPCPort(_zIER1) | 0x02); // Transmits on 
+        // initiate transfer if not transferring
+    }
+    else
+    {
+        com1_tx_head = dum_head;
+        com1_tbufcnt++;
+    }
+    EI();
+    
+    return 1;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+Dread_com11ch                  <com232.lib>
+
+SYNTAX: int Dread_com11ch(char *data);
+
+
+DESCRIPTION: Reads serial receive buffer for a character.  "data" is 
+pointer to a character.
+
+RETURN VALUE: 1, if a byte is copied to *data; 0, if buffer is empty.
+END DESCRIPTION **********************************************************/
+nodebug int Dread_com11ch(char *data)
+{
+    int dum_head, dum_tail;
+
+    dum_head = com1_rx_head;
+    dum_tail = com1_rx_tail;
+    if (dum_head == dum_tail) 
+        return 0;
+    else
+    {
+        *data = *(com1_read_buf + com1_rx_tail++);
+        if (com1_rx_tail == com1_rx_size) 
+            com1_rx_tail = 0; 
+        if (com1_CRTS_ENB)
+        {
+            com1_rbufcnt--;
+            if (!com1_CTS_ON)
+            {
+                if (com1_rbufcnt <= com1_20rbuf)
+                {
+                    DI();
+                    WritePCPort( _zMCR1, '\B00001111');     
+                    EI();  
+                    com1_CTS_ON = 1;
+                }
+            }
+        }
+        return 1;
+    }
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+Dkill_com1                     <com232.lib>
+
+SYNTAX: void Dkill_com1(void);
+
+DESCRIPTION: Reset the Z180's channel 0.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void Dkill_com1(void)
+{
+    WritePCPort(_zIER1, 0x00);      // disable interrupt source
+    WritePCPort(_zMCR1, 0x0f);      // disable RTS, DTR, OUT1, OUT2  
+    IRES(ITC, 0);                   // ITC disabled for INT0
+
+#asm xmemok
+    IM      2
+#endasm
+
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+Drestart_com1modem             <com232.lib>
+
+SYNTAX: void Drestart_com1modem(void);
+
+DESCRIPTION: Sends command to set/reset the modem connected to Z180, 
+channel 0.  Hayes smart modem is desirable.  Required hardware 
+connections:
+
+                       MODEM               Z180 CHAN 0
+                        RX  ----------------- TX
+                        TX  ----------------- RX
+                        GND ----------------- GND
+                        RTS --+           +-- RTS
+                        CTS --|           +-- CTS
+                        DTR --+
+
+i.e. On modem side, RTS,CTS and DTR are tied together.  On SCC side, 
+RTS is connected to CTS.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void Drestart_com1modem(void)
+{
+    int  ercode;
+    int  ok_count;
+    char buf[20];
+
+    /* If modem is available, master should insure that modem
+       is in command mode on power up                        */
+
+    com1CmdOrData = 1;         // modem in command mode
+    ok_count = 0;
+    Dwrite_com1("+++", 3);
+    Ddelay_1sec();
+    while ((++ok_count < 4) && ((ercode = Dread_com1(buf, ENTER)) == 0 ||
+           (Dget_modem_command(buf) != 0))) 
+        Ddelay_1sec();
+
+    Dwrite_com1("AT H0", 5);   // or time out
+    Dwrite_com11ch(ENTER);
+    ok_count = 0;
+    while ((++ok_count < 4) && ((ercode = Dread_com1(buf, ENTER)) == 0 ||
+           (Dget_modem_command(buf) != 0))) 
+        Ddelay_1sec();       // Wait for OK
+
+    Dwrite_com1("AT E0 V1 M0 S0=2", 16); // or time out
+    /*****************************
+     E0 for commands not echoed
+     V1 for word responses
+     M0 for internal speaker off
+     S0=2 for automatic answering
+     ******************************/
+    Dwrite_com11ch(ENTER);
+    ok_count = 0;
+    while ((++ok_count < 4) && ((ercode = Dread_com1(buf, ENTER)) == 0 ||
+           (Dget_modem_command(buf) != 0))) 
+        Ddelay_1sec();       // Wait for OK
+    
+    Dwrite_com1("AT &D0 &R1", 10);// or time out
+    /********************************************
+     &D0 for ignore the Data Terminal Ready (DTR)
+     &R1 for ignore the Ready To Send (RTS)
+     ********************************************/
+    Dwrite_com11ch(ENTER);
+    ok_count = 0;
+    while ((++ok_count < 4) && ((ercode = Dread_com1(buf, ENTER)) == 0 ||
+           (Dget_modem_command(buf) != 0))) 
+        Ddelay_1sec();       // Wait for OK
+    
+    Ddelay_1sec();
+    Dreset_com1rbuf();
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+Dcom1modem_chk                 <com232.lib>
+
+SYNTAX: int Dcom1modem_chk(char *buf);
+
+DESCRIPTION: Checks 'CR' terminated stream for modem messages.  Serial 
+service routines are called as function of the modem condition (if selected).
+"buf" points to a 'CR' terminated stream that was copied from the receive 
+buffer.
+
+RETURN VALUE: -1, if no match to any modem messages; 0, if stream was 
+processed as a modem message.
+END DESCRIPTION **********************************************************/
+nodebug int Dcom1modem_chk(char *buf)
+{
+    int which_one;
+    int i;
+    int j;
+    
+    which_one = Dget_modem_command(buf);
+    switch (which_one)
+    {
+        case - 1: 
+            if (!com1CmdOrData) 
+                return - 1;
+            break;
+        case 2:             // set for auto answer
+                             // Dwrite_com1("ATA",3);
+                             // Dwrite_com11ch(ENTER);
+            break;           /* manually receive call if ring
+                                is detected.                  */
+        case 9:
+            Ddelay_5sec();
+            Ddelay_5sec();
+            Dreset_com1tbuf();
+            Dreset_com1rbuf();
+            com1CmdOrData = 0;
+            Dcom1send_prompt();
+            Dwrite_com1("Welcome to the Remote System", 28);
+            Dcom1send_prompt();
+            break;
+                             // connect at 2400 bps
+                             // switch to data mode
+        case 0:
+            break;           // ok from command to modem
+        case 3:
+            com1CmdOrData = 1; // no carrier detect
+            Ddelay_5sec();   // Wait and reset all buffers
+            Dreset_com1tbuf();
+            Dreset_com1rbuf();
+            break;
+        case 4:
+            break;           // command error
+        case 5:
+            Ddelay_5sec();
+            Ddelay_5sec();
+            Dreset_com1tbuf();
+            Dreset_com1rbuf();
+            com1CmdOrData = 0;
+            Dcom1send_prompt();
+            Dwrite_com1("Welcome to the Remote System", 28);
+            Dcom1send_prompt();
+            break;           // switch to data mode
+        case 6:             // no dial tone
+        case 7:             // busy
+        case 8:             // no answer
+        case 10:            // just line feed
+        default:
+            break;
+    }
+    return 0;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+Dcom1_circ_int                 <com232.lib>
+
+SYNTAX: void Dcom1_circ_int(void);
+
+DESCRIPTION: Transmit and receive interrupt service routine for Z180 
+chan 0.  For boards that use this port for programming, the vector should
+be loaded during runtime.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+#JUMP_VEC   RST38_VEC   Dcom1_circ_int               
+#asm root 
+Dcom1_circ_int::
+        push    af                  ; save the registers
+        push    hl
+        push    bc
+        push    de
+
+        in0     a, (CBR)            ; save the CBR
+        push    af
+        call    SaveHiAddr      ; save the HiAddress
+
+        ld      bc, HIADDR
+        ld      a, 0
+        out     (c), a          ; set High Address to 0
+        ld      bc, _zIIR1
+        in      a, (c)
+        cp      0x06
+        jp      nz, not_error
+        ld      bc, _zLSR1
+        in      a, (c)
+        jp     _com1TheEnd
+not_error:
+        cp     0x4              ; if receive interrupt          
+        jp     z, _com1Recvr
+
+        cp     0x02             ; if transmit interrupt
+        jp      z, _com1Txmit
+        ld      bc, _zMSR1      ; if modem, just read and ignore
+        in      a, (c)          ; 
+        jp     _com1TheEnd      
+_com1Recvr:
+        ld      bc, _zRBR1
+        in      a, (c)          ; read in data
+
+        ld      c, a            ; c has the character
+
+        ld      a,(com1Binary)  ; binary mode ?
+        cp      1
+        jr      z, _StuffData   ; just stuff data in if binary mode.
+                                ; if text mode, 
+                                ; process the BACKSPACE character
+        ld      a,c
+        cp      BACKSPACE       ; is character a backspace
+        jr      nz, _notBackSpace
+        ld      a,(com1CmdOrData)
+        cp      1
+        jr      z, _noEcho
+        ld      a,(com1_echo)
+        cp      1
+        jr      nz,_noEcho
+        ld      a, c
+        ld      bc, _zRBR1
+        out     (c), a
+        ld      c, a
+_noEcho:
+        ld      de,(com1_rx_tail)   ; see if (rx_head) == (rx_tail)
+        ld      hl,(com1_rx_head)
+        ld      a,d
+        cp      h               ;  if(rx_head)==(rx_tail)
+        jr      nz, _notHTR     ;
+        ld      a,e
+        cp      l
+        jr      nz, _notHTR
+        jp      _com1TheEnd     ; _com1Txmit
+_notHTR:
+        ld      a,h           ; if (rx_head)==0, (rx_head)=(rx_size) - 1;
+        or      l
+        jr      nz,_HeadnotZero
+        ld      hl,(com1_rx_size)
+        dec     hl
+        ld      (com1_rx_head),hl
+        jp      _decRbufcount
+
+_HeadnotZero:
+        ld      hl,(com1_rx_head)  ; else (rx_head) = (rx_head) -1
+        dec     hl
+        ld      (com1_rx_head),hl
+_decRbufcount:
+        ld      a,(com1_CRTS_ENB)
+        cp      1
+        jp      nz, _com1TheEnd         ; _com1Txmit
+        ld      hl, (com1_rbufcnt)
+        dec     hl
+        ld      (com1_rbufcnt),hl
+        jp      _com1TheEnd             ; _com1Txmit
+
+_notBackSpace:          ; not BACKSPACE, so push data into receive queue
+        ld      a,(com1CmdOrData)
+        cp      1
+        jr      z, _StuffData
+        ld      a,(com1_echo)
+        cp      1
+        jr      nz,_StuffData
+        ld      a, c
+        ld      bc, _zRBR1
+        out     (c), a
+        ld      c, a
+
+_StuffData:
+; 1-26-96	Allow transmitter to overflow receiver beyond CTS not ready.
+; 1-26-96        ld      a,(com1_CTS_ON)
+; 1-26-96        cp      1
+; 1-26-96        jp      nz, _com1TheEnd         ; _com1Txmit
+        ld      de,(com1_read_buf)
+        ld      hl,(com1_rx_head)
+        add     hl,de
+        ld      (hl),c        ; store data
+        ld      de,(com1_rx_size)  ; do the modulo test
+        ld      hl,(com1_rx_head)
+        inc     hl
+        ld      a,d
+        cp      h             ; compare high byte
+        jp      nz,_notRollOver
+        ld      a,e
+        cp      l              ; compare low byte
+        jp      nz,_notRollOver
+        ld      hl,00
+        ld      (com1_rx_head),hl
+        jp      _checkforCTS
+ _notRollOver:
+        ld      (com1_rx_head),hl
+_checkforCTS:
+        ld      a,(com1_CRTS_ENB)
+        cp      1
+        jp      nz, _com1TheEnd     ; _com1Txmit
+        ld      hl, (com1_rbufcnt)
+        inc     hl
+        ld      (com1_rbufcnt),hl
+        ld      de, (com1_80rbuf)
+        ld      a,e
+        cp      l
+        jp      nz, _com1TheEnd     ; _com1Txmit
+        ld      a,d
+        cp      h
+        jp      nz, _com1TheEnd     ; _com1Txmit
+        ld      bc, _zMCR1
+        ld      a, 0x0d             ; disable RTS
+        out     (c), a
+        ld      a, 0                ; no receive
+        ld      (com1_CTS_ON),a     ; software has to know too.
+        jr      _com1TheEnd
+_com1Txmit:
+        ld      de,(com1_tx_head)   ; see if (tx_head) == (tx_tail)
+        ld      hl,(com1_tx_tail)
+        ld      a,d
+        cp      h        ; compare d to h
+        jr      nz, _notTxEnd
+        ld      a,e
+        cp      l
+        jr      nz, _notTxEnd
+        ld      bc, _zIER1
+        in      a, (c)
+        and     11111101b       ; transmit interrupt is off
+        out     (c), a
+        jp      _com1TheEnd
+ _notTxEnd:
+        ld      hl,(com1_tbufcnt)
+        dec     hl
+        ld      (com1_tbufcnt),hl
+        ld      de, (com1_write_buf)   ; send next character out
+        ld      hl, (com1_tx_tail)
+        add     hl,de
+        ld      a, (hl)
+        ld      bc, _zTHR1
+        out     (c), a
+        ld      de,(com1_tx_size)
+        ld      hl,(com1_tx_tail) ; do the modulo test
+        inc     hl
+        ld      a,d
+        cp      h             ; compare high byte
+        jp      nz,_notTRollOver
+        ld      a,e
+        cp      l
+        jp      nz,_notTRollOver
+        ld      hl,00
+        ld      (com1_tx_tail),hl
+        jp      _com1TheEnd
+ _notTRollOver:
+        ld      (com1_tx_tail),hl
+_com1TheEnd:
+        
+        call    RestoreHiAddr
+        pop     af
+        out0    (CBR), a
+        pop     de
+        pop     bc
+        pop     hl
+        pop     af
+        ei
+        ret
+#endasm
+
+
+
+/*** BeginHeader Dxmodem_com1down, Dxmodem_com1up */
+
+int Dxmodem_com1down(char *mydata, int n_blocks);
+int Dxmodem_com1up(unsigned long baseAddress, int *no_of_pages, int dest,
+    int (*data_parsing)() );
+
+/*** EndHeader */
+extern char com1Binary;             // 12-15-94
+
+/* START FUNCTION DESCRIPTION ********************************************
+Dxmodem_com1down               <com232.lib>
+
+SYNTAX: int Dxmodem_com1down(char *mydata, int n_blocks);
+
+DESCRIPTION: Sends blocks of data to PC or dumb terminal with xmodem 
+file transfer protocol.  "mydata" points to a character array.  n_blocks 
+is the size of the array in 128-byte blocks.
+
+RETURN VALUE: 0, if there's a timeout during transfer; 1, if xfer 
+was successful; 2, if xfer was cancelled.
+END DESCRIPTION **********************************************************/
+nodebug int Dxmodem_com1down(char *mydata, int n_blocks)
+{
+    int  i;
+    int  timeout;
+    unsigned char nth_block, not_nth;
+    unsigned int testcrc;
+    int  checksum;
+    int  ercode;
+    char cdata;
+    int  iblock;
+
+    nth_block = 1;
+    not_nth = ~nth_block;
+
+    com1Binary = 1;
+    timeout = 0;
+    Dwrite_com1("Ready to Download File", 22);
+    Dcom1send_prompt();
+    Dwrite_com1("Do an xmodem receive", 20);
+    Dcom1send_prompt();
+    while (((ercode = Dread_com11ch(&cdata)) == 0) || ((cdata != XCRC) && 
+            (cdata != ESC) && (cdata != CAN) )  )
+    {
+        Ddelay_1sec();
+        if (++timeout >= 30)
+        {
+            com1Binary = 0;
+            Ddelay_5sec();
+            return 0;
+        }
+    }
+    if (cdata == CAN || cdata == ESC)// monitor for a quick ABORT
+    {
+        com1Binary = 0;
+        Ddelay_5sec();
+        return 2;
+    }
+    else 
+        timeout = 0;
+
+    do
+    {
+        iblock = (nth_block - 1) * 128;
+        Dwrite_com11ch(SOH);
+        Dwrite_com11ch(nth_block);
+        Dwrite_com11ch(not_nth);
+        Dwrite_com1(mydata + iblock, 128);
+        testcrc = getcrc(mydata + iblock, 128, 0);
+        cdata = (testcrc >> 8) & 0xff;
+        Dwrite_com11ch(cdata);
+        cdata = (testcrc & 0xff);
+        Dwrite_com11ch(cdata);
+        timeout = 0;
+        while (((ercode = Dread_com11ch(&cdata)) == 0) ||
+                ((cdata != XCRC) && (cdata != NAK) && (cdata != ACK) && 
+                 (cdata != CAN)) )
+        {
+            Ddelay_1tick();
+            if (++timeout > 200)
+            {
+                com1Binary = 0;
+                Ddelay_5sec();
+                return 0;
+            }
+        }
+        if (cdata == CAN)
+        {
+            com1Binary = 0;
+            Ddelay_5sec();
+            return 2;
+        }
+        else if (cdata == ACK)
+        {
+            if (++nth_block <= n_blocks) 
+                not_nth = ~nth_block;
+            else
+            {
+                Dwrite_com11ch(EOT);
+                timeout = 0;
+                while (((ercode = Dread_com11ch(&cdata)) == 0) || 
+                         cdata != ACK)
+                {
+                    Ddelay_1tick();
+                    if (++timeout > 200)
+                    {
+                        com1Binary = 0;
+                        Ddelay_5sec();
+                        return 0;
+                    }
+                };
+                // Wait for final acknowledge for end of transfer
+                // time out if necessary
+                com1Binary = 0;
+                Ddelay_5sec();
+                return 1;    // 1 for succesful transfer
+            }
+        }
+    } while (1);
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+Dxmodem_com1up                 <com232.lib>
+
+
+SYNTAX: int Dxmodem_com1up(unsigned long baseAddress, int *no_of_pages, 
+            int dest, int (*data_parsing)() );
+
+DESCRIPTION: Uploads data from a PC using the xmodem file transfer protocol.
+"baseAddress" is the destination's physical ram address.  "*no_of_pages" is 
+the size of the uploaded file in number of pages.  "dest" is an additional 
+parameter to locate the uploaded file.  "*data_parsing" is the address of 
+the function to parse the uploaded file into memory.  The required parsing 
+function prototype is:
+
+int parse_function(char *mydata, int blockcount, 
+    unsigned long baseAddress, int dest);
+
+where "mydata" points to a 128 byte block of data;  "blockcount" is 
+the nth block;  "baseAddress" is the base address of the uploaded file;  and
+"dest" is an added parameter to locate the data.  The parser function should 
+return 1 for successful copy or else 0.
+
+RETURN VALUE: 0, if there's a timeout during transfer; 1, if transfer 
+was successful; 2, if transfer was cancelled.
+END DESCRIPTION **********************************************************/
+nodebug int Dxmodem_com1up(unsigned long baseAddress, int *no_of_pages, 
+            int dest, int (*data_parsing)() )
+{
+    int  i;
+    unsigned char nth_block, not_nth;
+    unsigned int testcrc;
+    unsigned int myblockcount;
+    int  checksum;
+    int  ercode;
+    int  timeout;
+    char cdata;
+    char locrc, hicrc, mylocrc, myhicrc;
+    static char mydata[130];
+
+    myblockcount = 1;
+    com1Binary     = 1;
+    timeout      = 0;
+    Dwrite_com1("Ready to receive", 16);
+    Dcom1send_prompt();
+    Dwrite_com1("Xmodem File Up", 14);
+    Dcom1send_prompt();
+    do
+    {
+        Dwrite_com11ch(XCRC);
+        Ddelay_1sec();
+        if (++timeout >= 30)
+        {
+            com1Binary = 0;
+            Ddelay_5sec();
+            return 0;
+        }
+    }
+    while (((ercode = Dread_com11ch(&cdata)) == 0) || ((cdata != SOH) &&
+            (cdata != ESC) && (cdata != CAN)));
+    if (cdata == CAN || cdata == ESC) // somehow cancelled
+    {
+        com1Binary = 0;
+        Ddelay_5sec();
+        return 2;
+    }
+    do
+    {
+        timeout = 0;
+        while (++timeout < 100 && (ercode = Dread_com11ch(&cdata) == 0)) 
+            Ddelay_1tick();
+
+        if (timeout >= 100)
+        {
+            com1Binary = 0;
+            Ddelay_5sec();
+            return 0;
+        }
+        else 
+            nth_block = cdata;
+
+        timeout = 0;
+        while (++timeout < 100 && (ercode = Dread_com11ch(&cdata) == 0)) 
+            Ddelay_1tick();
+
+        if (timeout >= 100)
+        {
+            com1Binary = 0;
+            Ddelay_5sec();
+            return 0;
+        }
+        else 
+            not_nth = cdata;
+
+        checksum = 0;
+        timeout = 0;
+        for (i = 0; i < 128; i++)
+        {
+            while (++timeout < 100 && (ercode = Dread_com11ch(&cdata)) == 0) 
+                Ddelay_1tick();
+
+            if (timeout >= 100)
+            {
+                com1Binary = 0;
+                Ddelay_5sec();
+                return 0;
+            }
+            else
+            {
+                timeout = 0;
+                mydata[i] = cdata;
+            }
+        }
+        testcrc = getcrc(mydata, 128, 0);
+        myhicrc = (testcrc >> 8) & 0xff;
+        mylocrc = testcrc & 0xff;
+
+        timeout = 0;
+        while (++timeout <= 100 && (ercode = Dread_com11ch(&cdata) == 0)) 
+            Ddelay_1tick();
+
+        if (timeout >= 100)
+        {
+            com1Binary = 0;
+            Ddelay_5sec();
+            return 0;
+        }
+        else 
+            hicrc = cdata;
+
+        timeout = 0;
+        while (++timeout <= 100 && (ercode = Dread_com11ch(&cdata) == 0)) 
+            Ddelay_1tick();
+
+        if (timeout >= 100)
+        {
+            com1Binary = 0;
+            Ddelay_5sec();
+            return 0;
+        }
+        else
+        {
+            if (cdata == mylocrc && hicrc == myhicrc)
+            {
+                if ((*data_parsing)(mydata, myblockcount, baseAddress, 
+                dest) == 1)
+                {
+                    Dwrite_com11ch(ACK);
+                    ++myblockcount;
+                }
+                else 
+                    Dwrite_com11ch(XCRC); // use  Dwrite_com11ch(NAK) for chksum;
+            }
+            else 
+                Dwrite_com11ch(XCRC); // use Dwrite_com11ch(NAK) for checksum;
+        }
+        timeout = 0;
+        while (((ercode = Dread_com11ch(&cdata)) == 0) ||
+                ((cdata != EOT) && (cdata != SOH) && (cdata != CAN)))
+        {
+            Ddelay_1tick();
+            if (++timeout > 100) // Time out after ~2-3 seconds
+            {
+                com1Binary = 0;
+                Ddelay_5sec();
+                return 0;
+            }
+        }
+        if (cdata == EOT)
+        {
+            Dwrite_com11ch(ACK);
+            com1Binary = 0;
+            *no_of_pages = myblockcount / 32;
+            Ddelay_5sec();
+            return 1;        // 1 for successful transfer
+        }
+        if (cdata == CAN)
+        {
+            com1Binary = 0;
+            Ddelay_5sec();
+            return 2;
+        }
+    } while (1);
+}
+
+/**************************************************************************
+pc comport 2 support
+***************************************************************************/
+/*** Beginheader  Dinit_com2, Dwrite_com2, Dread_com2, Dkill_com2, Dwrite_com21ch,
+                  Dread_com21ch, Dreset_com2tbuf, Dreset_com2rbuf, com2modemstat,
+                  com2modemset, com2binaryset, com2binaryreset, 
+                  Drestart_com2modem */
+
+#define     _zRBR2      0xe2f8
+#define     _zTHR2      0xe2f8
+#define     _zIER2      0xe2f9
+#define     _zIIR2      0xe2fa
+#define     _zLCR2      0xe2fb      
+#define     _zMCR2      0xe2fc
+#define     _zLSR2      0xe2fd
+#define     _zMSR2      0xe2fe
+#define     _zSCR2      0xe2ff
+
+
+int  Dinit_com2(char *rbuf, char *tbuf, int rsize, int tsize,
+     char mode, char baud, char ismodem, char isecho);
+int  Dwrite_com2(char *buf, int count);     // initiate send
+int  Dread_com2(char *buf, char terminate); // initiate receive
+int  Dwrite_com21ch(char data);
+int  Dread_com21ch(char *data);
+void Dreset_com2tbuf(void);
+void Dreset_com2rbuf(void);
+void Dcom2send_prompt(void);
+void Drestart_com2modem(void);
+void Dkill_com2(void);
+int  Dcom2modem_chk(char *buf);
+void Dcom2_circ_int(void);
+int  com2modemstat(void);
+int  com2modemset(void);
+void com2binaryset(void);
+void com2binaryreset(void);
+
+/*** Endheader */
+
+char *com2_write_buf;          // Static pointer to the transmit buffer
+char *com2_read_buf;           // Static pointer to the receive buffer
+shared int com2_rx_head;       // Head pointer for the receive buffer
+shared int com2_rx_tail;       // Tail pointer for the receive buffer
+shared int com2_tx_head;       // Head pointer for the transmit buffer
+shared int com2_tx_tail;       // Tail pointer for the transmit buffer
+int com2_rx_size;              // Static storage of receive buffer size
+int com2_tx_size;              // Static storage of transmit buffer size
+                             // if 1, in xmodem file xfer mode; else 0
+shared int com2_80rbuf;
+shared int com2_20rbuf;
+shared int com2_rbufcnt;
+shared int com2_tbufcnt;
+char com2_CRTS_ENB;
+char com2_CTS_ON;
+char com2_echo;
+char com2Binary;               // 1 if serial receive is in binary mode.
+                             // 0 (default) if serial receive is in text mode.
+char com2CmdOrData;            // 1 if modem is in command mode
+char com2UseModem;             // 1 if using modem
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+com2binaryset                  <com232.lib>
+
+SYNTAX: void com2binaryset(void);
+
+DESCRIPTION: Sets serial communication mode to binary.  All receive data
+are stuffed directly into the receive buffer.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void com2binaryset(void)
+{
+    com2Binary = 1;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+com2binaryreset                <com232.lib>
+
+SYNTAX: void com2binaryreset(void);
+
+DESCRIPTION: Resets serial communication to ASCII mode. Backspace char
+is tracked to adjust the receive buffer head index.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void com2binaryreset(void)
+{
+    com2Binary = 0;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+com2modemstat                  <com232.lib>
+
+SYNTAX: int com2modemstat(void);
+
+DESCRIPTION: Returns the status of the modem.
+
+RETURN VALUE: 1, if modem is in command mode; else 0, if modem in
+data mode (i.e. open to communication).
+END DESCRIPTION **********************************************************/
+nodebug int com2modemstat(void)
+{
+    return (com2CmdOrData);
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+com2modemset                   <com232.lib>
+
+SYNTAX: int com2modemset(void);
+
+DESCRIPTION: Returns information about modem selection.
+
+RETURN VALUE: 1, if modem option is selected; else 0.
+END DESCRIPTION **********************************************************/
+nodebug int com2modemset(void)
+{
+    return (com2UseModem);
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+Dcom2send_prompt               <com232.lib>
+
+SYNTAX: void Dcom2send_prompt(void);
+
+DESCRIPTION: Sends 'CR','LINEFEED' and '>' .  Does not 
+check for available space in the transmit buffer.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void Dcom2send_prompt(void)
+{
+    static char prompt[4] = { "\r\n>"};
+    Dwrite_com2(prompt, 3);
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+Dinit_com2                     <com232.lib>
+
+SYNTAX: int Dinit_com2(char *rbuf, char *tbuf, int rsize, int tsize, 
+            char mode, char baud, char ismodem, char isecho);
+
+DESCRIPTION: Initializes com2 (IRQ3) for serial communication. "rbuf" 
+points to a user defined (receive) character array; "tbuf" points to a 
+user defined (transmit) character array; "rsize" is the size of rbuf; 
+"tsize" is the size of tbuf; "mode" is defined as follows: bit0 = 0 for 1 
+stop bit, 1 for 2 stop bits;  bit1 = 0 for no parity, 1 for parity;
+bit2 = 0 for 7 data bits, 1 for 8 data bits; bit3 = 0 for even parity, 
+1 for odd; bit4 = 0/1 for CTS, RTS control disabled/enabled; "baud" is the 
+baud rate in multiples of 1200 (e.g. 8 for 9600 baud). "ismodem" is 0, if 
+no modem is used; 1, if modem is used. "isecho" is 0, if no char echoing; 
+1 for automatic echoing.
+
+RETURN VALUE: Returns 1 if the serial channel is found.
+              Returns -1 if the serial channel is not found.
+END DESCRIPTION **********************************************************/
+nodebug int Dinit_com2(char *rbuf, char *tbuf, int rsize, int tsize,
+            char mode, char baud, char ismodem, char isecho)
+{
+    
+
+    com2Binary = 0;
+    com2UseModem = ismodem;
+    com2_echo    = isecho;
+    com2_read_buf  = rbuf;      // initialize receive buffer
+    com2_write_buf = tbuf;
+    com2_rx_size = rsize;
+    com2_tx_size = tsize;
+    Dreset_com2tbuf();
+    Dreset_com2rbuf();
+    
+    // check serial channel by writing and reading from the scratch register
+    // of the serial channel chip 8450.
+
+    WritePCPort(_zSCR2, 0x55);
+    if(ReadPCPort(_zSCR2) != 0x55) return -1;
+    
+    if (mode & '\B00010000') // CTS  and RTS ON
+    {
+        com2_CRTS_ENB = 1;
+        com2_80rbuf = rsize * 0.80 ;   // 7-13-95 (rsize * 80) / 100;
+        com2_20rbuf = rsize * 0.20 ;   // 7-13-95 (rsize * 20) / 100;
+    }
+    else 
+        com2_CRTS_ENB = 0;
+
+    com2_CTS_ON = 1;
+        
+
+    WritePCPort(_zLCR2, 0x80);                      // DLAB=1     
+    WritePCPort(_zRBR2, (96/baud) & 0xff);          // divisor low         
+    WritePCPort(_zIER2, ((96/baud) >> 8 ) & 0xff);  // divisor high
+    WritePCPort(_zIER2, 0x00);                      // DLAB=0
+    com2Binary = '\B00000010';  // set to seven data bit           
+                                // 1 stop bit
+                                // no parity
+                                // use as dummy        
+        
+    if(mode & '\B00000001')     // 2 stop bit?
+        com2Binary = com2Binary | '\B00000100';
+    if(mode & '\B00000010')     // parity on ?
+    {    
+        com2Binary = com2Binary | '\B00001000';
+        if( mode & '\B00001000');   // odd parity    
+        else                                             
+            com2Binary = com2Binary | '\B00010000';     // even parity
+    }
+    if(mode & '\B00000100') // eight data bit    
+        com2Binary = com2Binary | '\B00000001';   
+    WritePCPort(_zLCR2, com2Binary);     // data bits, stop bits, parity,
+    WritePCPort(_zMCR2, 0x0f);           // RTS, DTR, OUT1, OUT2 enable
+    
+    WritePCPort(_zIER2, 0x01);           // receive interrupt on
+    ReadPCPort(_zRBR2);                 // read to reset the 8250     
+    ReadPCPort(_zIER2);
+    ReadPCPort(_zIIR2);
+    ReadPCPort(_zLCR2);
+    ReadPCPort(_zMCR2);
+    ReadPCPort(_zLSR2);
+
+    WritePCPort(_zIER2, 0x0d);          // enable receive, modem and error
+                                        // interrupts
+    ISET(ITC, 2);      // enable INT2 interrupt to service IRQ3  
+
+    com2Binary = 0;
+    if (com2UseModem)
+       Drestart_com2modem();
+    else 
+        com2CmdOrData = 0;
+
+    return 1;
+}
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+Dreset_com2rbuf                <com232.lib>
+
+Reset the receive buffer for the com2 serial channel.
+
+SYNTAX: void Dreset_com2rbuf(void);
+
+DESCRIPTION: Resets receive buffer for com2 serial channel.  Sets head and 
+tail indexes to zero.  Sets com2_rbufcnt to zero.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void Dreset_com2rbuf(void)
+{
+    com2_rbufcnt = com2_rx_head = com2_rx_tail = 0;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+Dreset_com2tbuf                <com232.lib>
+
+SYNTAX: void Dreset_com2tbuf(void);
+
+DESCRIPTION: Resets com2 serail transmit buffer. Sets head and 
+tail indexes to zero.  Sets com2_tbufcnt to zero.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void Dreset_com2tbuf(void)
+{
+    com2_tbufcnt = com2_tx_head = com2_tx_tail = 0;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+Dwrite_com2                    <com232.lib>
+
+SYNTAX: int Dwrite_com2(char *buf, int count);
+
+DESCRIPTION: Writes character data array of length "count" to transmit 
+buffer.  "buf" is pointer to character array.  "count" is number of char's 
+to send.  Transmit interrupt is automatically turned on, if off.
+
+RETURN VALUE: 1, if array is succesfully copied; 0, if there's no space 
+in transmit buffer.
+END DESCRIPTION **********************************************************/
+nodebug int Dwrite_com2(char *buf, int count)
+{
+    int dum_tail, dum_head;
+    int i;
+
+    if (!count) 
+        return 1;            // no need to write
+    if ((com2_tbufcnt + count) >= com2_tx_size) 
+        return 0;            // not enough space
+    dum_head = com2_tx_head;
+    i = 0;
+    do
+    {
+        *(com2_write_buf + dum_head++) = *(buf + i++);
+        if (dum_head == com2_tx_size) 
+            dum_head = 0; 
+    } while (i < count);
+    DI();                   // disable interrupt, 5-3-94
+    if (com2_tx_tail == com2_tx_head)
+    {
+        com2_tx_head = dum_head;
+        com2_tbufcnt = count;  
+        WritePCPort(_zIER2, ReadPCPort(_zIER2) | 0x02); // Transmits on
+    }
+    else
+    {
+        com2_tx_head = dum_head;
+        com2_tbufcnt = com2_tbufcnt + count;
+    }
+    EI();
+    return 1;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+Dread_com2                     <com232.lib>
+
+SYNTAX: int Dread_com2(char *buf, char terminate);
+
+DESCRIPTION: Reads serial receive buffer for stream with specified 
+terminate character.  "buf" points to user defined character array.
+"terminate" is the terminating character of the stream, which is replaced 
+by '\0'.  If modem option is selected with Dinit_com2(...), receive 
+stream is automatically parsed for modem messages.  The latter are 
+automatically processed and the serial service routines are automatically 
+called.  Note that modem messages are terminated with 'CR'.
+
+RETURN VALUE: 1, if stream is found and copied to buf; 0, if no stream 
+is found or if modem option is selected and stream matched a modem message.
+END DESCRIPTION **********************************************************/
+nodebug int Dread_com2(char *buf, char terminate)
+{
+    int i;
+    int dum_head, dum_tail;
+    
+    dum_head = com2_rx_head;
+    dum_tail = com2_rx_tail;
+    i = 0;
+    if (dum_head == dum_tail) 
+        return 0;
+    else
+    {
+        do
+        {
+            *(buf + i) = *(com2_read_buf + dum_tail++);
+            if (dum_tail == com2_rx_size) 
+                dum_tail = 0;          // Wrap around circ rec'v buffer.
+            if (*(buf + i++) == terminate)
+            {
+                *(buf + i - 1) = '\0'; // Replace terminate char w '\0'
+                // **** Service receive buffer ********
+                com2_rx_tail = dum_tail; // Reset circ rec'v buffer tail.
+                if (com2_CRTS_ENB)
+                {
+                    com2_rbufcnt = com2_rbufcnt - i;
+                    if (! com2_CTS_ON)
+                    {
+                        if (com2_rbufcnt <= com2_20rbuf)
+                        {
+                            DI();
+                            WritePCPort( _zMCR2, '\B00001111');
+                            EI();
+                            com2_CTS_ON = 1;
+                        }
+                    }
+                }
+                if (com2UseModem)
+                {
+                    if (Dcom2modem_chk(buf) == -1) 
+                        return 1;        // Not a modem msg
+                    else 
+                        return 0;        // A modem msg
+                }
+                return 1;
+            }
+        } while (dum_tail != dum_head);  // 'til inbuf is empty
+        return 0;
+    }
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+Dwrite_com21ch                 <com232.lib>
+
+SYNTAX: Dwrite_com21ch(char data);
+
+DESCRIPTION: Writes a character to the transmit buffer.  Transmit 
+interrupt is turned on, if off.
+
+RETURN VALUE: 1, if data is succesfully written to transmit buffer;
+0, if there's no space in buffer.
+END DESCRIPTION **********************************************************/
+nodebug int Dwrite_com21ch(char data)
+{
+    int dum_tail, dum_head;
+    
+    if ((com2_tbufcnt + 1) >= com2_tx_size) 
+        return 0;
+    dum_head = com2_tx_head;
+    *(com2_write_buf + dum_head++) = data;
+    if (dum_head == com2_tx_size) 
+        dum_head = 0; 
+    DI();                       // disable interrupt, 5-3-94
+    if (com2_tx_tail == com2_tx_head)
+    {
+        com2_tbufcnt = 1;
+        com2_tx_head = dum_head;
+        WritePCPort(_zIER2, ReadPCPort(_zIER2) | 0x02); // Transmits on 
+        // initiate transfer if not transferring
+    }
+    else
+    {
+        com2_tx_head = dum_head;
+        com2_tbufcnt++;
+    }
+    EI();
+    
+    return 1;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+Dread_com21ch                  <com232.lib>
+
+SYNTAX: int Dread_com21ch(char *data);
+
+
+DESCRIPTION: Reads serial receive buffer for a character.  "data" is 
+pointer to a character.
+
+RETURN VALUE: 1, if a byte is copied to *data; 0, if buffer is empty.
+END DESCRIPTION **********************************************************/
+nodebug int Dread_com21ch(char *data)
+{
+    int dum_head, dum_tail;
+
+    dum_head = com2_rx_head;
+    dum_tail = com2_rx_tail;
+    if (dum_head == dum_tail) 
+        return 0;
+    else
+    {
+        *data = *(com2_read_buf + com2_rx_tail++);
+        if (com2_rx_tail == com2_rx_size) 
+            com2_rx_tail = 0; 
+        if (com2_CRTS_ENB)
+        {
+            com2_rbufcnt--;
+            if (!com2_CTS_ON)
+            {
+                if (com2_rbufcnt <= com2_20rbuf)
+                {
+                    DI();
+                    WritePCPort( _zMCR2, '\B00001111');     
+                    EI();  
+                    com2_CTS_ON = 1;
+                }
+            }
+        }
+        return 1;
+    }
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+Dkill_com2                     <com232.lib>
+
+SYNTAX: void Dkill_com2(void);
+
+DESCRIPTION: Reset the Z180's channel 0.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void Dkill_com2(void)
+{
+    WritePCPort(_zIER2, 0x00);      // disable interrupt source
+    WritePCPort(_zMCR2, 0x0f);      // disable RTS, DTR, OUT1, OUT2  
+    IRES(ITC, 2);                   // disable ITC int2 interrupt
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+Drestart_com2modem             <com232.lib>
+
+SYNTAX: void Drestart_com2modem(void);
+
+DESCRIPTION: Sends command to set/reset the modem connected to Z180, 
+channel 0.  Hayes smart modem is desirable.  Required hardware 
+connections:
+
+                       MODEM               Z180 CHAN 0
+                        RX  ----------------- TX
+                        TX  ----------------- RX
+                        GND ----------------- GND
+                        RTS --+           +-- RTS
+                        CTS --|           +-- CTS
+                        DTR --+
+
+i.e. On modem side, RTS,CTS and DTR are tied together.  On SCC side, 
+RTS is connected to CTS.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void Drestart_com2modem(void)
+{
+    int  ercode;
+    int  ok_count;
+    char buf[20];
+
+    /* If modem is available, master should insure that modem
+       is in command mode on power up                        */
+
+    com2CmdOrData = 1;         // modem in command mode
+    ok_count = 0;
+    Dwrite_com2("+++", 3);
+    Ddelay_1sec();
+    while ((++ok_count < 4) && ((ercode = Dread_com2(buf, ENTER)) == 0 ||
+           (Dget_modem_command(buf) != 0))) 
+        Ddelay_1sec();
+
+    Dwrite_com2("AT H0", 5);   // or time out
+    Dwrite_com21ch(ENTER);
+    ok_count = 0;
+    while ((++ok_count < 4) && ((ercode = Dread_com2(buf, ENTER)) == 0 ||
+           (Dget_modem_command(buf) != 0))) 
+        Ddelay_1sec();       // Wait for OK
+
+    Dwrite_com2("AT E0 V1 M0 S0=2", 16); // or time out
+    /*****************************
+     E0 for commands not echoed
+     V1 for word responses
+     M0 for internal speaker off
+     S0=2 for automatic answering
+     ******************************/
+    Dwrite_com21ch(ENTER);
+    ok_count = 0;
+    while ((++ok_count < 4) && ((ercode = Dread_com2(buf, ENTER)) == 0 ||
+           (Dget_modem_command(buf) != 0))) 
+        Ddelay_1sec();       // Wait for OK
+    
+    Dwrite_com2("AT &D0 &R1", 10);// or time out
+    /********************************************
+     &D0 for ignore the Data Terminal Ready (DTR)
+     &R1 for ignore the Ready To Send (RTS)
+     ********************************************/
+    Dwrite_com21ch(ENTER);
+    ok_count = 0;
+    while ((++ok_count < 4) && ((ercode = Dread_com2(buf, ENTER)) == 0 ||
+           (Dget_modem_command(buf) != 0))) 
+        Ddelay_1sec();       // Wait for OK
+    
+    Ddelay_1sec();
+    Dreset_com2rbuf();
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+Dcom2modem_chk                 <com232.lib>
+
+SYNTAX: int Dcom2modem_chk(char *buf);
+
+DESCRIPTION: Checks 'CR' terminated stream for modem messages.  Serial 
+service routines are called as function of the modem condition (if selected).
+"buf" points to a 'CR' terminated stream that was copied from the receive 
+buffer.
+
+RETURN VALUE: -1, if no match to any modem messages; 0, if stream was 
+processed as a modem message.
+END DESCRIPTION **********************************************************/
+nodebug int Dcom2modem_chk(char *buf)
+{
+    int which_one;
+    int i;
+    int j;
+    
+    which_one = Dget_modem_command(buf);
+    switch (which_one)
+    {
+        case - 1: 
+            if (!com2CmdOrData) 
+                return - 1;
+            break;
+        case 2:             // set for auto answer
+                             // Dwrite_com2("ATA",3);
+                             // Dwrite_com21ch(ENTER);
+            break;           /* manually receive call if ring
+                                is detected.                  */
+        case 9:
+            Ddelay_5sec();
+            Ddelay_5sec();
+            Dreset_com2tbuf();
+            Dreset_com2rbuf();
+            com2CmdOrData = 0;
+            Dcom2send_prompt();
+            Dwrite_com2("Welcome to the Remote System", 28);
+            Dcom2send_prompt();
+            break;
+                             // connect at 2400 bps
+                             // switch to data mode
+        case 0:
+            break;           // ok from command to modem
+        case 3:
+            com2CmdOrData = 1; // no carrier detect
+            Ddelay_5sec();   // Wait and reset all buffers
+            Dreset_com2tbuf();
+            Dreset_com2rbuf();
+            break;
+        case 4:
+            break;           // command error
+        case 5:
+            Ddelay_5sec();
+            Ddelay_5sec();
+            Dreset_com2tbuf();
+            Dreset_com2rbuf();
+            com2CmdOrData = 0;
+            Dcom2send_prompt();
+            Dwrite_com2("Welcome to the Remote System", 28);
+            Dcom2send_prompt();
+            break;           // switch to data mode
+        case 6:             // no dial tone
+        case 7:             // busy
+        case 8:             // no answer
+        case 10:            // just line feed
+        default:
+            break;
+    }
+    return 0;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+Dcom2_circ_int                 <com232.lib>
+
+SYNTAX: void Dcom2_circ_int(void);
+
+DESCRIPTION: Transmit and receive interrupt service routine for Z180 
+chan 0.  For boards that use this port for programming, the vector should
+be loaded during runtime.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+#INT_VEC    INT2_VEC   Dcom2_circ_int
+#asm root 
+Dcom2_circ_int::
+        push    af                  ; save the registers
+        push    hl
+        push    bc
+        push    de
+
+        in0     a, (CBR)            ; save the CBR
+        push    af
+        call    SaveHiAddr      ; save the HiAddress
+
+        ld      bc, HIADDR
+        ld      a, 0
+        out     (c), a          ; set High Address to 0
+        ld      bc, _zIIR2
+        in      a, (c)
+        cp      0x06
+        jp      nz, not_error
+        ld      bc, _zLSR2
+        in      a, (c)
+        jp     _com2TheEnd
+not_error:
+        cp     0x4              ; if receive interrupt          
+        jp     z, _com2Recvr
+
+        cp     0x02             ; if transmit interrupt
+        jp      z, _com2Txmit
+        ld      bc, _zMSR2      ; if modem, just read and ignore
+        in      a, (c)          ; 
+        jp     _com2TheEnd      
+_com2Recvr:
+        ld      bc, _zRBR2
+        in      a, (c)          ; read in data
+
+        ld      c, a            ; c has the character
+
+        ld      a,(com2Binary)  ; binary mode ?
+        cp      1
+        jr      z, _StuffData   ; just stuff data in if binary mode.
+                                ; if text mode, 
+                                ; process the BACKSPACE character
+        ld      a,c
+        cp      BACKSPACE       ; is character a backspace
+        jr      nz, _notBackSpace
+        ld      a,(com2CmdOrData)
+        cp      1
+        jr      z, _noEcho
+        ld      a,(com2_echo)
+        cp      1
+        jr      nz,_noEcho
+        ld      a, c
+        ld      bc, _zRBR2
+        out     (c), a
+        ld      c, a
+_noEcho:
+        ld      de,(com2_rx_tail)   ; see if (rx_head) == (rx_tail)
+        ld      hl,(com2_rx_head)
+        ld      a,d
+        cp      h               ;  if(rx_head)==(rx_tail)
+        jr      nz, _notHTR     ;
+        ld      a,e
+        cp      l
+        jr      nz, _notHTR
+        jp      _com2TheEnd     ; _com2Txmit
+_notHTR:
+        ld      a,h           ; if (rx_head)==0, (rx_head)=(rx_size) - 1;
+        or      l
+        jr      nz,_HeadnotZero
+        ld      hl,(com2_rx_size)
+        dec     hl
+        ld      (com2_rx_head),hl
+        jp      _decRbufcount
+
+_HeadnotZero:
+        ld      hl,(com2_rx_head)  ; else (rx_head) = (rx_head) -1
+        dec     hl
+        ld      (com2_rx_head),hl
+_decRbufcount:
+        ld      a,(com2_CRTS_ENB)
+        cp      1
+        jp      nz, _com2TheEnd         ; _com2Txmit
+        ld      hl, (com2_rbufcnt)
+        dec     hl
+        ld      (com2_rbufcnt),hl
+        jp      _com2TheEnd             ; _com2Txmit
+
+_notBackSpace:          ; not BACKSPACE, so push data into receive queue
+        ld      a,(com2CmdOrData)
+        cp      1
+        jr      z, _StuffData
+        ld      a,(com2_echo)
+        cp      1
+        jr      nz,_StuffData
+        ld      a, c
+        ld      bc, _zRBR2
+        out     (c), a
+        ld      c, a
+
+_StuffData:
+; 1-26-96	Allow transmitter to overflow receiver beyond CTS not ready.
+; 1-26-96        ld      a,(com2_CTS_ON)
+; 1-26-96        cp      1
+; 1-26-96        jp      nz, _com2TheEnd         ; _com2Txmit
+        ld      de,(com2_read_buf)
+        ld      hl,(com2_rx_head)
+        add     hl,de
+        ld      (hl),c        ; store data
+        ld      de,(com2_rx_size)  ; do the modulo test
+        ld      hl,(com2_rx_head)
+        inc     hl
+        ld      a,d
+        cp      h             ; compare high byte
+        jp      nz,_notRollOver
+        ld      a,e
+        cp      l              ; compare low byte
+        jp      nz,_notRollOver
+        ld      hl,00
+        ld      (com2_rx_head),hl
+        jp      _checkforCTS
+ _notRollOver:
+        ld      (com2_rx_head),hl
+_checkforCTS:
+        ld      a,(com2_CRTS_ENB)
+        cp      1
+        jp      nz, _com2TheEnd     ; _com2Txmit
+        ld      hl, (com2_rbufcnt)
+        inc     hl
+        ld      (com2_rbufcnt),hl
+        ld      de, (com2_80rbuf)
+        ld      a,e
+        cp      l
+        jp      nz, _com2TheEnd     ; _com2Txmit
+        ld      a,d
+        cp      h
+        jp      nz, _com2TheEnd     ; _com2Txmit
+        ld      bc, _zMCR2
+        ld      a, 0x0d             ; disable RTS
+        out     (c), a
+        ld      a, 0                ; no receive
+        ld      (com2_CTS_ON),a     ; software has to know too.
+        jr      _com2TheEnd
+_com2Txmit:
+        ld      de,(com2_tx_head)   ; see if (tx_head) == (tx_tail)
+        ld      hl,(com2_tx_tail)
+        ld      a,d
+        cp      h        ; compare d to h
+        jr      nz, _notTxEnd
+        ld      a,e
+        cp      l
+        jr      nz, _notTxEnd
+        ld      bc, _zIER2
+        in      a, (c)
+        and     11111101b       ; transmit interrupt is off
+        out     (c), a
+        jp      _com2TheEnd
+ _notTxEnd:
+        ld      hl,(com2_tbufcnt)
+        dec     hl
+        ld      (com2_tbufcnt),hl
+        ld      de, (com2_write_buf)   ; send next character out
+        ld      hl, (com2_tx_tail)
+        add     hl,de
+        ld      a, (hl)
+        ld      bc, _zTHR2
+        out     (c), a
+        ld      de,(com2_tx_size)
+        ld      hl,(com2_tx_tail) ; do the modulo test
+        inc     hl
+        ld      a,d
+        cp      h             ; compare high byte
+        jp      nz,_notTRollOver
+        ld      a,e
+        cp      l
+        jp      nz,_notTRollOver
+        ld      hl,00
+        ld      (com2_tx_tail),hl
+        jp      _com2TheEnd
+ _notTRollOver:
+        ld      (com2_tx_tail),hl
+_com2TheEnd:
+        
+        call    RestoreHiAddr
+        pop     af
+        out0    (CBR), a
+        pop     de
+        pop     bc
+        pop     hl
+        pop     af
+        ei
+        ret
+#endasm
+
+
+
+/*** BeginHeader Dxmodem_com2down, Dxmodem_com2up */
+
+int Dxmodem_com2down(char *mydata, int n_blocks);
+int Dxmodem_com2up(unsigned long baseAddress, int *no_of_pages, int dest,
+    int (*data_parsing)() );
+
+/*** EndHeader */
+extern char com2Binary;                 //12-15-94
+
+/* START FUNCTION DESCRIPTION ********************************************
+Dxmodem_com2down               <com232.lib>
+
+SYNTAX: int Dxmodem_com2down(char *mydata, int n_blocks);
+
+DESCRIPTION: Sends blocks of data to PC or dumb terminal with xmodem 
+file transfer protocol.  "mydata" points to a character array.  n_blocks 
+is the size of the array in 128-byte blocks.
+
+RETURN VALUE: 0, if there's a timeout during transfer; 1, if xfer 
+was successful; 2, if xfer was cancelled.
+END DESCRIPTION **********************************************************/
+nodebug int Dxmodem_com2down(char *mydata, int n_blocks)
+{
+    int  i;
+    int  timeout;
+    unsigned char nth_block, not_nth;
+    unsigned int testcrc;
+    int  checksum;
+    int  ercode;
+    char cdata;
+    int  iblock;
+
+    nth_block = 1;
+    not_nth = ~nth_block;
+
+    com2Binary = 1;
+    timeout = 0;
+    Dwrite_com2("Ready to Download File", 22);
+    Dcom2send_prompt();
+    Dwrite_com2("Do an xmodem receive", 20);
+    Dcom2send_prompt();
+    while (((ercode = Dread_com21ch(&cdata)) == 0) || ((cdata != XCRC) && 
+            (cdata != ESC) && (cdata != CAN) )  )
+    {
+        Ddelay_1sec();
+        if (++timeout >= 30)
+        {
+            com2Binary = 0;
+            Ddelay_5sec();
+            return 0;
+        }
+    }
+    if (cdata == CAN || cdata == ESC)// monitor for a quick ABORT
+    {
+        com2Binary = 0;
+        Ddelay_5sec();
+        return 2;
+    }
+    else 
+        timeout = 0;
+
+    do
+    {
+        iblock = (nth_block - 1) * 128;
+        Dwrite_com21ch(SOH);
+        Dwrite_com21ch(nth_block);
+        Dwrite_com21ch(not_nth);
+        Dwrite_com2(mydata + iblock, 128);
+        testcrc = getcrc(mydata + iblock, 128, 0);
+        cdata = (testcrc >> 8) & 0xff;
+        Dwrite_com21ch(cdata);
+        cdata = (testcrc & 0xff);
+        Dwrite_com21ch(cdata);
+        timeout = 0;
+        while (((ercode = Dread_com21ch(&cdata)) == 0) ||
+                ((cdata != XCRC) && (cdata != NAK) && (cdata != ACK) && 
+                 (cdata != CAN)) )
+        {
+            Ddelay_1tick();
+            if (++timeout > 200)
+            {
+                com2Binary = 0;
+                Ddelay_5sec();
+                return 0;
+            }
+        }
+        if (cdata == CAN)
+        {
+            com2Binary = 0;
+            Ddelay_5sec();
+            return 2;
+        }
+        else if (cdata == ACK)
+        {
+            if (++nth_block <= n_blocks) 
+                not_nth = ~nth_block;
+            else
+            {
+                Dwrite_com21ch(EOT);
+                timeout = 0;
+                while (((ercode = Dread_com21ch(&cdata)) == 0) || 
+                         cdata != ACK)
+                {
+                    Ddelay_1tick();
+                    if (++timeout > 200)
+                    {
+                        com2Binary = 0;
+                        Ddelay_5sec();
+                        return 0;
+                    }
+                };
+                // Wait for final acknowledge for end of transfer
+                // time out if necessary
+                com2Binary = 0;
+                Ddelay_5sec();
+                return 1;    // 1 for succesful transfer
+            }
+        }
+    } while (1);
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+Dxmodem_com2up                 <com232.lib>
+
+
+SYNTAX: int Dxmodem_com2up(unsigned long baseAddress, int *no_of_pages, 
+            int dest, int (*data_parsing)() );
+
+DESCRIPTION: Uploads data from a PC using the xmodem file transfer protocol.
+"baseAddress" is the destination's physical ram address.  "*no_of_pages" is 
+the size of the uploaded file in number of pages.  "dest" is an additional 
+parameter to locate the uploaded file.  "*data_parsing" is the address of 
+the function to parse the uploaded file into memory.  The required parsing 
+function prototype is:
+
+int parse_function(char *mydata, int blockcount, 
+    unsigned long baseAddress, int dest);
+
+where "mydata" points to a 128 byte block of data;  "blockcount" is 
+the nth block;  "baseAddress" is the base address of the uploaded file;  and
+"dest" is an added parameter to locate the data.  The parser function should 
+return 1 for successful copy or else 0.
+
+RETURN VALUE: 0, if there's a timeout during transfer; 1, if transfer 
+was successful; 2, if transfer was cancelled.
+END DESCRIPTION **********************************************************/
+nodebug int Dxmodem_com2up(unsigned long baseAddress, int *no_of_pages, 
+            int dest, int (*data_parsing)() )
+{
+    int  i;
+    unsigned char nth_block, not_nth;
+    unsigned int testcrc;
+    unsigned int myblockcount;
+    int  checksum;
+    int  ercode;
+    int  timeout;
+    char cdata;
+    char locrc, hicrc, mylocrc, myhicrc;
+    static char mydata[130];
+
+    myblockcount = 1;
+    com2Binary     = 1;
+    timeout      = 0;
+    Dwrite_com2("Ready to receive", 16);
+    Dcom2send_prompt();
+    Dwrite_com2("Xmodem File Up", 14);
+    Dcom2send_prompt();
+    do
+    {
+        Dwrite_com21ch(XCRC);
+        Ddelay_1sec();
+        if (++timeout >= 30)
+        {
+            com2Binary = 0;
+            Ddelay_5sec();
+            return 0;
+        }
+    }
+    while (((ercode = Dread_com21ch(&cdata)) == 0) || ((cdata != SOH) &&
+            (cdata != ESC) && (cdata != CAN)));
+    if (cdata == CAN || cdata == ESC) // somehow cancelled
+    {
+        com2Binary = 0;
+        Ddelay_5sec();
+        return 2;
+    }
+    do
+    {
+        timeout = 0;
+        while (++timeout < 100 && (ercode = Dread_com21ch(&cdata) == 0)) 
+            Ddelay_1tick();
+
+        if (timeout >= 100)
+        {
+            com2Binary = 0;
+            Ddelay_5sec();
+            return 0;
+        }
+        else 
+            nth_block = cdata;
+
+        timeout = 0;
+        while (++timeout < 100 && (ercode = Dread_com21ch(&cdata) == 0)) 
+            Ddelay_1tick();
+
+        if (timeout >= 100)
+        {
+            com2Binary = 0;
+            Ddelay_5sec();
+            return 0;
+        }
+        else 
+            not_nth = cdata;
+
+        checksum = 0;
+        timeout = 0;
+        for (i = 0; i < 128; i++)
+        {
+            while (++timeout < 100 && (ercode = Dread_com21ch(&cdata)) == 0) 
+                Ddelay_1tick();
+
+            if (timeout >= 100)
+            {
+                com2Binary = 0;
+                Ddelay_5sec();
+                return 0;
+            }
+            else
+            {
+                timeout = 0;
+                mydata[i] = cdata;
+            }
+        }
+        testcrc = getcrc(mydata, 128, 0);
+        myhicrc = (testcrc >> 8) & 0xff;
+        mylocrc = testcrc & 0xff;
+
+        timeout = 0;
+        while (++timeout <= 100 && (ercode = Dread_com21ch(&cdata) == 0)) 
+            Ddelay_1tick();
+
+        if (timeout >= 100)
+        {
+            com2Binary = 0;
+            Ddelay_5sec();
+            return 0;
+        }
+        else 
+            hicrc = cdata;
+
+        timeout = 0;
+        while (++timeout <= 100 && (ercode = Dread_com21ch(&cdata) == 0)) 
+            Ddelay_1tick();
+
+        if (timeout >= 100)
+        {
+            com2Binary = 0;
+            Ddelay_5sec();
+            return 0;
+        }
+        else
+        {
+            if (cdata == mylocrc && hicrc == myhicrc)
+            {
+                if ((*data_parsing)(mydata, myblockcount, baseAddress, 
+                dest) == 1)
+                {
+                    Dwrite_com21ch(ACK);
+                    ++myblockcount;
+                }
+                else 
+                    Dwrite_com21ch(XCRC); // use  Dwrite_com21ch(NAK) for chksum;
+            }
+            else 
+                Dwrite_com21ch(XCRC); // use Dwrite_com21ch(NAK) for checksum;
+        }
+        timeout = 0;
+        while (((ercode = Dread_com21ch(&cdata)) == 0) ||
+                ((cdata != EOT) && (cdata != SOH) && (cdata != CAN)))
+        {
+            Ddelay_1tick();
+            if (++timeout > 100) // Time out after ~2-3 seconds
+            {
+                com2Binary = 0;
+                Ddelay_5sec();
+                return 0;
+            }
+        }
+        if (cdata == EOT)
+        {
+            Dwrite_com21ch(ACK);
+            com2Binary = 0;
+            *no_of_pages = myblockcount / 32;
+            Ddelay_5sec();
+            return 1;        // 1 for successful transfer
+        }
+        if (cdata == CAN)
+        {
+            com2Binary = 0;
+            Ddelay_5sec();
+            return 2;
+        }
+    } while (1);
+}
+
+

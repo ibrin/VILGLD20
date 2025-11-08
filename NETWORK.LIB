@@ -1,0 +1,606 @@
+// 1-25-96  Added SKERNEL marker to disable suspend() if using SRTK.   
+// 5-03-95  Rearranged block location of z1_op_int.
+// 2-20-95  Added support for the MicroGenius
+// 10-26-94 Added support for the Little Genius
+// 7-25-94  Added support for the Z104 and Z104ISA boards.
+
+/* START LIBRARY DESCRIPTION *********************************************
+NETWORK.LIB
+    Copyright (c) 1994, Z-World.
+
+DESCRIPTION: Utilities for master to slave half duplex RS485 communication,
+using the Opto22 binary 9th bit protocol.  Runs on the Little Giant, 
+Tiny Giant, Little PLC and the Rugged Giant (formerly the CPLC). Requires 
+one master and can have as many as 255 slaves.
+
+SUPPORT LIB'S: modem232.lib, rtk.lib
+END DESCRIPTION **********************************************************/
+
+/*** Beginheader op_init_z1,op_send_z1,op_rec_z1
+     misticware, sendOp22, replyOpto22, check_opto_command */
+
+int  op_init_z1(char baud, char *rbuf, char my_address);
+int  op_send_z1(char *buf, char *count); // Initiate send
+int  op_rec_z1(void);                    // initiate receive
+int  misticware(char *tbuf, char count); // Prepare string to send
+int  sendOp22(unsigned char dest, char *message, unsigned char len, int ndelay);
+int  replyOpto22(char *reply, unsigned char count, int delay);
+int  check_opto_command(void);
+void adelay_50ms(void);
+void z1_op_int(void);
+/*** Endheader    */
+
+char *z1_send_count;
+char *z1_send_buf;
+char *z1_rec_buf;
+char *z1_rbuf_base;
+char op_tcount;
+char rbuf_avail;
+char z1_listen_count;
+char _rx_len;
+char _len_rdy;
+char receive_ready;
+char aclock;
+char _myaddress;         // If 0, then sbc is a master, 1-255 are slaves
+
+/* START FUNCTION DESCRIPTION ********************************************
+check_opto_command           <NETWORK.LIB>
+
+SYNTAX: int check_opto_command(void);
+
+DESCRIPTION: Slave checks receive buffer for a completed message from master.
+
+RETURN VALUE: 1, if message is available;  0, if nothing is available; 
+-2, if a message is available but has crc error.
+END DESCRIPTION **********************************************************/
+nodebug int check_opto_command(void)
+{
+    unsigned int testcrc;
+    
+    if (rbuf_there() == 1)
+    {
+        testcrc = getcrc(z1_rbuf_base, z1_rbuf_base[1], 0);
+        if ((((testcrc >> 8) & 0xff) == z1_rbuf_base[z1_rbuf_base[1]]) &&
+             ((testcrc & 0xff) == z1_rbuf_base[z1_rbuf_base[1] +1])) 
+            return 1;
+        else
+        {
+            return - 2;
+        }
+    }
+    return 0;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+replyOpto22                  <NETWORK.LIB>
+
+SYNTAX: int replyOpto22(char *reply, unsigned char count, int ndelay);
+
+DESCRIPTION: Slave replies to master. "reply" points to a byte array. 
+"count" is the length of the array (max is 252).  "ndelay" is the number 
+of 50ms delays that the slave will wait before sending a reply to the 
+master.  Messages are not limited to ASCII stream.  The actual reply 
+consists of the 'count+2', "reply", 'high crc', 'low crc'.
+Delays are implemented with suspend(2) if the RTK is used. Otherwise,
+a software delay is used.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug int replyOpto22(char *reply, unsigned char count, int ndelay)
+{
+    int  i;
+    char my_reply[255];
+
+    for (i = 0; i < ndelay; i++) 
+        adelay_50ms();
+    
+    if (count > 252) 
+        count = 252;         // max out
+    
+    my_reply[0] = count + 2;
+    for (i = 0; i < count; i++) 
+        *(my_reply + 1 + i) = *(reply + i);
+    
+    i = getcrc(my_reply, my_reply[0] -1, 0);
+    my_reply[my_reply[0] -1] = (i >> 8) & 0xff;
+    my_reply[my_reply[0]] = i & 0xff;
+    misticware(my_reply, my_reply[0] +1);
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+sendOp22                     <NETWORK.LIB>
+
+SYNTAX: int sendOp22(unsigned char dest, char *message, 
+            unsigned char len, int delay);
+
+DESCRIPTION: Master sends message to slave.  "dest" is the slave number 
+(1-255).  "message" points to a byte array, whose length is "len" bytes
+(max is 251).  "delay" is the number of 50 ms delays that master will
+wait for a reply.  "messages" are not limited to ASCII stream.  The 
+actual message sent is 'dest', 'len+2', "message", 'high CRC', 'Low CRC'.
+Delays are implemented with suspend(2) if the RTK is used. Otherwise a
+software delay loop is used.
+
+RETURN VALUE: 1, if message is available; -1, if it times out waiting for 
+a reply; -2, if a message is available but has a crc error.
+END DESCRIPTION **********************************************************/
+nodebug int sendOp22(unsigned char dest, char *message, unsigned char len, 
+    int ndelay)
+{
+    int  i, j, k;
+    char buf[256];           // Buffer to be sent out
+    unsigned int testcrc;
+    int  stat;
+    int  count;
+
+    stat = -1;
+    if (len > 251) 
+        len = 251;           // Max out at 251
+    buf[0] = dest;
+    buf[1] = len + 2;
+                             // Copy message to buffer server
+    for (i = 0; i < len; i++) 
+        buf[i + 2] = *(message + i);
+    testcrc = getcrc(buf, buf[1], 0);
+    *(buf + buf[1]) = (testcrc >> 8) & 0xff; // Tail in crc hi
+    *(buf + buf[1] +1) = testcrc & 0xff;     // Tail in crc lo
+    for (i = 0; i < 1; i++)  // Just one try to send message
+    {
+        misticware(buf, buf[1] +2);
+        k = 0;
+        do
+        {
+            if (rbuf_there())
+            {
+                testcrc = getcrc(z1_rbuf_base, z1_rbuf_base[0] -1, 0);
+                if ((((testcrc >> 8) & 0xff) == 
+                z1_rbuf_base[z1_rbuf_base[0] -1]) &&
+                ((testcrc & 0xff) == z1_rbuf_base[z1_rbuf_base[0]]))
+                {
+                    return 1;
+                }
+                else
+                {
+                    return - 2;
+                }
+            }
+            adelay_50ms();
+        } while (++k < ndelay);
+    }
+    return - 1;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+adelay_50ms                  <NETWORK.LIB>
+
+SYNTAX: void adelay_50ms(void);
+
+DESCRIPTION: Two tick delay, if RTK is used; else approximate 50ms 
+software delay loop. 
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void adelay_50ms(void)
+{
+#ifdef RUNKERNEL
+#ifndef SKERNEL
+    suspend(2);
+#else
+    auto int i;              // Use "auto" so multiple drivers can call it
+
+    i = sysclock();
+    switch (i)
+    {
+        case 0x1400:
+                for(i = 0; i < 1200; i++);
+                return;
+        case 0x1e00:
+                for(i = 0; i < 1800; i++);
+                return;
+        case 0x3c00:
+                for(i = 0; i < 3600; i++);
+                return;
+        default:
+                for(i = 0; i < 2400; i++);
+                    return;
+    }
+#endif
+#endif
+#ifndef RUNKERNEL
+    auto int i;              // Use "auto" so multiple drivers can call it
+
+    i = sysclock();
+    switch (i)
+    {
+        case 0x1400:
+                for(i = 0; i < 1200; i++);
+                return;
+        case 0x1e00:
+                for(i = 0; i < 1800; i++);
+                return;
+        case 0x3c00:
+                for(i = 0; i < 3600; i++);
+                return;
+        default:
+                for(i = 0; i < 2400; i++);
+                    return;
+    }
+#endif
+
+/*  make software delay loop proportional to sysclock, 8-24-94
+#ifdef RUNKERNEL
+    suspend(2);
+#else
+    for (i = 0; i < 2400; i++)
+        ;                    // approximate
+#endif
+*/
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+op_init_z1                   <NETWORK.LIB>
+
+SYNTAX: int op_init_z1(char baud, char *rbuf, unsigned char myaddress);
+
+DESCRIPTION: Initializes Z180 port 1 for RS485 9th bit half duplex 
+communication.  "myaddress" is the address of the Z180, port 1.  For master,
+it is 0; for slaves, it's between 1 and 255.  "baud" is the baud rate in 
+units of 1200.  "rbuf" is a user defined receive buffer whose size should
+be 3 + the size of the longest message (max = 255 bytes).  Data format 
+defaults to 8 bits, no parity, 1 stop bit.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug int op_init_z1(char baud, char *rbuf, unsigned char myaddress)
+{
+    char mode = 0x04;
+    
+    op_kill_z1();             // 3-22-95, kill z1 port before init
+    outport(STAT1, 0);       // Reset port
+    outport(CNTLA1, (mode & 7) | 0x80 | 0x20); // Set mpe, and tx enable
+    aclock = z180baud(sysclock(), baud);
+    
+    // Set baud rate , 0x40 set mp mode
+    // No need to init to zero, as *z1_send_count=0;
+    outport(CNTLB1, aclock | ((mode << 1) & 0x10) | 0x40);
+    
+    z1_listen_count = 0;
+    z1_rbuf_base = rbuf;
+    receive_ready = 0;
+    _rx_len = 0;
+    _len_rdy = 0;
+    op_rec_z1();             // Reestablish the receive buffer
+    op_rec_enb_z1();
+    _myaddress = myaddress;
+    return;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+rbuf_there                   <NETWORK.LIB>
+
+SYNTAX: int rbuf_there(void);
+
+DESCRIPTION: Checks for completed message or reply from the RS485 master 
+slave network.
+
+RETURN VALUE: 1, if a completed RS485 transmission is received; else 0.
+END DESCRIPTION **********************************************************/
+#asm nodebug
+rbuf_there::
+   ld a,(rbuf_avail);
+   cp 0x01          ;  compare with 1
+   jr z,got_a_one
+   ld hl,0
+   ret
+got_a_one:          ; if response is available, reset receive buffer
+   call op_rec_z1
+   ld hl,1
+   ret
+#endasm
+
+/* START FUNCTION DESCRIPTION ********************************************
+op_send_z1                   <NETWORK.LIB>
+
+SYNTAX: int op_send_z1( char *buf, char *count);
+
+DESCRIPTION: Initiates transmission of an RS485 message or reply. "buf" 
+points to the data array to be transferred. "count" points to the number 
+of bytes to be sent.  Sets up the transmission port and starts the
+transfer.  Data format/protocol has already been taken care of when this
+function is called.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+#asm
+op_send_z1::
+         ld hl,0002       ; locate first 2 byte argument
+         add hl,sp
+         ld e,(hl)        ; low byte
+         inc hl
+         ld d,(hl)        ; high byte
+         ld (z1_send_buf),de
+         inc hl
+         ld e,(hl)        ; low byte
+         inc hl
+         ld d,(hl)        ; high byte
+         ld (z1_send_count),de
+         ld a,(de)
+         ld (z1_listen_count),a
+         call on_485      ; turn on the 485 port
+check_master_slave:
+         ld a,(_myaddress)
+         xor 0
+         jp nz,not_master_init
+         in0 a,(CNTLA1)
+         or 0x80          ;  set mpe to 1 to enable 9th bit transmission
+         out0 (CNTLA1),a
+         ld a,(aclock)
+         ld b,a
+         in0 a,(CNTLB1)
+         or b
+         or 0x80       ; set the mpbt bit for initial 9th transmission
+         out0 (CNTLB1),a
+not_master_init:
+         in0 a,(STAT1)   ; enable tx interrupt
+         or 0x01
+         out0 (STAT1),a
+         ret
+#endasm
+
+/* START FUNCTION DESCRIPTION ********************************************
+op_rec_z1                    <NETWORK.LIB>
+
+SYNTAX: int op_rec_z1(void);
+
+DESCRIPTION: Resets and prepares the receive buffer and related variables 
+for reception of a new stream of data.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+#asm nodebug
+op_rec_z1::
+   ld a,0
+   ld (rbuf_avail),a       ; wait for message
+   ld (receive_ready),a
+   ld hl,(z1_rbuf_base)    ; reset buffer
+   ld (z1_rec_buf),hl
+   ret
+#endasm
+
+/* START FUNCTION DESCRIPTION ********************************************
+op_rec_enb_z1                <NETWORK.LIB>
+
+SYNTAX: int op_rec_enb_z1(void);
+
+DESCRIPTION: Enables the receiver for interrupted 9th bit tranmission
+Resets and prepares the Z180 port 1 for reception of new data stream.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+#asm nodebug
+op_rec_enb_z1::
+   in0 a,(CNTLA1)
+   or 0x40         ; enable receiver
+   out0 (CNTLA1),a
+   in0 a,(STAT1)
+   or 0x08         ; enable receiver interrupt
+   out0 (STAT1),a
+   ret
+#endasm
+
+/* START FUNCTION DESCRIPTION ********************************************
+misticware                   <NETWORK.LIB>
+
+SYNTAX: int misticware(char *tbuf, char count);
+
+DESCRIPTION: Gateway for communication between master and slave using 
+Opto22 protocol on the RS485 network.  Prepares the receive buffer and 
+starts the transmission. "tbuf" is pointer to the string to be sent and 
+"count" is the number of characters to send.  Messages need not be in asci.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug int misticware(char *tbuf, char count)
+{
+    op_tcount = count;       // count to send
+    op_rec_z1();             // reestablish the receive buffer
+    op_send_z1(tbuf, &op_tcount); // initiate transmission
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+z1_op_int                    <NETWORK.LIB>
+
+SYNTAX: void z1_op_int(void);
+
+DESCRIPTION: Interrupt service routine for Z180 port 1, half-duplex 
+receive and transmit.  Master and slaves handle incoming strings 
+differently: (1) Master sends slave address using the 9th bit mode.  After
+master receives its own 9th bit mode message, it switches to 8 bit data 
+mode. (2) Slave listens for a 9th bit mode.  When addressed, it switches
+to the 8 bit (data) mode to receive the rest of the transmission.  Slave
+responds in regular 8 bit data mode.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+#INT_VEC SER1_VEC z1_op_int  // set interrupt vector
+#asm fast nodebug 
+z1_op_int::
+                push af
+                ex	af,af'
+                push	af
+                push bc
+                push hl
+                in0 a,(STAT1)
+                bit 7,a
+                jp z,_transmit
+                ld a,(_myaddress)
+                xor 0
+                jp nz, slave_receive
+ms_receive:
+                in0 c,(RDR1)     ; c has the character read
+
+                in0 a,(CNTLA1)
+                bit 3,a          ; did it receive a 9th bit
+                jp z, _not_9bit  ; not 9th bit, we are in data mode
+                                 ; quit 9 bit mode and go to data mode
+                in0 a,(CNTLA1)
+                and 0x7f
+                out0 (CNTLA1),a  ; set mpe to 0
+                ld a,(aclock)
+                ld b,a
+                in0 a,(CNTLB1)
+                or b             ;
+                and 0x7f         ; set mpt to 0
+                out0 (CNTLB1),a
+_not_9bit:
+                in0 a,(CNTLA1)
+                and 11110111b       ; set bit 3 to 0
+                out0 (CNTLA1),a     ; reset error flag
+
+                ld a,(receive_ready)
+                xor 0x01
+                jp nz, _not_rdy     ; if not set, then still listening
+                ld hl,(z1_rec_buf)
+                ld (hl), c          ; put data in receive buffer
+                inc hl
+                ld (z1_rec_buf),hl   ; increment pointer location
+
+                ld a,(_len_rdy)
+                xor 0x01
+                jr nz, _not_len        ; this is not the length byte
+                ld a,0
+                ld (_len_rdy),a
+                ld a,c                ; get character read
+                ld (_rx_len),a        ; store number of bytes to follow
+                jp _transmit
+_not_len:
+                ld a,(_rx_len)       ; count down on none length character
+                dec a
+                ld (_rx_len),a       ; store back
+                jp nz,_transmit
+                ld a,01
+                ld (rbuf_avail),a    ; flag reception complete
+                jp _transmit
+_not_rdy:
+                ld a,(z1_listen_count)
+                dec a
+                ld (z1_listen_count),a
+                jp nz,_transmit
+                ld a,01
+                ld (receive_ready),a
+                ld (_len_rdy),a
+                call off_485        ; turn off 485 port
+                jp _transmit
+slave_receive:
+                in0 c,(RDR1)        ; c has the character read
+                ld a,(z1_listen_count)
+                xor 0               ; is it zero?
+                jp z, _get_command
+                ld a,(z1_listen_count)
+                dec a
+                ld (z1_listen_count),a
+                jp nz,_do_reset
+                in0 a,(CNTLA1)
+                or 0x80
+                out0 (CNTLA1),a
+                call off_485         ; turn off 485 driver
+                jp _do_reset
+_get_command:
+                in0 a,(CNTLA1)
+                bit 3,a          ; did it receive a 9th bit?
+                jp z, _not_9bit_slv   ; not 9th bit, we're in data mode
+                                      ; quit 9 bit mode, go to data mode
+                ld a,(_myaddress)
+                xor c             ; check for address
+                jp nz, _do_reset  ; not out address, jump away
+                in0 a,(CNTLA1)
+                and 0x7f
+                out0 (CNTLA1),a
+                ld hl,(z1_rec_buf)
+                ld (hl),c
+                inc hl
+                ld (z1_rec_buf),hl
+                ld a,1
+                ld (_len_rdy),a
+                jp _do_reset
+_not_9bit_slv:
+                ld hl,(z1_rec_buf)
+                ld (hl),c
+                inc hl
+                ld (z1_rec_buf),hl
+                ld a,(_len_rdy)
+                xor a,1
+                jp nz, _not_len_slv
+                ld a,0
+                ld (_len_rdy),a
+                ld a,c
+                ld (_rx_len),a
+                jp _do_reset
+_not_len_slv:
+                ld a,(_rx_len)
+                dec a
+                jp nz, _rx_nz
+                ld a,1
+                ld (rbuf_avail),a
+                jp _do_reset
+_rx_nz:
+                ld (_rx_len),a
+_do_reset:
+                in0 a,(CNTLA1)
+                res 3,a
+                out0 (CNTLA1),a    ; reset error flag
+_transmit:
+                 in0 a,(STAT1)
+                 and 0x3           ; and with 0x03
+                 xor 0x03
+                 jp nz, _the_end   ; not transmit interrupt, go to end
+
+                 ld hl,(z1_send_count)  ;
+                 ld a,(hl)
+                 xor 0      ;
+                 jp nz,_send_some_more
+                 in0 a,(STAT1)
+                 and 0xfe
+                 out0 (STAT1),a
+                 jp _the_end
+ _send_some_more:
+                 dec (hl)      ; decrement the count to send
+                 ld hl,(z1_send_buf)
+                 ld a,(hl)
+                 out0 (TDR1),a
+                 inc hl
+                 ld (z1_send_buf),hl
+_the_end:
+                 pop hl
+                 pop bc
+                 pop af
+                 ex	af,af'
+                 pop	af
+                 ei
+                 ret
+#endasm
+
+/*** BeginHeader op_kill_z1 */
+
+void op_kill_z1(void);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+op_kill_z1                   <NETWORK.LIB>
+
+SYNTAX: void op_kill_z1(void);
+
+DESCRIPTION: Kills the Z180 port 1 and turns off the RS485 driver.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void op_kill_z1(void)
+{
+    off_485();
+    outport(CNTLA1, 0);
+    outport(CNTLB1, 0);      // reset and kill serial port
+    outport(STAT1, 0);
+}
+
+

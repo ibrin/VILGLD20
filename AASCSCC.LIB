@@ -1,0 +1,886 @@
+/*
+AASCSCC.LIB
+
+	AASC driver for the Zilog 85C30 Serial Communication Controller
+
+	Initialization of Asynchronous communication is performed followed by aasc
+	accessory functions. The transmitter and reciever are turned on by a call to
+	aascOpen() and left on continuously. A call to aascClose() turns the transmitter
+	and receiver off.
+			
+	Sequential processing of interrupts is performed with error checking. The receive
+	buffer is monitored and the /RTS line is pulled high when the buffer capacity
+	falls to 16 free bytes (this accommodates the 16550 uart fifo size).
+
+	Break processing is performed by a user supplied function written in C or Assembly.
+	Be sure to save and restore the current system state (registers, PIO state, etc...)
+	from within the break processing function.
+		
+	This driver works for the following Z-World controllers.
+
+		Protocol Switch
+
+			RTS/CTS handshaking is performed by polling the /CTS line, as the Protocol
+			Switch has no hardware support for the Auto Enables handshaking mode (ie:/DCDA
+			is floating and /DCDB is pulled low). 
+
+		XP17xx
+
+	Refer to Zilog's "Serial Communication Controllers Databook" and "SCC User's Manual"
+	for information related to the 85C30 SCC.
+
+	This driver has been verified for operation under most conditions with a circular buffer
+	size of 1024 bytes with a block transfer buffer size of 60 bytes. These conditions
+	include, but are not limited to, the RTK, SRTK, costatements, the virtual driver, and
+	the use of printf(). Handshaking can safely reduce the circular buffer size to 24
+	bytes and a block size of 10 bytes.
+
+	Large ascii transfers of 50 Kbytes or greater can be efficiently performed without
+	handshaking using a circular buffer size of 1024 bytes with a block size of 15 bytes,
+	if no other processes are performed. Handshaking reduces these values to 256 bytes and
+	10 bytes respectively. If other processing is being performed, these values can be
+	increased, or handshaking can be used.
+*/
+
+#use circbuf.lib
+#use aasc.lib
+
+/* parameter bit descriptions
+
+bit   description
+
+0     stop bits (0 = 1bit, 1 = 2bits)
+1     parity (1 = no)
+2     parity (0 = odd, 1 = even)
+3     data (0 = 7bits, 1 = 8bits)
+4-11  baud multiplier
+12    channel (1 = A, 0 = B)
+
+*/
+
+/*** BeginHeader */
+
+#define SCC_1STOP     0x0000
+#define SCC_2STOP     0x0001
+#define SCC_NOPARITY  0x0002
+#define SCC_OPARITY   0x0000
+#define SCC_EPARITY   0x0004
+#define SCC_7DATA     0x0000
+#define SCC_8DATA     0x0008
+#define SCC_8N1       0x000A
+#define SCC_1200      0x0010
+#define SCC_A         0x1000
+#define SCC_B         0x0000
+
+#define SCC_NO_ERR      0x0000
+#define SCC_CHAN_ERR    0x0100
+#define SCC_PARAM_ERR   0x0200
+#define SCC_TXBUF_ERR   0x0001
+#define SCC_RXBUF_ERR   0x0002
+#define SCC_PARITY_ERR  0x0010
+#define SCC_OVERRUN_ERR 0x0020
+#define SCC_FRAME_ERR   0x0040
+
+/*** EndHeader */
+
+/*** BeginHeader sccError */
+
+long sccError;
+
+/*** EndHeader */
+
+/*** BeginHeader sccInit,sccClose,sccTxSwitch,sccRxSwitch,sccGetErr,sccClrErr,_sccInt */
+
+void sccInit(long Param, char CRTS, struct _Channel *Channel, void(*)(),int reopen);
+void sccClose(struct _Channel *pChan);
+void sccTxSwitch(char, struct _Channel *);
+void sccRxSwitch(char,struct _Channel *);
+long sccGetErr(struct _Channel *);
+void sccClrErr(struct _Channel *);
+void _sccInt();
+
+// Dummy call for the linker and indirect function calls
+#asm
+dum: equ sccInit
+#endasm
+
+/*** EndHeader */
+
+// Define the SCC addresses
+
+#if(BOARD_TYPE==SMARTBLOCK) // ie: Protocol Switch
+
+#define SCC_HB 0x00
+#define SCC_H  0x0000
+#define SCC_CA SCCCA // A1
+#define SCC_DA SCCDA // A3
+#define SCC_CB SCCCB // A0
+#define SCC_DB SCCDB // A2
+#define SCC_BOARD 0
+
+#else // Arnold...
+
+#define SCC_HB 0x41
+#define SCC_H  0x4100
+#define SCC_CA 0X21 // A1
+#define SCC_DA 0X23 // A3
+#define SCC_CB 0X20 // A0
+#define SCC_DB 0X22 // A2
+#define SCC_BOARD 1
+
+#endif
+
+char sccABreakCount,sccBBreakCount,sccACRTS,sccBCRTS;
+unsigned BRFncA,BRFncB;
+struct _CircBuffer *pSCCAInBuf,*pSCCAOutBuf,*pSCCBInBuf,*pSCCBOutBuf;
+
+char wr0,wr1,wr2,wr3,wr4,wr5,wr8,wr9,wr10,wr11,wr12,wr13,wr14,wr15;
+
+/*
+   Write Registers are programmed in Asynchronous mode as follows:
+
+     0 = reset to zero
+     1 = set to one
+     u = user defined
+     m = maintain value
+     d = data
+     a = ignored in asynchronous mode (set to zero)
+     i = ignored if not acknowledging interrupts (no daisy chain, set to zero)
+        
+   Initializations
+
+     wr1   01000101    WAIT/DMA for Protocol Switch, int on parity error, enable external interrupts
+     wr2   iiiiiiii    Int. Vector
+     wr3   uu1aaaa0    Rx bits, auto enable, disable Rx
+     wr4   01aauuuu    16x Clock, Stop bits, Parity
+     wr5   uuuu0aua    /DTR (wr14), Tx bits, Send Break, /RTS
+     wr6   aaaaaaaa
+     wr7   aaaaaaaa
+     wr9   uui00i0i    Hardware reset
+     wr9   00i00i1i    No Int Ack vector
+     wr10  a00aaaaa    NRZ decoding
+     wr11  01010110    BR generator output to /TRxC for Protocol Switch
+     wr12  uuuuuuuu    Time constant lower byte
+     wr13  uuuuuuuu    Time constant high byte
+     wr14  aaaau011    Auto Echo, BR generator from PCLK (PS), BR enable
+     wr15  ua0a0a0a    Break/Abort Interrupt enable/disable
+
+   Receiver Control
+
+     wr1   0m010100    Rx Int on all characters and special condition
+     wr3   mmmaaaa1    Rx enable
+     wr9   00i01imi    MIE
+
+   Transmitter Control
+
+     wr0   00101000    Reset Tx Int Pending
+     wr1   0m0mm010    Tx Int enable
+     wr1   0m0mm001    External Int enable
+     wr5   mmmm10m0    Tx enable
+     wr9   00i01imi    MIE
+
+   Interrupt Control
+
+     wr0   00010000    Reset Ext/Status Ints
+     wr0   00101000    Reset Tx Int Pending
+     wr0   00110000    Error Reset (RR1) and data 
+     wr0   00111000    Reset highest IUS
+
+   Data
+
+     wr8   dddddddd    Tx data register
+*/
+
+char rr0,rr1,rr2,rr3,rr8,rr12,rr13,rr15;
+
+/*
+   Read Registers are interpreted in Asynchronous mode as follows:
+
+   Status and Errors
+
+     rr0   uauauuuu    Break, Tx underrun, CTS, DCD, Tx buf empty, Zero count, Rx available
+     rr1   auuuaaau    Frame error, Rx overrun, parity error, all sent
+     rr2   iiiiiiii    Int Acknowledgement status in channel B
+     rr3   00uuuuuu    Int pending for channels A and B (channel A only)
+     rr6   aaaaaaaa
+     rr7   aaaaaaaa
+     rr10  aaaaaaaa
+     rr15  uuuau0u0    IE bits, same as wr15 
+   
+   Data
+
+     rr2   iiiiiiii    Int Vector in channel A
+     rr8   dddddddd    Rx data register
+     rr12  uuuuuuuu    Time constant low byte
+     rr13  uuuuuuuu    Time constant high byte
+*/
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+sccInit                       <AASCSCC.LIB>
+
+SYNTAX:	void sccInit(long Param, char CRTS, struct _Channel *Channel, void(*brqfnc)(),int reopen);
+
+DESCRIPTION:   Initializes the scc device. The Zilog Serial Communication
+Controller is a programmable Synchronous/Asynchronous serial i/o device
+with two channels. Param is a long integer specifying the initialization
+attributes of the device, CRTS specifies handshaking support, and Channel
+is the logical channel for the device.
+
+The device needs a logical channel to operate.
+
+RETURN VALUE:       None.
+
+ERROR STATUS:
+
+	SCC_PARAM_ERR - invalid "Param"
+
+NOTES: On the Protocol Switch tie /DCDA high if handshaking is enabled.
+		 (ie: P2 pin 2 should be between +5 and +15 volts)
+			
+END DESCRIPTION **********************************************************/
+
+nodebug void
+sccInit(long Param, char CRTS, struct _Channel * Channel,void(*brqfnc)(),int reopen) {
+
+char bps;
+int timeConst,clkRate=16,xtal,i;
+unsigned channel;
+
+	segchain _aascInitDF {
+      DevFunc[DEV_SCC].DevOpen = sccInit;
+      DevFunc[DEV_SCC].DevClose = sccClose;
+      DevFunc[DEV_SCC].TxSwitch = sccTxSwitch;
+      DevFunc[DEV_SCC].RxSwitch = sccRxSwitch;
+      DevFunc[DEV_SCC].DevGetError = sccGetErr;
+      DevFunc[DEV_SCC].DevClrError = sccClrErr;
+	}
+	segchain _aascInitDF_DLP {
+	  	xmem2root( aascGetDLMChan(),&DevFunc[DEV_SCC],12);
+	}
+
+	sccError = 0L;
+
+	// xtal = clock in MHz/1200
+	if(SCC_BOARD==0) xtal=7680; // xtal = 9216000/1200 
+	else if(SCC_BOARD==1) xtal=6144; // xtal = 7372800/1200
+	
+	// Rates are scaled to 1200
+
+	bps = (char) ( Param >> 4 ); 
+	timeConst = ( xtal / ( 2 * bps * clkRate ) ) - 2;
+	if(timeConst<0) sccError=SCC_PARAM_ERR;
+
+	// For a baud less than 1200, comment the preceding three lines and use the
+	// following line after inserting the baud
+	// timeConst = ( (1200/insert baud here) * sysclock() / ( 2 * clkRate ) ) - 2;
+	
+	// Reset channel A or channel B
+		
+	if( bit(&Param,12) )
+	{
+		Channel->FreeLong1 = SCC_H+SCC_DA; // channel A addresses
+		Channel->FreeLong1 <<= 16;
+		Channel->FreeLong1 += SCC_H+SCC_CA;
+		pSCCAInBuf = Channel->InBuf;
+		pSCCAOutBuf = Channel->OutBuf;
+		sccACRTS = CRTS;
+		sccABreakCount = 0;
+		if(!reopen)BRFncA = (unsigned)brqfnc;
+		DI();
+		outport(SCC_H+SCC_CA, 0x09); 
+		outport(SCC_H+SCC_CA, 0x80);
+		EI();
+	}
+	else
+	{
+		Channel->FreeLong1 = SCC_H+SCC_DB; // channel B addresses
+		Channel->FreeLong1 <<= 16;
+		Channel->FreeLong1 += SCC_H+SCC_CB;
+		pSCCBInBuf = Channel->InBuf;
+		pSCCBOutBuf = Channel->OutBuf;
+		sccBCRTS = CRTS;
+		sccBBreakCount = 0;
+		BRFncB = (unsigned)brqfnc;	
+		DI();
+		outport(SCC_H+SCC_CB, 0x09); 
+		outport(SCC_H+SCC_CB, 0x40);
+		EI();
+	}
+
+	// Asynchronous initialization sequence: wr9, wr4, wr3, wr5, others...
+
+	// Setup register variables
+
+//	if(BOARD_TYPE==SMARTBLOCK) // ie: Protocol Switch
+		wr1 = 0x45; // No DMA (s. schematic for /DREQ1 pin), int on parity error, enable external/status interrupts
+	
+	bit(&Param,3) ? (wr3 = 0xC0) : (wr3 = 0x40); // 8 or 7 bits/char for Rx
+
+//	if(BOARD_TYPE!=SMARTBLOCK && CRTS) wr3 |= 0x20; // Auto Enable Rx (/DCD) and Tx (/CTS)
+	                      // Note: Cannot use Auto Enable mode with the Protocol Switch!
+	                      // On the PS, /DCDA disables RxA unless P2-2 is pulled high
+	                      // and the /DCDB pin is pulled low on the hardware!
+	
+	bit(&Param,0) ? (wr4 = 0x0C) : (wr4 = 0x04); // 2 or 1 Stop bits
+	bit(&Param,1) ? (wr4 |= 0x00) : // No parity bits
+	( bit(&Param,2) ? (wr4 |= 0x03) : (wr4 |= 0x01) ); // Even or odd parity
+	wr4 |= 0x40; // x16 bit sampling
+
+	bit(&Param,3) ? (wr5 = 0x60) : (wr5 = 0x20); // 8 or 7 bits/char for Tx
+
+	wr9  = 0x02; // No INTACK Vector returned
+	wr10 = 0x00; // NRZ data encoding/decoding
+
+	if(SCC_BOARD==0) {
+		wr11 = 0x56; // No external xtal, BRG output to /TRxC pin
+		wr14 = 0x03; // Enable BRG, BRG input from PCLK pin
+	}
+	else if(SCC_BOARD==1) {
+		wr11 = 0xD6; // External xtal, Rx clock from BRG, Tx clock from BRG, /TRxC is BRG output
+//		wr11 = 0x86; // External xtal, Rx clock from /RTxC, Tx clock from /RTxC, /TRxC is xtal output
+		wr14 = 0x03; // Enable BRG, BRG input from PCLK pin
+//		wr14 = 0x01; // Enable BRG, BRG input from /RTxC pin
+//		wr14 = 0x09; // Auto echo, Enable BRG, BRG input from /RTxC pin
+	}
+		
+	wr12 = (char)timeConst;      // Time constant lower byte
+	wr13 = (char)(timeConst>>8); // Time constant upper byte
+
+	wr15 = 0x80; // Enable and latch the Break/Abort Ext/Status Interrupt (s. wr1 bit 0)
+
+//	wr14 = 0x0b; // auto echo mode for testing with BRG
+//	wr15 = 0x00; // Disable the Ext/Status interrupts (s. wr1 bit 0)
+
+	// Perform initialization for channel A or channel B
+
+	if( bit(&Param,12) ) channel=SCC_H+SCC_CA;
+	else channel=SCC_H+SCC_CB;
+
+	DI(); // Protect the registers
+	outport(channel, 0x02); outport(channel, 0x00);	
+	outport(channel, 0x06); outport(channel, 0x00);	
+	outport(channel, 0x07); outport(channel, 0x00);
+	
+	outport(channel, 0x04); outport(channel, wr4);	
+	outport(channel, 0x03); outport(channel, wr3);	
+	outport(channel, 0x05); outport(channel, wr5);
+
+	outport(channel, 0x01); outport(channel, wr1);	
+	outport(channel, 0x09); outport(channel, wr9);	
+	outport(channel, 0x0a); outport(channel, wr10);	
+
+	outport(channel, 0x0b); outport(channel, wr11);	
+
+	if(SCC_BOARD==1) {
+		i=0;
+		while(i++<700) hitwd();
+	}
+	
+	outport(channel, 0x0c); outport(channel, wr12);	
+	outport(channel, 0x0d); outport(channel, wr13);	
+	outport(channel, 0x0e); outport(channel, wr14);	
+	outport(channel, 0x0f); outport(channel, wr15);
+	
+	outport(channel, 0x10); // Reset External/Status interrupts
+	outport(channel, 0x10); // Ensure that the latches are reset
+
+	wr9=0x08;
+	outport(channel, 0x09); outport(channel, wr9);	// MIE on
+
+	set(&wr1,4); // Rx Interrupt enable on all characters and conditions
+	set(&wr3,0); // Rx enable
+	set(&wr1,1); // Tx Interrupt enable
+	set(&wr5,3); // Tx enable
+	outport(channel, 0x01); outport(channel, wr1);
+	outport(channel, 0x03); outport(channel, wr3);
+	outport(channel, 0x05); outport(channel, wr5);	
+
+	if(SCC_BOARD==0) outport( ITC, 0x02 | inport( ITC ) ); // Enable Z180 interrupt /INT1
+	else outport( ITC, 0x01 | inport( ITC ) ); // Enable Z180 interrupt /INT1
+
+	EI();
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+sccClose                      <AASCSCC.LIB>
+
+SYNTAX:   void sccClose(struct _Channel *pChan)
+
+DESCRIPTION:   Closes down the SCC device. If both channels of the SCC are
+closed, be sure to turn off the /INT1 interrupt as well.
+
+RETURN VALUE:   None.
+		
+END DESCRIPTION **********************************************************/
+
+nodebug void sccClose(struct _Channel *Channel) {
+int channel;
+
+	channel = (int)(Channel->FreeLong1);
+
+	if( channel == SCC_H+SCC_CA ) {
+		pSCCAInBuf = NULL;
+		pSCCAOutBuf = NULL;
+		DI();
+		outport(SCC_H+SCC_CA, 0x09); 
+		outport(SCC_H+SCC_CA, 0x80);
+		EI();
+	}
+	else if( channel == SCC_H+SCC_CB ) {
+		pSCCBInBuf = NULL;
+		pSCCBOutBuf = NULL;
+		DI();
+		outport(SCC_H+SCC_CB, 0x09); 
+		outport(SCC_H+SCC_CB, 0x40);
+		EI();
+	}
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+sccTxSwitch                   <AASCSCC.LIB>
+
+SYNTAX:   void sccTxSwitch(char OnOff,struct _Channel *pChan);
+
+DESCRIPTION: Primes the SCC transmitter buffer to initiate transmission.
+Once enabled by a call to aascOpen(), the SCC transmitter is only turned
+off by a call to aascClose().
+
+RETURN VALUE:   None
+
+ERROR STATUS:
+
+	SCC_CHAN_ERR - invalid "*pChan"
+	SCC_TXBUF_ERR  - empty buffer
+
+END DESCRIPTION **********************************************************/
+
+nodebug void sccTxSwitch(char On, struct _Channel *Channel) {
+int channel,data;
+char txbuffer,primer;
+
+	channel = (int)Channel->FreeLong1;
+	data = (int)( (Channel->FreeLong1) >> 16);
+ 
+	DI(); // Protect the registers
+		
+	primer = inport(channel); // Read the Tx/Rx/Ext buffer status register
+
+	// Poll the /CTS pin for hardware flow control
+	if( Channel->CRTS && !BIT(&primer,5) ) {
+		EI();
+		return;
+	}
+
+	if( !BIT(&primer,2) ) {
+		EI();
+		return; // Return if the Tx buffer is full
+	}
+
+	if( !circbufGetByte( Channel->OutBuf, &primer) ) {
+		EI();
+		return;
+	}
+
+	outport(data,primer); // Prime the Tx buffer to initiate transmission
+
+	EI();
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+sccRxSwitch                   <AASCSCC.LIB>
+
+SYNTAX:   void sccRxSwitch(struct _Channel *pChan, char OnOff)
+
+DESCRIPTION: Turns the remote receiver on and off if RTS/CTS handshaking
+is employed. This is achieved by pulling /RTS high (to turn off the
+remote transmitter) and by pulling /RTS low (to turn on the remote
+transmitter.) Once enabled by a call to aascOpen(), the SCC receiver is
+turned off by a call to aascClose().
+
+RETURN VALUE:   None.
+
+NOTES: On the Protocol switch, the DCDx line must be pulled high to prevent
+the Receiver from being disabled. (s. sccInit)
+
+END DESCRIPTION **********************************************************/
+
+nodebug void sccRxSwitch(char On, struct _Channel *Channel) {
+int channel;
+
+	channel = (int)(Channel->FreeLong1);
+
+	if( On && Channel->CRTS ) { // Enable remote Tx (pull /RTS pin low))
+		DI();
+		set(&wr5,1);
+		outport(channel, 0x05); outport(channel, wr5);
+		EI();
+	}
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+sccGetErr                       <AASCSCC.LIB>
+
+SYNTAX:   long sccGetErr(struct _Channel *pChan);
+
+DESCRIPTION: Get the current error condition stored in the sccError variable.
+
+RETURN VALUE:   Can be any of the following.
+
+	SCC_NO_ERR		- no error
+	SCC_CHAN_ERR	- channel error
+	SCC_PARAM_ERR  - initialization parameter error
+
+END DESCRIPTION **********************************************************/
+
+nodebug long sccGetErr(struct _Channel *Channel) {
+	return sccError;
+} 
+
+/* START FUNCTION DESCRIPTION ********************************************
+sccClrErr                       <AASCSCC.LIB>
+
+SYNTAX:   void sccClrErr(struct _Channel *pChan);
+
+DESCRIPTION: Clear the current error condition stored in the sccError variable.
+
+RETURN VALUE:   None.
+
+END DESCRIPTION **********************************************************/
+
+void sccClrErr(struct _Channel *Channel) {
+	sccError=0L;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+_sccInt                       <AASCSCC.LIB>
+
+SYNTAX:   void _sccInt();
+
+DESCRIPTION: This is the interrupt handler of the device. Can handle
+57600 bps with a 9 MHz clock using large enough buffers. Similar performance
+is possible with small buffers when using RTS/CTS handshaking.
+
+RETURN VALUE:   None.
+
+END DESCRIPTION **********************************************************/
+
+char _sccIntChar,ipbyte;
+
+#if(BOARD_TYPE==SMARTBLOCK) // ie: Protocol Switch
+#INT_VEC INT1_VEC _sccInt // execute when a Z180 /INT1 interrupt is issued from PS
+#else
+#JUMP_VEC RST38_VEC _sccInt // execute when a Z180 /INT1 interrupt is issued from Arnold
+#endif
+
+#asm fast
+_sccInt::
+		push	ix						; ix - pointer to IP byte storage
+		push  iy
+		push  af						; a - general use, f - flags
+		push  bc						; b - high byte of SCC address, c - low byte 
+		push  de						; de - general use
+		push  hl						; hl - parameters and return values
+		
+
+		ld		b,SCC_HB				; High byte of SCC address
+		ld		ix,ipbyte			; Pointer to IP byte storage
+				
+		ld		e,0x03				; Get IP byte from RR3
+		ld		c,SCC_CA
+		out	(c),e					; Several IP bits can be set at any one time, so
+		in		e,(c)					; service the pending interrupts sequentially.
+		ld		(ix),e
+		
+		bit	5,(ix)
+		jp		Z,TxByteA
+
+RxByteA: ; Rx Int when a byte is shifted into the exit byte of the Rx FIFO
+
+		ld		a,1						; Read the Rx status register RR1.
+		out	(c),a
+		in		a,(c)
+
+		ld		d,0x30					; Reset the status register.
+		out	(c),d
+
+		ld		h,0						; Read the Rx buffer.
+		ld		c,SCC_DA
+		in		l,(c)
+
+		and	0x70						; Check for error and
+		jp		Z,RxANoErr
+		ld		hl,sccError				; update sccError.
+		or		(hl)
+		ld		(sccError),a
+		jp		RxANext					; Don't put character in circular buffer.
+
+RxANoErr:
+		push	hl
+
+		ld		hl,(pSCCAInBuf)		; Get the circular buffer pointer.
+		push	hl
+
+		ld		a,(sccACRTS)			; Check for handshaking.
+		or		a
+		jp		Z,RxABufPut
+
+		ld		de,_CircBuffer+Free+1; If the Rx buffer has less than 17 free bytes,
+		add	hl,de
+		ld		a,(hl)
+		or		a
+		jp		NZ,RxABufPut			; (upper byte > 0)
+		dec	hl
+		ld		a,(hl)
+		cp		0x10
+		jp		P,RxABufPut				; (lower byte > 17, eg: 16550 uart Tx buffer size)
+		
+		ld		a,0x05					; set /RTS high to disable the remote Tx.
+		ld		c,SCC_CA
+		out	(c),a
+		ld		a,(wr5)
+		res	1,a
+		ld		(wr5),a
+		out	(c),a
+
+RxABufPut:
+		call	circbufPutByte			; Put the Rx character into the circular buffer.
+		pop	de
+		pop	de
+
+		ld		a,l						; l contains the return value 0 (full) or 1 (success)
+		neg
+		jp		NZ,RxANext				; Continue if OK, otherwise
+		ld		hl,sccError				; update sccError.
+		ld		a,0x02
+		or		(hl)
+		ld		(sccError),a
+
+RxANext:
+		ld		a,0x38					; Reset highest IUS
+		ld		c,SCC_CA
+		out	(c),a
+		
+		in		a,(c)						; Is another character available?
+		bit	0,a
+		jp		NZ,RxByteA				
+
+TxByteA: ; Tx Int on transition to empty buffer
+		bit	4,(ix)
+		jp		Z,ExtStatusA
+		
+		ld		a,0x28					; Clear Tx Int Pending
+		ld		c,SCC_CA
+		out	(c),a
+		
+		ld		hl,_sccIntChar			; (pointer to local character)
+		push	hl
+		ld		hl,(pSCCAOutBuf)		; (pointer to Channel output buffer)
+		push	hl
+		call	circbufGetByte			; Get character from circular buffer.
+		pop	de
+		pop	de
+		
+		ld		a,l						; l contains the return value 0 (empty) or 1 (success)
+		neg
+		jp		Z,TxAEnd					; If OK, send the character.
+
+TxAChar:
+		ld		a,(_sccIntChar)		; Write character to Tx buffer
+		ld		c,SCC_DA
+		out	(c),a
+
+TxAEnd:		
+		ld		a,0x38					; Reset highest IUS
+		ld		c,SCC_CA
+		out	(c),a
+		
+ExtStatusA: ; External Interrupt on Break
+		bit	3,(ix)
+		jp		Z,ChB
+				
+		ld		a,0x10					; Open the external/status latch twice to clear
+		ld		c,SCC_CA
+		out	(c),a						; the Ext/Status Interrupt.
+		out	(c),a
+		ld		c,SCC_DA
+		in		a,(c)						; Read the Rx buffer and discard the NULL data.
+
+		ld		a,(sccABreakCount)	; If a leading edge break has already occurred,
+		cp		1							; don't execute the Break function again.
+		jp		Z,RxABreakReset
+		inc	a
+		ld		(sccABreakCount),a
+		
+		ld		a,0x38					; Reset highest IUS
+		ld		c,SCC_CA
+		out	(c),a
+		
+		ld		hl,(BRFncA)				; Call the break request function if it's defined.
+		ld		a,0
+		or		l
+		jp		NZ,RxABreakFnc
+		or		h
+		jp		Z,ChB
+
+RxABreakFnc:
+		ld		de,ExtStatARet
+		push	de
+		jp		(hl)
+RxABreakReset:
+		ld		a,0
+		ld		(sccABreakCount),a
+ExtStatARet:
+		ld		a,0x38					; Reset highest IUS
+		ld		c,SCC_CA
+		out	(c),a
+		
+ChB:		
+		bit	2,(ix)
+		jp		Z,TxByteB
+
+RxByteB:
+
+		ld		a,1						; Read the Rx status register RR1.
+		ld		c,SCC_CB
+		out	(c),a
+		in		a,(c)
+
+		ld		d,0x30					; Reset the status register.
+		out	(c),d
+
+		ld		h,0						; Read the Rx buffer.
+		ld		c,SCC_DB
+		in		l,(c)
+
+		and	0x70						; Check for error and
+		jp		Z,RxBNoErr
+		ld		hl,sccError				; update sccError.
+		or		(hl)
+		ld		(sccError),a
+		jp		RxBNext					; Don't put character in circular buffer.
+
+RxBNoErr:
+		push	hl
+
+		ld		hl,(pSCCBInBuf)		; Get the circular buffer pointer.
+		push	hl
+
+		ld		a,(sccBCRTS)			; Check for handshaking.
+		or		a
+		jp		Z,RxBBufPut
+
+		ld		de,_CircBuffer+Free+1; If the Rx buffer has less than 17 free bytes,
+		add	hl,de
+		ld		a,(hl)
+		or		a
+		jp		NZ,RxBBufPut			; (upper byte > 0)
+		dec	hl
+		ld		a,(hl)
+		cp		0x10
+		jp		P,RxBBufPut				; (lower byte > 17, eg: 16550 uart Tx buffer size)
+		
+		ld		a,0x05					; set /RTS high to disable the remote Tx.
+		ld		c,SCC_CB
+		out	(c),a
+		ld		a,(wr5)
+		res	1,a
+		ld		(wr5),a
+		out	(c),a
+
+RxBBufPut:
+		call	circbufPutByte			; Put the Rx character into the circular buffer.
+		pop	de
+		pop	de
+
+		ld		a,l						; l contains the return value 0 (full) or 1 (success)
+		neg
+		jp		NZ,RxBNext				; Continue if OK, otherwise
+		ld		hl,sccError				; update sccError.
+		ld		a,0x02
+		or		(hl)
+		ld		(sccError),a
+
+RxBNext:
+		ld		a,0x38
+		ld		c,SCC_CB
+		out	(c),a
+		
+		in		a,(c)				; Is another character available?
+		bit	0,a
+		jp		NZ,RxByteB
+
+TxByteB: ; Tx Int on transition to empty buffer
+		bit	1,(ix)
+		jp		Z,ExtStatusB
+
+		ld		a,0x28					; Clear Tx Int Pending
+		ld		c,SCC_CB
+		out	(c),a
+		
+		ld		hl,_sccIntChar			; (pointer to local character)
+		push	hl
+		ld		hl,(pSCCBOutBuf)		; (pointer to Channel output buffer)
+		push	hl
+		call	circbufGetByte			; Get character from circular buffer.
+		pop	de
+		pop	de
+		
+		ld		a,l						; l contains the return value 0 (empty) or 1 (success)
+		neg
+		jp		Z,TxBEnd					; If OK, send the character.
+
+TxBChar:
+		ld		a,(_sccIntChar)		; Write character to Tx buffer
+		ld		c,SCC_DB
+		out	(c),a
+
+TxBEnd:
+		ld		a,0x38
+		ld		c,SCC_CB
+		out	(c),a
+
+ExtStatusB:
+		bit	0,(ix)
+		jp		Z,ExtStatBRet
+				
+		ld		a,0x10					; Open the external/status latch twice to clear
+		ld		c,SCC_CB
+		out	(c),a						; the Ext/Status Interrupt.
+		out	(c),a
+		ld		c,SCC_DB
+		in		a,(c)						; Read the Rx buffer and discard the NULL data.
+
+		ld		a,(sccBBreakCount)	; If a leading edge break has already occurred,
+		cp		1							; don't execute the Break function again.
+		jp		Z,RxBBreakReset
+		inc	a
+		ld		(sccBBreakCount),a
+		
+		ld		hl,(BRFncB)				; Call the break request function if it's defined, or 
+		ld		a,0
+		or		l
+		jp		NZ,RxBBreakFnc
+		or		h
+		jp		Z,EndISR 
+
+RxBBreakFnc:
+		ld		de,ExtStatBRet
+		push	de
+		jp		(hl)
+RxBBreakReset:
+		ld		a,0
+		ld		(sccBBreakCount),a
+ExtStatBRet:
+
+EndISR:
+		pop   hl
+		pop   de
+		pop   bc
+		pop   af
+		pop   iy
+		pop   ix
+
+		ei
+		ret
+#endasm

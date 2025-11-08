@@ -1,0 +1,1244 @@
+/*** BeginHeader */
+
+#ifndef __LP31XX_LIB
+
+#define __LP31XX_LIB
+
+#define EIO_BRD_NUM_ADC 5
+
+#use eziocmmn.lib
+
+#ifndef EIO_EE_ACAL_B		
+#define EIO_EE_ACAL_B 0x2	//	start EIO EE usage at 0x2 unless
+									//	otherwise defined
+#endif
+
+#ifndef EIO_EE_ACAL_X
+#define EIO_EE_ACAL_X sizeof(eioBrdAICalib)
+									//	we need this much space in EE to store
+									//	calibration constants
+#endif
+
+#ifndef EIO_NODEV
+#define EIO_NODEV 2
+#endif
+
+#define RTC_DATA 0x4000
+#define RTC_ADDR 0x4020
+#define DIG_IO 0x4020
+#define DIG_IN 0x4040
+#define DIG_OUT 0x4060
+#define WDOG 0x4060
+#define BIT_LATCH_A 0x4080
+#define BIT_LATCH_B 0x40A0
+#define BIT_LED 0x40a0
+
+#define ADC_CLK0 0x4040
+#define ADC_CLK1 0x4041
+#define ADC_EOC_BIT 6
+#define ADC_DOUT_BIT 5
+#define ADC_CS 0x40A3
+#define ADC_ENB 0x40A5
+
+#define WDOG_OUT_BIT 7
+
+#define RTC_ALE 0x4020
+#define RTC_CS  0x4000
+
+#define ADC_DAT 0x40a6
+#define ADC_CLK 0x40a7
+
+/*** EndHeader */
+
+/*** BeginHeader lp31ADCClkOI8 */
+
+int lp31ADCClkOI8(char outByte);
+
+/*** EndHeader */
+
+#asm
+lp31ADCClkOI8::
+	ld		d,8
+	ld		a,l
+	ld		b,0x40
+shiftOut:
+	bit	7,a
+	jr		z,shift0
+	;	shift1
+	ld		c,0x41
+	in		e,(c)
+	jr		shiftMerge
+shift0:
+	ld		c,0x40
+	in		e,(c)
+shiftMerge:
+	add	a,a		;	left shift
+	bit	ADC_DOUT_BIT,e
+	jr		nz,shiftIn1
+	; shiftIn0
+	res	0,a
+	jr		afterShiftIn
+shiftIn1:
+	set	0,a
+afterShiftIn:
+	dec	d
+	jr		nz,shiftOut
+
+	ld		l,a
+	ld		h,0
+	ret
+#endasm
+
+/*** BeginHeader lp31ADCClkO */
+
+int lp31ADCClkO(char outByte);
+
+/*** EndHeader */
+
+#asm
+lp31ADCClkO::
+	ld		d,8
+	ld		a,l
+	ld		b,0x40
+shiftOut:
+	bit	7,a
+	jr		z,shift0
+	;	shift1
+	ld		c,0x41
+	in		e,(c)
+;	jr		shiftMerge
+	add	a,a		;	left shift
+	dec	d
+	jr		nz,shiftOut
+	ld		a,h
+	ld		l,a
+	ld		h,0
+	ret
+	
+shift0:
+	ld		c,0x40
+	in		e,(c)
+;shiftMerge:
+	add	a,a		;	left shift
+	dec	d
+	jr		nz,shiftOut
+	ld		a,h
+	ld		l,a
+	ld		h,0
+	ret
+#endasm
+
+/*** beginHeader lp31ADCClk */
+
+int lp31ADCClk(int outword, int numBit);
+
+/*** endHeader */
+
+#asm
+lp31ADCClk::
+	pop	bc
+	pop	hl			;	hl has outword
+	pop	de			;	de has numBit
+	push	de
+	push	hl
+	push	bc
+
+doClock:
+	xor	a
+	bit	7,h			;	check most sig. bit
+	jr		z,outZero
+	inc	a
+outZero:
+	ld		bc,ADC_DAT
+	out	(c),a			;	output the data
+	ld		a,1
+	inc	bc				;	IO addr for ADC_CLK
+#if ADC_CLK-ADC_DAT != 1
+#error "I/O port for ADC_DAT and ADC_CLK is wrong."
+#endif
+	out	(c),a			;	clock low
+	dec	a
+	out	(c),a			;	clock high
+	ld		bc,DIG_IN
+	in		d,(c)			;	input state
+	ld		bc,ADC_CLK
+	ld		a,1
+	out	(c),a			;	clock low
+	add	hl,hl			;	left shift
+	bit	ADC_DOUT_BIT,d
+	jr		z,readZero
+	inc	hl				;	read a one
+readZero:
+	dec	e
+	jr		nz,doClock	;	do another clock
+
+	ret					;	result in HL!
+#endasm
+
+/*** BeginHeader lp31ADCClkI_ */
+
+int lp31ADCClkI_(char numBits);
+
+/*** EndHeader */
+
+#asm
+lp31ADCClkI_::
+	ld		d,l
+	ld		bc,DIG_IN
+	ld		hl,0
+shiftIn:
+	add	hl,hl
+	in		a,(c)
+	bit	ADC_DOUT_BIT,a
+	jr		nz,shiftIn1
+	; shiftIn0
+	res	0,l
+;	jr		afterShiftIn
+	dec	d
+	jr		nz,shiftIn
+	ret
+	
+shiftIn1:
+	set	0,l
+;afterShiftIn:
+	dec	d
+	jr		nz,shiftIn
+	ret
+#endasm
+
+/*** BeginHeader lp31ADCInit, eioBrdAdcInit */
+
+void lp31ADCInit();
+void eioBrdAdcInit();
+
+/*** EndHeader */
+
+#asm
+lp31ADCInit::
+eioBrdAdcInit::
+	ld		bc,ADC_CS
+	xor	a
+	out	(c),a
+	inc	a
+	out	(c),a
+	dec	a
+	out	(c),a
+	ld		bc,ADC_ENB
+	out	(c),a
+	ret
+#endasm
+
+/*** BeginHeader lp31ADCEnb */
+
+void lp31ADCEnb();
+
+/*** EndHeader */
+
+#asm
+lp31ADCEnb::
+	ld		bc,ADC_CS
+	xor	a
+	out	(c),a
+	ret
+#endasm
+
+/*** BeginHeader lp31ADCDis */
+
+void lp31ADCDis();
+
+/*** EndHeader */
+
+#asm
+lp31ADCDis::
+	ld		bc,ADC_CS
+	ld		a,1
+	out	(c),a
+	ret
+#endasm
+
+/*** BeginHeader lp31ADCReset */
+
+void lp31ADCReset();
+
+/*** EndHeader */
+
+#asm
+lp31ADCReset::
+	ld		bc,ADC_CS
+	ld		a,1
+	out	(c),a
+	dec	a
+	out	(c),a
+	ret
+#endasm
+
+/*** BeginHeader _eioBrdAI */
+
+int _eioBrdAI(unsigned Chan);
+
+/*** EndHeader */
+
+ASM_NOIX int _eioBrdAI(unsigned Chan) {
+//	auto int i;
+
+#asm xmemok
+	add	hl,hl				;	shift channel by 4 bits
+	add	hl,hl				;	to align with a 12-bit
+	add	hl,hl				;	format
+	add	hl,hl
+	push	hl
+	call	lp31ADCReset	;	reset ADC (sync clock)
+	pop	hl
+	
+	call	lp31ADCClkO		;	send out most sig. 8 bits
+	ld		bc,DIG_IN
+	in		a,(c)				;	send out least sig. 4 bits
+	in		a,(c)
+	in		a,(c)
+	in		a,(c)
+	call	lp31ADCDis		;	disable ADC chip select
+	ld		bc,DIG_IN		;	now check for EOC
+	ld		d,30
+waitAgain:
+	dec	d
+	jr		z,timedOut		;	timed out, something's not right
+	in		a,(c)
+	bit	ADC_EOC_BIT,a	;	check for EOC bit
+	jr		z,waitAgain
+	call	lp31ADCEnb		;	EOC is asserted, time to read in
+	ld		hl,12
+	call	lp31ADCClkI_	;	clock in the input
+	
+	jr		waitOver			;	jump around timed out code
+timedOut:
+	ld		hl,-1
+waitOver:					;	hl has the result!
+#endasm
+}
+
+/*** BeginHeader _eioBrdInit */
+
+void _eioBrdInit(int flags);
+
+/*** EndHeader */
+
+void _eioBrdInit(int flags) {
+	DOShadow = 0xffff;			//	power on state is all on!
+	outport(0x4040,0xff);		//	reflect default state explicitly
+	outport(0x4060,0xff);		//	so when this function is called,
+										//	all outputs are predictably on
+}
+
+/*** BeginHeader eioBrdOff485, eioBrdOn485 */
+
+void eioBrdOff485();
+void eioBrdOn485();
+void sw485(int i);
+
+/*** EndHeader */
+
+#asm
+sw485::
+	ld		a,h
+	or		l
+	jr		nz,eioBrdOn485
+
+eioBrdOff485::	
+	ld		bc,0x40a1
+	xor	a
+	out	(c),a
+	ret
+
+eioBrdOn485::
+	ld		bc,0x40a1
+	ld		a,1
+	out	(c),a
+	ret
+#endasm
+
+/*** BeginHeader rtcRead */
+
+int rtcRead(char reg);
+
+/*** EndHeader */
+
+#asm
+rtcRead::
+	ld		bc,RTC_ALE
+	out	(c),l
+	ld		bc,RTC_CS
+	in		l,(c)
+	ld		h,0
+	ret
+#endasm
+
+/*** BeginHeader rtcWrite */
+
+void rtcWrite(int regval);
+
+/*** EndHeader */
+
+#asm
+rtcWrite::
+	ld		bc,RTC_ALE
+	out	(c),h
+	ld		bc,RTC_CS
+	out	(c),l
+	ret
+#endasm
+
+/*** BeginHeader rtcXRead */
+
+int rtcXRead(char reg);
+
+/*** EndHeader */
+
+#asm
+rtcXRead::
+	ld		bc,RTC_ALE
+	ld		a,0xa
+	out	(c),a
+	ld		bc,RTC_CS
+	in		a,(c)
+	set	4,a
+	out	(c),a
+	
+	ld		bc,RTC_ALE
+	out	(c),l
+	ld		bc,RTC_CS
+	in		l,(c)
+	ld		h,0
+	ret
+#endasm
+
+/*** BeginHeader rtcXWrite */
+
+void rtcXWrite(int regval);
+
+/*** EndHeader */
+
+#asm
+rtcXWrite::
+	ld		bc,RTC_ALE
+	ld		a,0xa
+	out	(c),a
+	ld		bc,RTC_CS
+	in		a,(c)
+	set	4,a
+	out	(c),a
+	
+	ld		bc,RTC_ALE
+	out	(c),h
+	ld		bc,RTC_CS
+	out	(c),l
+	ret
+#endasm
+
+/*** BeginHeader rtcDumbWrite */
+
+void rtcDumbWrite(char val);
+
+/*** EndHeader */
+
+#asm
+rtcDumbWrite::
+	ld		bc,RTC_CS
+	out	(c),l
+	ret
+#endasm
+
+/*** BeginHeader rtcDumbRead */
+
+void rtcDumbRead(char val);
+
+/*** EndHeader */
+
+#asm
+rtcDumbRead::
+	ld		bc,RTC_CS
+	out	(c),l
+	ret
+#endasm
+
+/*** BeginHeader rtcSetDtTmMode */
+
+void rtcSetDtTmMode();
+
+/*** EndHeader */
+
+void rtcSetDtTmMode() {
+	auto char ch;
+
+	ch = rtcRead(0xb);
+	ch |= (0x4 | 0x2);
+	rtcDumbWrite(ch);
+}
+
+/*** BeginHeader rtcSetDateTime */
+
+int rtcSetDateTime(struct tm *t);
+
+/*** EndHeader */
+
+int rtcSetDateTime(struct tm *t) {
+	auto char ch;
+
+	rtcInit();
+	ch = rtcRead(0xb);
+	ch |= 0x80;
+	rtcDumbWrite(ch);
+	//	clock is now disabled from updating
+
+	rtcWrite(0x0000 | t->tm_sec);
+	rtcWrite(0x0200 | t->tm_min);
+	rtcWrite(0x0400 | t->tm_hour);
+	rtcWrite(0x0600 | t->tm_wday);
+	rtcWrite(0x0700 | t->tm_mday);
+	rtcWrite(0x0800 | t->tm_mon);
+	rtcWrite(0x0900 | (t->tm_year % 100));
+
+	rtcWrite(0x0b00 | (ch & 0x7f));
+	return 0;
+}
+
+/*** BeginHeader rtcGetDateTime */
+
+int rtcGetDateTime(struct tm *t);
+
+/*** EndHeader */
+
+int rtcGetDateTime(struct tm *t) {
+	auto char ch;
+
+	rtcInit();
+	ch = rtcRead(0xb);
+	ch |= 0x80;
+	rtcDumbWrite(ch);
+	//	clock is now disabled from updating
+
+	t->tm_sec = rtcRead(0x00);
+	t->tm_min = rtcRead(0x02);
+	t->tm_hour = rtcRead(0x04);
+	t->tm_wday = rtcRead(0x06);
+	t->tm_mday = rtcRead(0x07);
+	t->tm_mon = rtcRead(0x08);
+	t->tm_year = rtcRead(0x09);
+
+	if (t->tm_year < 80) t->tm_year += 100;
+	rtcWrite(0x0b00 | (ch & 0x7f));
+	return 0;
+}
+
+/*** BeginHeader rtcSetDate */
+
+void rtcSetDate(struct tm *t);
+
+/*** EndHeader */
+
+void rtcSetDate(struct tm *t) {
+	auto char ch;
+
+	rtcInit();
+	ch = rtcRead(0xb);
+	ch |= 0x80;
+	rtcDumbWrite(ch);
+	//	clock is now disabled from updating
+
+	rtcWrite(0x0600 | t->tm_wday);
+	rtcWrite(0x0700 | t->tm_mday);
+	rtcWrite(0x0800 | t->tm_mon);
+	rtcWrite(0x0900 | (t->tm_year % 100));
+
+	rtcWrite(0x0b00 | (ch & 0x7f));
+}
+
+/*** BeginHeader rtcSetTime */
+
+void rtcSetTime(struct tm *t);
+
+/*** EndHeader */
+
+void rtcSetTime(struct tm *t) {
+	auto char ch;
+
+	rtcInit();
+	ch = rtcRead(0xb);
+	ch |= 0x80;
+	rtcDumbWrite(ch);
+	//	clock is now disabled from updating
+
+	rtcWrite(0x0000 | t->tm_sec);
+	rtcWrite(0x0200 | t->tm_min);
+	rtcWrite(0x0400 | t->tm_hour);
+
+	rtcWrite(0x0b00 | (ch & 0x7f));
+}
+
+/*** BeginHeader rtcInit */
+
+void rtcInit();
+
+/*** endHeader */
+
+void rtcInit() {
+	rtcDumbWrite((rtcRead(0xa) & 0xf) | 0x20);
+	rtcSwBinDM(1);
+	rtcSw24Hr(1);
+}
+
+/*** BeginHeader rtcSetAlmTime */
+
+void rtcSetAlmTime(struct tm *t);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+rtcSetAlmTime			EZIOLP31.LIB
+
+SYNTAX: 			void rtcSetAlmTime(struct tm *t)
+
+DESCRIPTION:	This function sets the alarm time for the real time clock.
+Note that this function does not enable the interrupt from the real-time
+clock or to enable alarm interrupts. See rtcIRQ and rtcClrIRQ for more
+information about causing and handling interrupts generated by the RTC.
+
+In order for the RTC to wake up the system, the application must
+assert wake up interrupt enable and clear wake up flag before powering
+down. See lp31Shutdown for more details about shutting down the main
+power of the LP31xx.
+
+PARAMETER1:		Pointer to structure that specifies the alarm time.
+
+RETURN VALUE:	N/A.
+
+END DESCRIPTION **********************************************************/
+
+void rtcSetAlmTime(struct tm *t) {
+	auto char ch;
+
+	rtcWrite(0x0100 | t->tm_sec);
+	rtcWrite(0x0300 | t->tm_min);
+	rtcWrite(0x0500 | t->tm_hour);
+	rtcXWrite(0x4900 | t->tm_mday);
+}
+
+/*** BeginHeader */
+
+#define rtcSwBinDM(sw) rtcDumbWrite(SWBIT(rtcRead(0xb),0x4,sw))
+#define rtcSw24Hr(sw) rtcDumbWrite(SWBIT(rtcRead(0xb),0x2,sw))
+#define rtcSwDST(sw) rtcDumbWrite(SWBIT(rtcRead(0xb),0x1,sw))
+#define rtcSetPIRate(r) rtcDumbWrite((rtcRead(0xa)&~0xf)|(r&0xf))
+#define rtcChkIRQF() rtcRead(0xc)&0x80
+#define rtcChkPF() rtcRead(0xc)&0x40
+#define rtcSwPIE(sw) rtcDumbWrite(SWBIT(rtcRead(0xb),0x40,sw))
+#define rtcChkAF() rtcRead(0xc)&0x20
+#define rtcSwAIE(sw) rtcDumbWrite(SWBIT(rtcRead(0xb),0x20,sw))
+#define rtcChkUF() rtcRead(0xc)&0x10
+#define rtcSwUIE(sw) rtcDumbWrite(SWBIT(rtcRead(0xb),0x10,sw))
+#define rtcChkWRT() rtcRead(0xd)&0x80
+#define rtcSwPAB(sw) rtcDumbWrite(SWBIT(rtcXRead(0x4a),0x8,sw))
+#define rtcSwRF(sw) rtcDumbWrite(SWBIT(rtcXRead(0x4a),0x4,sw))
+#define rtcChkRF() rtcXRead(0x4a)&0x4
+#define rtcSwWF(sw) rtcDumbWrite(SWBIT(rtcXRead(0x4a),0x2,sw))
+#define rtcChkWF() rtcXRead(0x4a)&0x2
+#define rtcSwWIE(sw) rtcDumbWrite(SWBIT(rtcXRead(0x4b),0x2,sw))
+#define rtcSwKF(sw) rtcDumbWrite(SWBIT(rtcXRead(0x4a),0x1,sw))
+#define rtcChkKF() rtcXRead(0x4a)&0x1
+#define rtcSwKSE(sw) rtcDumbWrite(SWBIT(rtcXRead(0x4b),0x1,sw))
+#define rtcSwRIE(sw) rtcDumbWrite(SWBIT(rtcXRead(0x4b),0x4,sw))
+#define rtcSwABE(sw) rtcDumbWrite(SWBIT(rtcXRead(0x4b),0x80,sw))
+#define rtcChkVRT2() rtcXRead(0x4a)&0x80
+#define rtcRdRegC() rtcRead(0xc)
+
+/*** EndHeader */
+
+/*** BeginHeader rtcClrIRQ */
+
+void rtcClrIRQ();
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+rtcClrIRQ			EZIOLP31.LIB
+
+SYNTAX: 			void rtcClrIRQ()
+
+DESCRIPTION:	This function clears all the interrupt flags that can cause
+the /IRQ line to assert. Note that this function does not enable or disable
+the interrupt from each source. call
+
+	rtcSwAIE(x) for alarm interrupt enable
+	rtcSwPIE(x) for periodic interrupt enable
+	rtcSwUIE(x) for update ended interrupt enable
+	rtcSwWIE(x) for wakeup interrupt enable
+	rtcSwKSE(x) for kickstart interrupt enable
+	rtcSwRIE(x) for ram clear interrupt enable
+	
+In all these routines, pass non-zero to x to enable, pass zero to disable.
+
+See rtcIRQ for more information about causing and handling interrupts
+generated by the RTC.
+
+RETURN VALUE:	N/A.
+
+END DESCRIPTION **********************************************************/
+
+void rtcClrIRQ() {
+	rtcRdRegC();		//	clears PF, AF and UF
+	rtcSwKF(0);
+	rtcSwRF(0);
+	rtcSwWF(0);
+}
+
+/*** beginHeader rtcIRQ */
+
+void rtcIRQ(int enable);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+rtcIRQ			EZIOLP31.LIB
+
+SYNTAX: 			void rtcIRQ(int enable)
+
+DESCRIPTION:	This function enables the Z180 to receive IRQ from the
+RTC. Mode 1 of INT0 is supported. The application programmer should
+write the custom ISR (interrupt service routine), and instruct Dynamic C
+to vector to it using the following directive:
+
+#JUMP_VEC RST38_VEC myInt0ISR
+
+(replace myInt0ISR with the actual ISR name).
+
+The ISR should return with "reti" instead of "ret".
+
+In the interrupt routine, use the following macros to check the cause
+of the interrupt:
+
+	rtcChkAF() returns the alarm flag
+	rtcChkKF() returns the the kick start flag
+	rtcChkPF() returns the the periodic flag
+	rtcChkRF() returns the ram clear flag
+	rtcChkUF() returns the update ended flag
+	rtcChkWF() returns the wake up flag
+
+Note that the periodic flag, alarm flag and update ended flag reside in
+the same physical register C. If more than one flag needs to be tested,
+the application program should read register C to a variable using
+rtcRdRegC(), then examine bit 6, 5 and 4 respectively. Reading register
+C automatically clears all of the periodic, alarm and update-ended flag.
+
+In order to clear the kick start, ram clear and wake up flags, call the
+following macros:
+
+	rtcSwKF(x) switches the kick start flag
+	rtcSwRF(x) switches the ram clear flag
+	rtcSwWF(x) switches the wake up flag
+
+Pass 0 for x to turn the flag off, and pass 1 to turn the flag on.
+
+As mentioned, reading register C via rtcRdRegC() will clear the alarm flag,
+the periodic flag and the update ended flag.
+
+To enable a particular source of interrupt, call the following macros:
+
+	rtcSwAIE(x) for alarm interrupt enable
+	rtcSwPIE(x) for periodic interrupt enable
+	rtcSwUIE(x) for update ended interrupt enable
+	rtcSwWIE(x) for wakeup interrupt enable
+	rtcSwKSE(x) for kickstart interrupt enable
+	rtcSwRIE(x) for ram clear interrupt enable
+	
+In all these routines, pass non-zero to x to enable, pass zero to disable.
+
+Note that the /IRQ line remains asserted (low) as long as both the interrupt
+enable flag and the status flag is asserted for any of the six causes (alarm,
+periodic, update ended, wake up, kick start and ram clear). The ISR must
+ensure that /IRQ is not asserted when the ISR returns.
+
+RETURN VALUE:	N/A.
+
+END DESCRIPTION **********************************************************/
+
+void rtcIRQ(int enable) {
+	if (enable) {
+#asm xmemok
+		im		1				;	supports only mode 1
+#endasm
+		ISET(ITC,0);		//	enable int0
+	} else {
+		IRES(ITC,0);		//	disable int0
+	}
+}
+
+/*** BeginHeader eioBrdDO, DOShadow */
+
+int eioBrdDO(unsigned chan, int state);
+
+#define	nEN_DKS	16
+#define	swEnbKickStart(x) eioBrdDO(nEN_DKS, !x)
+#define	nMBR		17
+#define	swEnbMBResetBus(x) eioBrdDO(nMBR, !x)
+#define	_232TEN	18
+#define	swEnb232Tx(x) eioBrdDO(_232TEN, x)
+#define	_232EN	19
+#define	swEnb232Drvr(x) eioBrdDO(_232EN, x)
+#define	nCTSEN	20
+#define	swEnbCTS(x) eioBrdDO(nCTSEN, !x)
+#define	nPWREN	21
+#define	swEnbPower(x) eioBrdDO(nPWREN, !x)
+
+#define	nLED		24
+#define	swLED(x) eioBrdDO(nLED, !x)
+#define	_485TE	25
+#define	swEnb485Tx(x) eioBrdDO(_485TE, x)
+#define	n485RE	26
+#define	swEnb485Rx(x) eioBrdD0(n485RE, !x)
+#define	nAD_CS	27
+#define	nDOE		28
+#define	swEnbDIOOutput(x) eioBrdDO(nDOE, !x)
+#define	nADENA	29
+#define	swEnbADC(x) eioBrdDO(nADENA, !x)
+
+extern int DOShadow;
+
+/*** EndHeader */
+
+/*
+byte output 0-7: DINOUT 0-7
+0x4040	0x1
+0x4040	0x2
+0x4040	0x4
+0x4040	0x8
+0x4040	0x10
+0x4040	0x20
+0x4040	0x40
+0x4040	0x80
+
+byte output 8-15: DOUT 0-7
+0x4060	0x1
+0x4060	0x2
+0x4060	0x4
+0x4060	0x8
+0x4060	0x10
+0x4060	0x20
+0x4060	0x40
+0x4060	0x80
+
+bit output 16-23
+0x4080	/EN_DKS	enable kick start
+0x4081	/MBR		
+0x4082	232TEN
+0x4083	232EN
+0x4084	/CTSEN
+0x4085	/PWREN
+
+bit output 24-31
+0x40a0	/LED
+0x40a1	485TE
+0x40a2	/485RE
+0x40a3	/AD_CS
+0x40a4	/DOE
+0x40a5	/ADENA
+
+*/
+
+int DOShadow;
+
+ASM_NOIX int eioBrdDO(unsigned chan, int state) {
+#asm xmemok
+	;	channel is in HL
+	ld		a,h
+	or		a
+	jr		nz,badChannel
+
+	ld		a,l
+	cp		16
+	jp		nc, sysChannel
+	;	okay, this is a real output channel
+	bit	3,l
+	jr		nz, upperChannel
+	;	lower channel
+	ld		bc, 0x4040
+	ld		de,DOShadow
+	jr		compOutput
+	
+upperChannel:
+	ld		bc,0x4060
+	ld		de,DOShadow+1
+	
+compOutput:
+	push	de
+	res	3,l
+	ld		de,__bitmap
+	add	hl,de
+	ld		l,(hl)
+	push	hl
+	ld		hl,@SP+state+4
+	add	hl,sp
+	ld		a,(hl)
+	inc	hl
+	or		(hl)
+	pop	de
+	pop	hl
+	jr		z,resetOutput
+	;	set output
+	ld		a,e
+	or		(hl)
+	jr		doOutput
+	
+resetOutput:
+	ld		a,e
+	cpl
+	and	(hl)
+
+doOutput:
+	ld		(hl),a
+	out	(c),a
+	ld		hl,0
+	jr		retPoint
+	
+sysChannel:
+	cp		32
+	jp		nc, badChannel
+
+	res	4,l
+	bit	3,l
+	jr		nz,upperSysChannel
+	; lower sys channel
+	ld		bc,0x4080
+	jr		doSysOutput
+	
+upperSysChannel:
+	ld		bc,0x40a0
+
+doSysOutput:
+	res	3,l
+	add	hl,bc
+	push	hl
+	ld		hl,@SP+state+2
+	add	hl,sp
+	ld		a,(hl)
+	inc	hl
+	or		(hl)
+	ld		a,0
+	jr		z,noIncA
+	inc	a
+noIncA:	
+	pop	bc
+	out	(c),a
+	ld		hl,0
+	jr		retPoint
+	
+badChannel:
+	ld		hl,-1
+
+retPoint:
+#endasm
+}
+
+/*** BeginHeader eioBrdDI */
+
+int eioBrdDI(unsigned chan);
+
+/*** EndHeader */
+
+int eioBrdDI(unsigned chan) {
+	if (chan >= 12) {
+		return -1;
+	} else if (chan >= 8) {
+		return (inport(0x4040) & __bitmap[chan&7]) ? 1 : 0;
+	} else {
+		return (inport(0x4020) & __bitmap[chan]) ? 1 : 0;
+	}
+}
+
+/*** beginHeader eioBrdDI08 */
+
+int eioBrdDI08();
+
+/*** EndHeader */
+
+int eioBrdDI08() {
+	return inport(0x4020);
+}
+
+/*** BeginHeader lp31Shutdown */
+
+void lp31Shutdown(int enbKS, int enbWE);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+lp31Shutdown			EZIOLP31.LIB
+
+SYNTAX: 			void lp31Shutdown(int enbKS, int enbWE);
+
+DESCRIPTION:	This function shuts down the LP31xx (VCC is off). This
+function also enables the kickstart feature or RTC wake-up features if
+so specified. Note that this function does not return.
+
+PARAMETER1:		If this parameter is non-zero, the kick start feature is
+enabled.
+
+PARAMETER2:		If this parameter is non-zero, the RTC wake up feature is
+enabled.
+
+RETURN VALUE:	N/A.
+
+END DESCRIPTION **********************************************************/
+
+void lp31Shutdown(int enbKS, int enbWE) {
+	outport(0x4082,0);		//	232TEN
+	outport(0x4083,0 );		//	232EN
+	outport(0x4084,1);		//	/CTSEN
+
+	outport(0x40a1,0);		//	485TE
+	outport(0x40a2,1);		//	/485RE
+
+	outport(0x40a4,1);		//	/DOE
+	outport(0x40a5,1);		//	/ADENA
+	
+	outport(0x4080,enbKS == 0);	//	switch /EN_DKS
+	rtcSwABE(1);				//	need to enable Vbaux
+	rtcSwKF(0);					//	clear the kick start flag, otherwise /PWR remains low
+	rtcSwKSE(enbKS != 0);	//	switch on kick start enable
+	rtcSwWF(0);					//	clear the wake flag, otherwise /PWR remains low
+	rtcSwWIE(enbWE != 0);	//	enable wake up as specified
+	rtcSwPAB(1);				//	need to switch the RTC pin as well
+
+#asm xmemok
+	ld		bc,0x4085			;	/PWREN
+	ld		a,1
+	di
+	out	(c),a
+haltLoop:
+	halt							;	extremely important!! Power is not entire down at once
+	jr		haltLoop				;	in case some interrupt kicks out of halt mode
+#endasm	
+}
+
+/*** BeginHeader lp31EnbPFI */
+
+void lp31EnbPFI(void);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+lp31EnbPFI			EZIOLP31.LIB
+
+SYNTAX: 			void lp31EnbPFI(void);
+
+DESCRIPTION:	This function enables the PFI to interrupt the
+processor when power fails.
+
+RETURN VALUE:	N/A.
+
+END DESCRIPTION **********************************************************/
+
+void lp31EnbPFI(void) {
+	sysINT1(1);
+}
+
+/*** BeginHeader lp31DisPFI */
+
+void lp31DisPFI(void);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+lp31DisPFI			EZIOLP31.LIB
+
+SYNTAX: 			void lp31DisPFI(void);
+
+DESCRIPTION:	This function disables the PFI from interrupting the
+processor while power fails.
+
+RETURN VALUE:	N/A.
+
+END DESCRIPTION **********************************************************/
+
+void lp31DisPFI(void) {
+	sysINT2(0);
+}
+
+/*** BeginHeader sysIsRunWithDC */
+
+int sysIsRunWithDC();
+extern char OPMODE;
+
+/*** EndHeader */
+
+int sysIsRunWithDC() {
+	return (OPMODE & 0x03) != 0;
+}
+
+/*** BeginHeader lp31Clk3MHz */
+
+unsigned int lp31Clk3MHz();
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION *************************************************
+lp31Clk3MHz					eziolp31.lib
+
+SYNTAX:			unsigned int lp31Clk3MHz();
+
+DESCRIPTION:	Similar to sysStdClock() for the lp31xx. This function also
+switches the baud rate of the ASCI channel if ASCI channel 0 is used for
+debugging.
+
+RETURN VALUE:	Returns 0 if the clock speed is already at 3MHz. Otherwise
+returns the clock speed in 1200Hz units.
+
+END FUNCTION DESCRIPTION *****************************************************/
+
+extern char OPMODE;
+
+#asm
+lp31Clk3MHz::
+	ld		a,i
+	push	af
+	di
+
+	call	sysStdSpeed
+	ld		a,l
+	or		h
+	jr		z,noASCIAdj			;	if sysStdSpeed returns 0, no change
+
+	ld		a,(OPMODE)			;	otherwise check bit 0 of OPMODE
+	bit	0,a
+	jr		z,noASCIAdj			;	to see if we are debugging using ASCI
+	
+	;	adjust ASCI speed
+	in0	a,(CNTLB0)
+	ld		b,a					;	b has the entire word
+	and	7						;	a is the speed
+	jr		z,noASCIAdj			;	can't go anyfaster
+	cp		7						;	check for external clock
+	jr		z,noASCIAdj			;	external clock, not under my control
+	
+ASCIAdj:
+	in0	d,(CNTLA0)
+	ld		e,d
+	res	5,d
+	res	6,d
+	out0	(CNTLA0),d			;	disable receive and transmit
+	dec	a						;	go twice as fast
+	ld		c,a					;	c has the speed
+	ld		a,b					;	a has the entire CNTLB0 word
+	and	0xff ^ 0x7			;	mask out speed
+	or		c						;	put back new speed
+	res	5,a					;	use /10 prescaler
+	out0	(CNTLB0),a			;	update it now!
+	out0	(CNTLA0),e			;	reenable receive and transmit
+									;	(if originally enabled)
+noASCIAdj:
+	pop	af
+	ret	po
+	ei
+	ret
+#endasm
+
+/*** BeginHeader lp31Clk6MHz */
+
+unsigned int lp31Clk6MHz();
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION *************************************************
+lp31Clk6MHz					eziolp31.lib
+
+SYNTAX:			unsigned int lp31Clk6MHz();
+
+DESCRIPTION:	Similar to sysHiSpeed(). This function also halves the baud
+rate of ASCI channel 0 if ASCI is being used as the channel for debugging
+in Dynamic C.
+
+RETURN VALUE:	Returns 0 if the processor is already at 6MHz. Otherwise,
+returns the new clock speed in 1200Hz units.
+
+END FUNCTION DESCRIPTION *****************************************************/
+
+extern char OPMODE;
+
+#asm
+lp31Clk6MHz::
+	ld		a,i
+	push	af
+	di
+
+	call	sysHiSpeed
+	ld		a,l
+	or		h
+	jr		z,noASCIAdj			;	if sysStdSpeed returns 0, no change
+
+	ld		a,(OPMODE)			;	otherwise check bit 0 of OPMODE
+	bit	0,a
+	jr		z,noASCIAdj			;	to see if we are debugging using ASCI
+	
+	;	adjust ASCI speed
+	in0	a,(CNTLB0)
+	ld		b,a					;	b has the entire word
+	and	7						;	a is the speed
+	cp		6						;	minimum speed?
+	jr		z,noASCIAdj			;	can't go any slower
+	cp		7						;	external clock?
+	jr		z,noASCIAdj			;	not under my control
+	
+ASCIAdj:
+	in0	d,(CNTLA0)
+	ld		e,d
+	res	5,d
+	res	6,d
+	out0	(CNTLA0),d			;	disable receive and transmit
+	inc	a						;	go twice as slow
+	ld		c,a					;	c has the speed
+	ld		a,b					;	a has the entire CNTLB0 word
+	and	0xff ^ 0x7			;	mask out speed
+	or		c						;	put back new speed
+	res	5,a					;	use /10 prescaler
+	out0	(CNTLB0),a			;	update it now!
+	out0	(CNTLA0),e			;	reenable receive and transmit
+									;	(if originally enabled)
+
+noASCIAdj:
+	pop	af
+	ret	po
+	ei
+	ret
+#endasm
+
+/*** EndHeader */
+
+/*** BeginHeader lp31PFO */
+
+void lp31PFO(char onOff);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION *************************************************
+lp31PFO					eziolp31.lib
+
+SYNTAX:			void lp31PFO(char onOff);
+
+DESCRIPTION:	This function determines whether PFO from the supervisor
+chip can interrupt the processor.
+
+PARAMETER1:		If the parameter is non-zero, PFO can generate an interrupt
+(INT1). Otherwise, PFO cannot interrupt the processor.
+
+RETURN VALUE:	N/A
+
+END FUNCTION DESCRIPTION *****************************************************/
+
+void lp31PFO(char onOff) {
+	if (onOff) ISET(ITC,1);
+	else IRES(ITC,1);
+}
+
+/*** BeginHeader */
+
+#endif
+
+/*** EndHeader */

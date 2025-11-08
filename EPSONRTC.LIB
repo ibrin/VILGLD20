@@ -1,0 +1,34 @@
+/*** BeginHeader */
+
+#ifndef __EPSONRTC_LIB
+#define __EPSONRTC_LIB
+
+/*** EndHeader */
+
+/*** BeginHeader _72421Exists */
+
+int _72421Exists();
+
+/*** EndHeader */
+
+int _72421Exists() {
+	auto int exist;
+
+	exist = 0;
+	set72421Hold(1);
+	if (get72421Hold()) {
+		set72421Hold(0);
+		if (!get72421Hold()) {
+			exist = 1;
+		} else {
+		}
+	} else {
+	}
+	return exist;
+}
+
+/*** BeginHeader */
+
+#endif
+
+/*** endHeader */

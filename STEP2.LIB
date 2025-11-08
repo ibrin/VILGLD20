@@ -1,0 +1,1356 @@
+
+/*** BeginHeader sm_poll, sm_bdaddr, sm_find_boards, sm_hitwd */
+unsigned sm_bdaddr(int jumpers);
+int      sm_poll(unsigned bdaddr);
+void     sm_hitwd(int idx);
+int      sm_find_boards();
+
+int  sm_addr[17];                            // array of controller board addrs.
+char sm_stat[16],sm_flag[16],sm_shadow[16];  // array of motor status' & service flags
+
+/*** Endheader */
+
+/* START FUNCTION DESCRIPTION **********************************************
+sm_bdaddr                    <STEP.LIB>
+
+SYNTAX: unsigned sm_bdaddr(int jumpers);
+
+KEYWORDS: plcbus, motor, stepper
+
+DESCRIPTION:  Returns the PLCBus address for a stepper motor card for 
+the given jumper settings.
+
+PARAMETERS:
+	 jumpers: the expansion board jumper settings as defined at H4.
+  
+RETURN VALUE: PLCBus address for card.
+END DESCRIPTION *************************************************************/
+unsigned sm_bdaddr(int jumpers)
+{ return (jumpers<<12)+0x0c00;  }
+
+
+/* START FUNCTION DESCRIPTION **********************************************
+sm_poll                      <STEP.LIB>
+
+SYNTAX: int sm_poll(unsigned bdaddr)
+
+KEYWORDS:  plcbus, motor, stepper, poll
+
+DESCRIPTION:  Returns the PLCBus address for a stepper motor card for 
+the given jumper settings.
+
+PARAMETERS:
+	 bdaddr: The PLCBus address of the card to poll.
+  
+RETURN VALUE:  0: board found   1: board not found
+END DESCRIPTION *************************************************************/
+int sm_poll(unsigned bdaddr)
+{  set82adr(bdaddr);
+	return (inport(BUSRD1) & 0x01);
+}
+
+
+/* START FUNCTION DESCRIPTION **********************************************
+sm_hitwd                            <STEP.LIB>
+
+SYNTAX: void sm_hitwd(int idx)
+
+KEYWORDS:  plcbus, motor, stepper, watchdog
+
+DESCRIPTION:   Hits the MAX705 watchdog by executing a counter read-cycle.
+
+PARAMETERS:   idx: the expansion board index
+  
+RETURN VALUE: None
+END DESCRIPTION *************************************************************/
+#asm root nodebug
+sm_hitwd::
+	call lku_smaddr         ; get address of controller
+	ld   de,04h             ; prep for add   
+	add  hl,de              ; Counter at baseaddr+4
+	call set82adr           ; select counter
+	;in0  a,(0xc0)           ; strobe \cscnt
+	ld		bc,BUSRD0
+	in		a,(c)
+	ret
+#endasm
+
+
+
+/* START FUNCTION DESCRIPTION **********************************************
+sm_find_boards               <STEP.LIB>
+
+SYNTAX:   int sm_find_boards()
+
+KEYWORDS:  plcbus, motor, stepper
+
+DESCRIPTION:   Polls all 16 possible motor board addresses and loads the 
+addresses of those found into the array sm_addr.  The addresses found 
+will be stored in the array in order from lowest jumper setting found to 
+highest (0-15). Corresponding arrays of status bytes and service flags 
+are initialized.  Returns the number of boards found.  The element following 
+the last address found is set to 0xffff.  The control register is initialized 
+to a value of 0xA7 on all boards found.
+
+PARAMETERS:   None
+  
+RETURN VALUE:   An integer representing the number of stepper motor boards that respond to the poll.  
+END DESCRIPTION *************************************************************/
+int sm_find_boards()
+{ int j,fnd;
+  fnd = 0;
+  for (j=0;j<16;j++)
+	 if (!sm_poll(sm_bdaddr(j)))
+	 { sm_addr[fnd] = sm_bdaddr(j);               // load address into array  
+		sm_stat[fnd] = smc_stat0(fnd);             // get controller's current status
+		sm_flag[fnd] = 0;                          // set service flag to off
+		sm_ctlreg(fnd,0xa7);                       // setup control register
+		fnd++;
+	  }
+  sm_addr[fnd] = 0xffff;                          // set eol
+  return fnd;
+}
+
+/*** BeginHeader smq_read16, smq_read8 */
+unsigned int smq_read16(int idx);
+char smq_read8(int idx);
+/*** Endheader */
+
+/* START FUNCTION DESCRIPTION **********************************************
+smq_read16                   <STEP.LIB>
+
+SYNTAX:      unsigned int smq_read16(int idx);
+
+KEYWORDS:    plcbus, motor, stepper
+
+DESCRIPTION:  Returns the entire 16-bit number of the quadrature counter.
+
+PARAMETERS:   idx:  A number from 0 to 15 representing the sequence of 
+stepper motor boards found by sm_find_boards().  The board with the lowest 
+jumper setting will be at position 0, the next lowest at 1, etc.  
+  
+RETURN VALUE:   the 16-bit value of the quadrature counter. 
+END DESCRIPTION *************************************************************/
+unsigned int smq_read16(int idx)
+{  int lowval,hival;
+	sm_sel00(idx);                //point to counter low reg.
+	hival = inport(0xc0);
+	sm_sel01(idx);                //point to counter hi reg.
+	lowval = inport(0xc0);
+	return (hival<<8)+lowval;
+}
+
+
+
+/* START FUNCTION DESCRIPTION *********************************************
+smq_read8                    <STEP.LIB>
+
+SYNTAX:    char smq_read8(int idx);
+
+KEYWORDS:  plcbus, motor, stepper, encoder, quadrature
+
+DESCRIPTION:  Returns the low byte of the quadrature counter.  
+
+PARAMETERS:   idx:  A number from 0 to 15 representing the sequence of 
+stepper motor boards found by sm_find_boards().  The board with the lowest 
+jumper setting will be at position 0, the next lowest at 1, etc.  
+  
+RETURN VALUE:   The lower byte of the counter. 
+END DESCRIPTION *************************************************************/
+#asm nodebug root
+smq_read8::
+	call sm_sel01            ; Set Sel line - leaves PLCBus addr at base+4
+	;in0 l,(0xc0)             ; get low byte   
+	ld		bc,BUSRD0
+	in		l,(c)
+	ld h,0                   ; zero out nec for char return
+	ret 
+#endasm
+
+
+
+
+
+/*** BeginHeader sm_board_reset, smc_hardreset, smc_softreset, smq_hardreset */
+void sm_board_reset(int idx);
+void smc_hardreset(int idx);
+void smc_softreset(int idx);
+void smq_hardreset(int idx);
+/*** Endheader */
+
+/* START FUNCTION DESCRIPTION **********************************************
+sm_board_reset               <STEP.LIB>
+
+SYNTAX:    void sm_board_reset(int idx);
+
+KEYWORDS:  plcbus, motor, stepper, reset
+
+DESCRIPTION:    Performs a hardware reset on the controller and encoder.  
+Disables the driver and sets it to dual phase mode.  Sets the register select 
+lines to 00.
+
+PARAMETERS:   idx:  A number from 0 to 15 representing the sequence of 
+stepper motor boards found by sm_find_boards().  The board with the lowest 
+jumper setting will be at position 0, the next lowest at 1, etc.  
+
+  
+RETURN VALUE:   None.  
+
+END DESCRIPTION *************************************************************/
+void sm_board_reset(int idx)
+{
+  DI();
+  sm_ctlreg(idx,0x24);                 // set reset lines active
+  sm_ctlreg(idx,0xA7);                 // set reset lines inactive
+  EI();
+}
+
+
+
+/* START FUNCTION DESCRIPTION **********************************************
+smq_hardreset                <STEP.LIB>
+
+SYNTAX:    void smq_hardreset(int idx)
+
+KEYWORDS:  plcbus, motor, stepper, reset, encoder, quadrature
+
+DESCRIPTION:   Sends a hardware reset command to the quadrature counter. 
+Resets the counter to zero.
+
+PARAMETERS:   idx:  A number from 0 to 15 representing the sequence of 
+stepper motor boards found by sm_find_boards().  The board with the lowest 
+jumper setting will be at position 0, the next lowest at 1, etc.  
+  
+RETURN VALUE:   None.  
+END DESCRIPTION *************************************************************/
+void smq_hardreset(int idx)
+{
+	DI();
+	sm_ctlreg(idx,sm_shadow[idx] & 0xfe);   
+	sm_ctlreg(idx,sm_shadow[idx] | 0x01);
+	EI();
+}
+
+
+
+/* START FUNCTION DESCRIPTION **********************************************
+smc_hardreset                <STEP.LIB>
+
+SYNTAX:    void smc_hardreset(int idx);
+
+KEYWORDS:  plcbus, motor, stepper, reset
+
+DESCRIPTION:   Sends a hardware reset command to the PCL-AK.  This stops 
+the output and clears the internal registers.
+
+PARAMETERS:   idx:  A number from 0 to 15 representing the sequence of 
+stepper motor boards found by sm_find_boards().  The board with the lowest 
+jumper setting will be at position 0, the next lowest at 1, etc.  
+ 
+RETURN VALUE:   None.  
+END DESCRIPTION *************************************************************/
+void smc_hardreset(int idx)
+{
+	DI();
+	sm_ctlreg(idx,sm_shadow[idx] & 0xfd);   
+	sm_ctlreg(idx,sm_shadow[idx] | 0x02);
+	EI(); 
+}
+
+/* START FUNCTION DESCRIPTION **********************************************
+smc_softreset                <STEP.LIB>
+
+SYNTAX:    void smc_softreset(int idx);
+
+KEYWORDS:  plcbus, motor, stepper, reset
+
+DESCRIPTION:    Sends a software reset command to the PCL-AK.  This stops 
+the output without clearing the internal registers.
+
+PARAMETERS:   idx:  A number from 0 to 15 representing the sequence of 
+stepper motor boards found by sm_find_boards().  The board with the lowest 
+jumper setting will be at position 0, the next lowest at 1, etc.  
+  
+RETURN VALUE:   None.  
+END DESCRIPTION *************************************************************/
+#asm root nodebug
+smc_softreset::
+	push hl           ; save index
+	call sm_sel00     ; set select bits to 00
+	pop hl            ; restore index
+
+	call lku_smaddr   ; get board address
+	call set82adr     ; point back to controller
+	ld a,08h
+	;out0 (BUSWR),a    ; send reset cmd 
+	ld bc,BUSWR
+	out (c),a
+
+	ret
+#endasm
+
+
+
+
+/*** BeginHeader smc_setspeed, smc_manual_move, smc_cmd, smc_seek_origin,
+					  smc_setmove,smcq_moveto                                  */
+void smc_setspeed(int idx, int fastr, int slow);
+void smc_manual_move(int idx,int dir, int speed);
+void smc_cmd(int idx, int dat);
+void smc_seek_origin(int idx,int dir, int speed);
+void smc_setmove(int idx, long R0, int R1, int R2, int R4, int R6, int R7);
+unsigned smcq_moveto(int idx, unsigned dest, int dir, unsigned acc);
+/*** Endheader */
+
+
+/* START FUNCTION DESCRIPTION **********************************************
+smc_cmd                      <STEP.LIB>
+
+SYNTAX:   void smc_cmd(int idx, int dat)
+
+KEYWORDS:  plcbus, motor, stepper
+
+DESCRIPTION:     Writes to the command register in the PCL-AK controller.
+
+PARAMETERS:   idx:  A number from 0 to 15 representing the sequence of 
+stepper motor boards found by sm_find_boards().  The board with the lowest 
+jumper setting will be at position 0, the next lowest at 1, etc.  
+				  dat:  Value to write.
+  
+RETURN VALUE:   None.  
+END DESCRIPTION *************************************************************/
+#asm root nodebug
+smc_cmd::
+	push hl           ; save index (idx-ret-idx-dat)
+	call sm_sel00     ; set select bits to 00
+
+	pop hl            ; get index  (ret-idx-dat)
+	call lku_smaddr   ; get address of controller   
+	call set82adr     ; point to controller
+
+	ld iy,4           ; get command off stack (stk: ret-idx-dat)
+	add iy,sp
+	ld a,(iy)         ; a = command
+	;out0 (BUSWR),a    ; write cmd to controller
+	ld bc,BUSWR
+	out (c),a
+
+	ret   
+#endasm
+
+
+/* START FUNCTION DESCRIPTION **********************************************
+smc_setspeed                 <STEP.LIB>
+
+SYNTAX:   void smc_setspeed(int idx, int fastr, int slow);
+
+KEYWORDS:  plcbus, motor, stepper, speed
+
+DESCRIPTION:  Sets the high and low speed registers to the given numbers.  
+The multiplier register is set to 732 to make the speed values in 
+pulses-per-second.  Pulse output is set to on, no ramp-down IRQ, and 
+normal polarity.
+
+PARAMETERS:   
+idx:  A number from 0 to 15 representing the sequence of 
+stepper motor boards found by sm_find_boards().  The board with the lowest 
+jumper setting will be at position 0, the next lowest at 1, etc.  
+fastr: fast rate in pulses-per-second.
+slow: slow rate in pulses-per-second.
+  
+RETURN VALUE:   None.  
+END DESCRIPTION *************************************************************/
+void smc_setspeed(int idx, int fastr, int slow)
+{
+	int bdaddr;     
+ 
+	bdaddr = lku_smaddr(idx);
+
+  // Set R1: LOW-SPEED RATE
+	sm_sel00(idx);    //point to counter reg.
+	set82adr(bdaddr);   
+	outport(BUSWR,0x81);                      // select R1 
+
+	sm_sel01(idx);    
+	set82adr(bdaddr);   
+	outport(BUSWR,slow & 0xFF);              // low bits
+
+	sm_sel10(idx);
+	set82adr(bdaddr);   
+	outport(BUSWR,(slow & 0xFF00)>>8);       // high bits
+  
+
+ // Set R2: HIGH-SPEED RATE
+	sm_sel00(idx);    //point to counter reg.
+	set82adr(bdaddr);   
+	outport(BUSWR,0x82);                    // select R2
+
+	sm_sel01(idx);    
+	set82adr(bdaddr);   
+	outport(BUSWR,fastr & 0xFF);              // low bits
+
+	sm_sel10(idx);
+	set82adr(bdaddr);   
+	outport(BUSWR,(fastr & 0xFF00)>>8);       // high bits
+
+}
+
+
+
+/* START FUNCTION DESCRIPTION **********************************************
+smc_manual_move              <STEP.LIB>
+
+SYNTAX:    void smc_manual_move(int idx,int dir,int speed);
+
+KEYWORDS:  plcbus, motor, stepper, move
+
+DESCRIPTION: Starts a manual move operation.  Motor will move until a 
+decelerating stop command, a software reset (smc_softreset) is issued,  
+or an EL or ORG pulse is detected (if enabled).
+	
+PARAMETERS:   
+idx:  A number from 0 to 15 representing the sequence of stepper motor 
+boards found by sm_find_boards().  The board with the lowest 
+jumper setting will be at position 0, the next lowest at 1, etc.  
+
+dir:    move direction 1=forward, 0=backward   
+speed:  1=fast mode (R2 value)   0=slow mode (R1 value)
+  
+RETURN VALUE:   None.  
+
+END DESCRIPTION *************************************************************/
+void smc_manual_move(int idx,int dir,int speed)
+{
+ if (!dir)
+	smc_cmd(idx,0x40);                             // go forward
+ else
+	smc_cmd(idx,0x48);                             // go backward
+
+ if (speed)
+	smc_cmd(idx, 0x31);                            // go fast 
+ else  
+	smc_cmd(idx, 0x30);                            // go slow 
+
+}
+
+
+
+/* START FUNCTION DESCRIPTION **********************************************
+smc_seek_origin              <STEP.LIB>
+
+SYNTAX:    void smc_seek_origin(int idx,int dir,int speed);
+
+
+KEYWORDS:  plcbus, motor, stepper, origin
+
+DESCRIPTION:  Moves motor until an origin pulse is detected.      
+	
+PARAMETERS:   
+idx:  A number from 0 to 15 representing the sequence of stepper motor 
+boards found by sm_find_boards().  The board with the lowest 
+jumper setting will be at position 0, the next lowest at 1, etc.  
+dir:    move direction 1=forward, 0=backward   
+speed:  1=fast mode (R2 value)   0=slow mode (R1 value)
+  
+RETURN VALUE:   None.  
+END DESCRIPTION *************************************************************/
+void smc_seek_origin(int idx,int dir,int speed)
+{
+ smc_softreset(idx);
+
+ if (!dir)
+	smc_cmd(idx, 0x41);    // seek forward
+ else
+	smc_cmd(idx, 0x49);    // seek backward
+
+ if (speed)
+	smc_cmd(idx, 0x31);    // fast rate
+ else  
+	smc_cmd(idx, 0x30);    // slow rate
+
+}
+
+
+
+/* START FUNCTION DESCRIPTION **********************************************
+smc_setmove                  <STEP.LIB>
+
+SYNTAX: void smc_setmove(int idx,long R0,int R1,int R2,int R4,int R6,int R7);
+
+KEYWORDS:  plcbus, motor, stepper, move
+
+DESCRIPTION:  Sets up the registers of the PCL-AK for a move operation.
+
+PARAMETERS:   
+idx:  A number from 0 to 15 representing the sequence of stepper motor 
+boards found by sm_find_boards().  The board with the lowest 
+jumper setting will be at position 0, the next lowest at 1, etc.  
+R0:  Number of pulses to move
+R1:  Low speed move rate  
+R2:  High Speed move rate
+R4:  Acceleration Rate
+R6:  Ramp-Down Point
+R7:  Multiplier Register (set to 732 for R1 & R2 in pulses per second)
+
+RETURN VALUE:   None.  
+END DESCRIPTION ************************************************************/
+void smc_setmove(int idx, long R0, int R1, int R2, int R4, int R6, int R7)
+{  
+	int bdaddr;
+	bdaddr = sm_addr[idx];
+	
+	
+	/* Set R0 to value passed in
+	-------------------------------------------------------- */
+	sm_sel00(idx);                //point to counter reg.
+	set82adr(bdaddr);   
+	outport(BUSWR,0x80);          // select R0 
+
+	sm_sel01(idx);                //setup to write low
+	set82adr(bdaddr);   
+	outport(BUSWR,(int)(R0 & 0xFFL));
+
+	sm_sel10(idx);
+	set82adr(bdaddr);   
+	outport(BUSWR,(int)((R0 & 0xFF00L)>>8));
+
+	sm_sel11(idx);
+	set82adr(bdaddr);   
+	outport(BUSWR,(int)((R0 & 0xFF0000L)>>16));
+
+
+  /* Set R1: LOW-SPEED RATE
+	-------------------------------------------------------- */
+	sm_sel00(idx);    //point to counter reg.
+	set82adr(bdaddr);   
+	outport(BUSWR,0x81);    // select R1 
+
+	sm_sel01(idx);    
+	set82adr(bdaddr);   
+	outport(BUSWR,R1 & 0xFF);              // low bits
+
+	sm_sel10(idx);
+	set82adr(bdaddr);   
+	outport(BUSWR,(R1 & 0xFF00)>>8);       // high bits
+  
+
+ /* Set R2: HIGH-SPEED RATE
+	-------------------------------------------------------- */
+	sm_sel00(idx);    //point to counter reg.
+	set82adr(bdaddr);   
+	outport(BUSWR,0x82);    // select R1 
+
+	sm_sel01(idx);    
+	set82adr(bdaddr);   
+	outport(BUSWR,R2 & 0xFF);              // low bits
+
+	sm_sel10(idx);
+	set82adr(bdaddr);   
+	outport(BUSWR,(R2 & 0xFF00)>>8);       // high bits
+  
+ /* Set R4: ACCELERATION RATE
+	-------------------------------------------------------- */
+	sm_sel00(idx);    //point to counter reg.
+	set82adr(bdaddr);   
+	outport(BUSWR, 0x84);                  // select R4 
+
+	sm_sel01(idx);    
+	set82adr(bdaddr);   
+	outport(BUSWR,R4 & 0xFF);              // low bits
+
+	sm_sel10(idx);
+	set82adr(bdaddr);   
+	outport(BUSWR,(R4 & 0xFF00)>>8);       // high bits
+
+ /* Set R6: RAMP-DOWN POINT
+	-------------------------------------------------------- */
+	sm_sel00(idx);    //point to counter reg.
+	set82adr(bdaddr);   
+	outport(BUSWR, 0x86);                  // select R6 
+
+	sm_sel01(idx);    
+	set82adr(bdaddr);   
+	outport(BUSWR,R6 & 0xFF);              // low bits
+
+	sm_sel10(idx);
+	set82adr(bdaddr);   
+	outport(BUSWR,(R6 & 0xFF00)>>8);       // high bits
+
+ /* Set R7: MULTIPLIER REGISTER
+	-------------------------------------------------------- */
+	sm_sel00(idx);    //point to counter reg.
+	set82adr(bdaddr);   
+	outport(BUSWR, 0x87);                 // select R7
+
+	sm_sel01(idx);    
+	set82adr(bdaddr);   
+	outport(BUSWR,R7 & 0xFF);              // low bits
+
+	sm_sel10(idx);
+	set82adr(bdaddr);   
+	outport(BUSWR,(R7 & 0xFF00)>>8);       // high bits
+
+}
+
+/* START FUNCTION DESCRIPTION **********************************************
+smcq_moveto                  <STEP.LIB>
+
+SYNTAX: unsigned smcq_moveto(int idx, unsigned dest, int dir, unsigned acc);
+
+KEYWORDS:  plcbus, motor, stepper, move
+
+DESCRIPTION:   Manually moves the motor until the encoder reaches a given 
+value. The move is done at the rate as specified in R1 (slow rate) of the 
+controller.
+
+  Example:  smcq_moveto(myaddr, 5000, 1, 25);
+		Moves forward until the encoder is read in the range 4075-5025.
+
+  Note:
+		The move speed, encoder resolution, and motor degrees/phase will 
+  effect how tight the accuracy may be confidently applied. It is possible
+  to miss a stop point if too tight an accuracy is applied. The encoder 
+  should be read after the operation (allowing time for the motor to come
+  to a stop) to ensure location.
+
+PARAMETERS:   
+idx:  A number from 0 to 15 representing the sequence of stepper motor 
+boards found by sm_find_boards().  The board with the lowest 
+jumper setting will be at position 0, the next lowest at 1, etc.  
+dest: the encoder value to stop at.
+dir:  move direction 1=forward, 0=backward   
+acc:  accuracy of stop value.
+
+RETURN VALUE:   The last read value of the encoder (when decision to stop 
+was made).  Inertia and step locations will make the final resting place 
+value differ from this number.
+END DESCRIPTION *************************************************************/
+unsigned smcq_moveto(int idx, unsigned dest, int dir, unsigned acc)
+{
+  unsigned qcr;
+  
+  smc_manual_move(idx,dir,0);                   // go slow
+
+  if ( (dest > acc) && ((dest+acc) > acc) )    // case 1: no overlap
+	 while ( ((qcr=smq_read16(idx)) < (dest-acc)) || (qcr > (dest+acc)) ); 
+  else
+	 while ( ((qcr=smq_read16(idx)) < (dest-acc)) && (qcr > (dest+acc)) );
+			 
+  smc_softreset(idx); 
+  return qcr;
+}
+/*** BeginHeader smc_stat0, smc_stat3 */
+char smc_stat0(int idx);
+char smc_stat3(int idx);
+/*** Endheader */
+
+/* START FUNCTION DESCRIPTION **********************************************
+smc_stat0                    <STEP.LIB>
+
+SYNTAX: char smc_stat0(int idx);
+
+KEYWORDS:  plcbus, motor, stepper, status
+
+DESCRIPTION:   Reads the status register at address 0 (A1=A0=0) on the PCL-AK
+controller.
+
+PARAMETERS:   
+idx:  A number from 0 to 15 representing the sequence of stepper motor 
+boards found by sm_find_boards().  The board with the lowest 
+jumper setting will be at position 0, the next lowest at 1, etc.  
+
+
+RETURN VALUE:   The value from the STAT0 register on the PCL-AK.
+END DESCRIPTION *************************************************************/
+#asm root nodebug
+smc_stat0::
+	push hl             ; save index
+	call sm_sel00       ; set A1=A0=0
+	pop hl              ; restore index
+	call lku_smaddr     ; get address
+	call set82adr       ; point back to controller
+	;in0 l,(0xc0)        ; read status
+	ld		bc,BUSRD0
+	in		l,(c)
+	ld h,0
+	ret
+#endasm
+
+
+
+/* START FUNCTION DESCRIPTION **********************************************
+smc_stat3                   <STEP.LIB>
+
+SYNTAX: char smc_stat3(int idx);
+
+KEYWORDS:  plcbus, motor, stepper, status
+
+DESCRIPTION:   Reads the status register at address 1 (A1=A0=1) on the PCL-AK
+controller.
+
+PARAMETERS:   
+idx:  A number from 0 to 15 representing the sequence of stepper motor 
+boards found by sm_find_boards().  The board with the lowest 
+jumper setting will be at position 0, the next lowest at 1, etc.  
+
+RETURN VALUE:   The value from the STAT3 register on the PCL-AK.
+END DESCRIPTION *************************************************************/
+#asm root nodebug
+smc_stat3::
+	push hl
+	call sm_sel11       ; set A1=A0=0
+	pop hl
+	call lku_smaddr     ; get address
+	call set82adr       ; point back to controller
+	;in0 l,(0xc0)        ; read status
+	ld		bc,BUSRD0
+	in		l,(c)
+	ld h,0          
+	ret
+#endasm
+
+
+
+
+/*** BeginHeader sm_ctlreg, sm_sel00, sm_sel01, sm_sel10, sm_sel11, sm_led */
+char sm_ctlreg(int idx, int dat);
+void sm_drvoe(int idx, int onoff);
+void sm_led(int idx, int onoff);
+void sm_sel00(int idx);
+void sm_sel01(int idx);
+void sm_sel10(int idx);
+void sm_sel11(int idx); 
+/*** Endheader */
+
+
+/* START FUNCTION DESCRIPTION **********************************************
+sm_ctlreg                   <STEP.LIB>
+
+SYNTAX: void sm_ctlreg(int idx, int dat)
+
+KEYWORDS:  plcbus, motor, stepper, control
+
+DESCRIPTION:    Writes a value to the write-only control register on the 
+stepper motor expansion card.  Updates shadow variable for register.
+
+PARAMETERS:   
+idx:  A number from 0 to 15 representing the sequence of stepper motor 
+boards found by sm_find_boards().  The board with the lowest 
+jumper setting will be at position 0, the next lowest at 1, etc.  
+
+RETURN VALUE:   None.
+END DESCRIPTION *************************************************************/
+#asm root nodebug
+sm_ctlreg::          ; (stk: ret-idx-dat)
+	call lku_smaddr   ; hl = board base address based on index
+	ld de,04h         ; de=offset to control reg
+	add hl,de         ; hl = wr latch address
+	call set82adr     ; set PLCBus addr to latch
+
+	ld iy,4           ; get write data off stack (stk: ret-idx-dat)
+	add iy,sp         ; point to parameter
+
+	ld c,(iy)         ; c = new latch val
+	dec iy            ; move pointer to idx
+	dec iy            ;
+
+	ld e,(iy)         ; reload index
+	ld d,0             
+	ld hl,sm_shadow   ; hl = array addr
+	add hl,de         ; increment to shadow var location
+	ld (hl),c         ; store in location
+	ld a,c            ; move for send
+	;out0 (BUSWR),a     ; write out to latch
+	ld bc,BUSWR
+	out (c),a
+	ret
+#endasm
+
+
+/* START FUNCTION DESCRIPTION **********************************************
+sm_drvoe                     <STEP.LIB>
+
+SYNTAX: void sm_drvoe(int idx,int onoff);
+
+KEYWORDS:  plcbus, motor, stepper, driver
+
+DESCRIPTION:    Turns the Motor driver output on or off.
+
+PARAMETERS:   
+idx:  A number from 0 to 15 representing the sequence of stepper motor 
+boards found by sm_find_boards().  The board with the lowest 
+jumper setting will be at position 0, the next lowest at 1, etc.  
+onoff:   0: off  1: on 
+
+RETURN VALUE:   None.
+END DESCRIPTION *************************************************************/
+void sm_drvoe(int idx,int onoff)
+{
+  if (onoff)
+	 sm_ctlreg(idx, (sm_shadow[idx] & 0xdf));       // set OE low
+  else
+	 sm_ctlreg(idx, (sm_shadow[idx] | 0x20));       // set OE high
+}
+
+
+
+/* START FUNCTION DESCRIPTION **********************************************
+sm_led                       <STEP.LIB>
+
+SYNTAX: void sm_led(int idx, int onoff);
+
+KEYWORDS:  plcbus, motor, stepper, led
+
+DESCRIPTION:       Turns the user LED on or off.
+
+PARAMETERS:   
+idx:  A number from 0 to 15 representing the sequence of stepper motor 
+boards found by sm_find_boards().  The board with the lowest 
+jumper setting will be at position 0, the next lowest at 1, etc.  
+onoff:   0: off  1: on 
+
+RETURN VALUE:   None.
+END DESCRIPTION *************************************************************/
+#asm root nodebug
+sm_led::
+	push hl           ; save index
+	call lku_smaddr   ; get board address
+	ld de,04h         ; latch at offset=4
+	add hl,de         ; hl = wr latch address
+	call set82adr     ; set bus address to latch
+
+	pop hl               ; get index
+	push hl
+	call lku_smshadow   ; now l = shadow  
+
+	ld iy,6           ; get data off stack
+	add iy,sp
+	xor a
+	cp (iy+0)          ; on or off ?
+	jr nz,turnon
+
+turnoff::
+	ld  a,l
+	or  04h           ; bit 2 on
+	jr  setled 
+
+turnon::
+	ld  a,l
+	and 0fbh          ; bit 2 off
+ 
+setled::
+	ld e,a
+	pop hl            ; get index
+	push de           ; save data
+	push hl 
+	call sto_smshadow  ; save shadow val           
+	pop de
+	pop hl
+	;out0 (BUSWR),a     ; write out to latch
+	ld bc,BUSWR
+	out (c),a
+	
+	ret
+#endasm
+
+
+
+/* START FUNCTION DESCRIPTION **********************************************
+sm_sel00                     <STEP.LIB>
+
+SYNTAX: sm_sel00(int idx); 
+
+KEYWORDS:  plcbus, motor, stepper, control
+
+DESCRIPTION:    Sets the select bits in the write only register on the 
+stepper motor controller expansion board to 00.  Updates the shadow register 
+for this latch.
+
+PARAMETERS:   
+idx:  A number from 0 to 15 representing the sequence of stepper motor 
+boards found by sm_find_boards().  The board with the lowest 
+jumper setting will be at position 0, the next lowest at 1, etc.  
+
+RETURN VALUE:   None.
+END DESCRIPTION *************************************************************/
+#asm root nodebug
+sm_sel00::
+	push hl 
+ 
+	call lku_smaddr   ; get board base address
+	ld de,04h
+	add hl,de         ; hl = wr latch address
+	call set82adr     ; set PLCBus addr to latch
+
+	pop hl
+	push hl
+	call lku_smshadow   ; get shadow val
+	  
+	ld a,l             ; prep for mask
+	and 0e7h           ; zero out sel bits
+	ld e,a             ; e = val to write 
+ 
+	pop hl             ; get index
+
+	push de            ; stack param for call 
+	push hl            ; stk:idx-dat
+	call sto_smshadow  ; store shadow val
+	pop de             ; restore stk
+	pop de
+
+	;out0 (BUSWR),a       ; write out to latch
+	ld bc,BUSWR
+	out (c),a
+	ret
+
+
+/* START FUNCTION DESCRIPTION **********************************************
+sm_sel01                     <STEP.LIB>
+
+SYNTAX: sm_sel01(int idx); 
+
+KEYWORDS:  plcbus, motor, stepper, control
+
+DESCRIPTION:    Sets the select bits in the write only register on the 
+stepper motor controller expansion board to 01.  Updates the shadow register 
+for this latch.
+
+PARAMETERS:   
+idx:  A number from 0 to 15 representing the sequence of stepper motor 
+boards found by sm_find_boards().  The board with the lowest 
+jumper setting will be at position 0, the next lowest at 1, etc.  
+
+RETURN VALUE:   None.
+END DESCRIPTION *************************************************************/
+sm_sel01::
+	push hl           ; save copy of index
+ 
+	call lku_smaddr   ; get board base address
+	ld de,04h
+	add hl,de         ; hl = wr latch address
+	call set82adr     ; set PLCBus addr to latch
+
+	pop hl              ; retrieve index
+	push hl
+	call lku_smshadow   ; get shadow val
+	  
+	ld a,l             ; prep for mask
+	and 0e7h           ; zero out sel0,1 bits
+	or  08h            ; set sel0
+	ld e,a             ; e = val to write 
+ 
+	pop hl             ; get index
+		  
+	push de            ; stack param for call 
+	push hl            ; stk:idx-dat
+	call sto_smshadow  ; store shadow val
+	pop de             ; restore stk
+	pop de
+
+	;out0 (BUSWR),a       ; write out to latch
+	ld bc,BUSWR
+	out (c),a
+	ret
+
+
+/* START FUNCTION DESCRIPTION **********************************************
+sm_sel10                     <STEP.LIB>
+
+SYNTAX: sm_sel10(int idx); 
+
+KEYWORDS:  plcbus, motor, stepper, control
+
+DESCRIPTION:    Sets the select bits in the write only register on the 
+stepper motor controller expansion board to 10.  Updates the shadow register 
+for this latch.
+
+PARAMETERS:   
+idx:  A number from 0 to 15 representing the sequence of stepper motor 
+boards found by sm_find_boards().  The board with the lowest 
+jumper setting will be at position 0, the next lowest at 1, etc.  
+
+RETURN VALUE:   None.
+END DESCRIPTION *************************************************************/
+sm_sel10::
+	push hl           ; save copy of index
+ 
+	call lku_smaddr   ; get board base address
+	ld de,04h
+	add hl,de         ; hl = wr latch address
+	call set82adr     ; set PLCBus addr to latch
+
+	pop hl              ; retrieve index
+	push hl
+	call lku_smshadow   ; get shadow val
+	  
+	ld a,l             ; prep for mask
+	and 0e7h           ; zero out sel0,1 bits
+	or  10h            ; set sel1
+	ld e,a             ; e = val to write 
+ 
+	pop hl              ; get index
+	push de             ; stack param for call 
+	push hl             ; stk:idx-dat
+	call sto_smshadow   ; store shadow val
+	pop de
+	pop de
+
+	;out0 (BUSWR),a       ; write out to latch
+	ld bc,BUSWR
+	out (c),a
+	ret
+
+
+/* START FUNCTION DESCRIPTION **********************************************
+sm_sel11                     <STEP.LIB>
+
+SYNTAX: sm_sel11(int idx); 
+
+KEYWORDS:  plcbus, motor, stepper, control
+
+DESCRIPTION:    Sets the select bits in the write only register on the 
+stepper motor controller expansion board to 11.  Updates the shadow register 
+for this latch.
+
+PARAMETERS:   
+idx:  A number from 0 to 15 representing the sequence of stepper motor 
+boards found by sm_find_boards().  The board with the lowest 
+jumper setting will be at position 0, the next lowest at 1, etc.  
+
+RETURN VALUE:   None.
+END DESCRIPTION *************************************************************/
+sm_sel11::
+	push hl           ; save copy of index
+ 
+	call lku_smaddr   ; get board base address
+	ld de,04h
+	add hl,de         ; hl = wr latch address
+	call set82adr     ; set PLCBus addr to latch
+
+	pop hl              ; retrieve index
+	push hl
+	call lku_smshadow   ; get shadow val
+	  
+	ld a,l             ; prep for mask
+	or  18h            ; set sel0,1
+	ld e,a             ; e = val to write 
+ 
+	pop hl              ; get index
+	push de             ; stack param for call 
+	push hl             ; stk:idx-dat
+	call sto_smshadow   ; store shadow val
+	pop de
+	pop de
+
+	;out0 (BUSWR),a       ; write out to latch
+	ld bc,BUSWR
+	out (c),a
+	ret
+
+#endasm
+
+
+/*** BeginHeader lku_smaddr, lku_smflag, lku_smstat, lku_smshadow,
+					  sto_smflag, sto_smshadow, sto_smstat */
+int  lku_smaddr(int idx);
+char lku_smflg(int idx);
+char lku_smstat(int idx);
+char lku_smshadow(int idx);
+void sto_smflag(int idx, int dat);
+void sto_smstat(int idx, int dat);
+void sto_smshadow(int idx, int dat);
+/*** Endheader */
+
+
+/*************************************************************************
+int  lku_smaddr(int idx)
+char lku_smflg(int idx)
+char lku_smstat(int idx)
+char lku_smshadow(int idx)
+
+	Looks up the value for the given array
+
+PARAMETERS:
+	 idx:    array index
+
+REGISTERS EFFECTED: de, hl changed, others UNCHANGED
+************************************************************************/
+#asm root nodebug
+lku_smaddr::
+	ld h,0            ; only use l
+	ex de,hl;
+	ld hl,sm_addr     ; hl = array addr
+	add hl,de         ; increment to pointer location
+	add hl,de
+
+	ld e,(hl)         ; e = low byte
+	inc hl 
+	ld d,(hl)         ; d = hi byte
+	ex de,hl
+	ret
+
+lku_smflag::
+	ld h,0
+	ex de,hl
+	ld hl,sm_flag     ; hl = array addr
+	add hl,de         ; increment to pointer location
+	ld l,(hl)         ; l = low byte
+	ld h,0            ; zero out nec for char return
+	ret
+
+lku_smstat:: 
+	ld h,0 
+	ex de,hl
+	ld hl,sm_stat     ; hl = array addr
+	add hl,de         ; increment to pointer location
+	ld l,(hl)         ; l = low byte
+	ld h,0            ; zero out nec for char return
+	ret
+
+lku_smshadow::
+	ld h,0
+	ex de,hl
+	ld hl,sm_shadow   ; hl = array addr
+	add hl,de         ; increment to pointer location
+	ld l,(hl)         ; l = low byte
+	ld h,0            ; zero out nec for char return
+	ret
+#endasm
+
+/*************************************************************************
+void sto_smflg(int idx, int dat)
+void sto_smstat(int idx, int dat)
+void sto_smshadow(int idx, int dat)
+
+	Stores the value in the given array
+
+PARAMETERS:
+	 idx:    array index
+
+REGISTERS EFFECTED: de, hl, iy, c changed, others UNCHANGED
+*************************************************************************/
+#asm root nodebug
+sto_smstat::
+	ld h,0
+	ex de,hl
+	ld hl,sm_stat     ; hl = array addr
+	add hl,de         ; increment to pointer location
+
+	ld iy,4           ; get value off stack
+	add iy,sp
+	ld c,(iy+0)
+	ld (hl),c   
+	ret
+
+sto_smflag::
+	ld h,0
+	ex de,hl
+	ld hl,sm_flag     ; hl = array addr
+	add hl,de         ; increment to pointer location
+
+	ld iy,4           ; get value off stack
+	add iy,sp
+	ld c,(iy+0)
+	ld (hl),c   
+	ret
+
+sto_smshadow::
+	ld h,0
+	ex de,hl
+	ld hl,sm_shadow   ; hl = array addr
+	add hl,de         ; increment to pointer location
+
+	ld iy,4           ; get value off stack
+	add iy,sp
+	ld c,(iy+0)
+	ld (hl),c   
+	ret
+
+#endasm
+
+
+/*** BeginHeader sm_int */
+void sm_int();
+/*** Endheader */
+
+/* START FUNCTION DESCRIPTION **********************************************
+sm_int                       <STEP.LIB>
+
+SYNTAX: n/a 
+
+KEYWORDS:  plcbus, motor, stepper, interrupt
+
+DESCRIPTION:   Stepper motor controller general isr.
+	 Checks the status of all boards listed in the array sm_addr for an 
+interrupt request (updates sm_stat).  When an IRQ is detected, the service
+array flag (sm_flags) is set and the stepper motor board is issued a software
+reset which deactivates the interrupt request eminating from the controller.  
+	The service flags are monitored by the master program to determine when an 
+operation has completed.
+
+To use this function do the following:
+
+1) The function sm_find boards should be called at the beginning 
+	of the program.
+
+2) Add the following define statement to link in this function to the PLCBus
+	ISR:
+		  #define USE_MOTORCARD        // activate motor_int isr
+
+3) Enable the PLCBus interrupt (/AT line) with the following statements
+	at the beginning of your program:
+
+		relocate_int1();                     // Relocates the interrupt vector
+		outport(ITC,(inport(ITC)|0x02));     // Enables IRQ #1
+
+  If you wish to do all motor processing in the background, replace the 
+code between the labels "mirq" and "fin" with your own code. 
+
+RETURN VALUE:   None.
+END DESCRIPTION *************************************************************/
+#asm root nodebug
+sm_int::
+			  push af                      ; save the registers
+			  push hl
+			  push bc
+			  push de
+			  push ix
+			  push iy
+					
+							
+;***********************************************************************
+			  ld a,0                       ; index counter
+mirq:: 
+			  ld l,a                       ; get index
+			  push af                      ; save index
+			  call lku_smaddr              ; hl = base address
+			  pop af                       ; a = index
+chkend::
+			  ld de,1h                     ; for add to hl
+			  adc hl,de                    ; incr address to test for 0
+			  jr  z,fin                    ; if addr was 0xffff, exit
+			  dec hl                       ; restore addr
+			  ex  de,hl                    ; hl = 0, de =addr
+
+			  ld h,0
+			  ld l,a                       ; restore index
+			  push af
+			  call smc_stat0               ; get status
+			  pop af                       ; a=index
+
+			  push hl                      ; stack status param 
+			  ld h,0
+			  ld l,a                       ; restore index
+			  push af                      ; save index 
+			  call sto_smstat              ; save status
+			  pop af                       ; restore index
+			  pop hl                       ; restore status   
+
+			  bit 7,l                      ; Check if controller generated IRQ
+			  jr nz,nores                  ; If not, cleanup and exit
+		 
+			  ld c,1                       ; flag = active
+			  ld l,a                       ; restore index
+			  push bc                      ; Stack flag parameter
+			  push af                      ; stack index
+			  call sto_smflag
+			  pop af                       ; Restore Stack 
+			  pop bc                       ; 
+
+			  ld h,0
+			  ld l,a                       ; get index
+			  push af                      ; save index
+			  call smc_softreset           ; RESET controller - turn off IRQ
+			  pop af                       ; restore index
+nores::
+			  inc a                        ; point to next service flag
+			  jr mirq                      ; check on next board
+	
+fin::
+; RESTORE PLCBus registers
+
+				
+				pop iy
+				pop ix
+				pop de                      ; restore the registers
+				pop bc
+				pop hl
+				pop af
+				ret
+#endasm
+
+
+
+/*** BeginHeader set82adr, set81adr */
+void set82adr(unsigned addr);
+void set81adr(unsigned addr);
+/*** Endheader */
+
+/* START FUNCTION DESCRIPTION **********************************************
+set82adr                     <STEP.LIB>
+
+SYNTAX: set82adr(int addr); 
+
+KEYWORDS:  plcbus, motor, stepper, address
+
+DESCRIPTION:    Sends a two-byte address across the PLCBus (for 8x2 mode)
+	execution time: 
+  (execution times assume 0 wait states inserted)
+
+	set82adr: 87 cycles =  14.16usec @ 6.144mhz (71khz)
+									9.44usec @ 9.216mhz (109khz)
+
+PARAMETERS:   
+addr: address to send to bus.
+
+RETURN VALUE:   None.
+END DESCRIPTION *************************************************************/
+#asm root nodebug                                               
+set82adr::                     ; 8x2 mode: h=busadr0 l=busadr1    16 (CALL)
+	ex de,hl                                                     ; 3
+	ld hl,SHBUS0+1                                               ; 9
+	ld (hl),d                   ; write BUSADR0 to shadow        ; 7
+	;out0  (BUSADR0),d                                            ; 16 (4-WAIT)
+	ld bc,BUSADR0
+	out (c),d
+
+	inc hl                                                       ; 4
+	ld (hl),e                   ; write BUSADR1 to shadow        ; 7
+	;out0 (BUSADR1),e           ; second byte                    ; 16
+	ld bc,BUSADR1
+	out (c),e
+	ret                                                          ; 9
+
+
+
+/* START FUNCTION DESCRIPTION **********************************************
+set81adr                     <STEP.LIB>
+
+SYNTAX: set81adr(int addr); 
+
+KEYWORDS:  plcbus, motor, stepper, address
+
+DESCRIPTION:    Sends the last byte of a two-byte address across the 
+PLCBus (for 8x2 mode)
+	execution time: 
+  (execution times assume 0 wait states inserted)
+
+	set81adr: 60 cycles =   9.77usec @ 6.144mhz (102khz)
+									6.50usec @ 9.216mhz (154khz)
+
+PARAMETERS:   
+addr: address to send to bus, low byte used.
+
+RETURN VALUE:   None.
+END DESCRIPTION *************************************************************/
+
+set81adr::                                                      ;16 (CALL)
+	ex de,hl                                                     ; 3
+	ld hl,SHBUS0+2                                               ; 9
+	ld (hl),e                   ; write BUSADR1 to shadow        ; 7
+	;out0  (BUSADR1),e           ; second byte                    ; 16
+	ld bc,BUSADR1
+	out (c),e
+	ret                                                          ; 9
+#endasm
+

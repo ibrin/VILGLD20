@@ -1,0 +1,487 @@
+/* START LIBRARY DESCRIPTION *********************************************
+BIOS.LIB
+	Copyright (c) 1994, Z-World.
+
+DESCRIPTION:
+	Descriptions and prototypes for bios routines.
+
+SUPPORT LIB'S:
+
+END DESCRIPTION **********************************************************/
+
+/*** BeginHeader */
+
+unsigned	inport(unsigned port);
+void		outport(unsigned port, unsigned value);
+int		ee_rd(int address);
+int		ee_wr(int address, char value);
+void		di();
+void		ei();
+void		DI();
+void		EI();
+unsigned	bit(void *address, unsigned bit);
+unsigned	BIT(void *address, unsigned bit);
+void		set(void *address, unsigned bit);
+void		SET(void *address, unsigned bit);
+void		res(void *address, unsigned bit);
+void		RES(void *address, unsigned bit);
+unsigned	IBIT(unsigned port, unsigned bit);
+void		ISET(unsigned port, unsigned bit);
+void		IRES(unsigned port, unsigned bit);
+void		hitwd();
+int		wderror();
+void		intrmode_0();
+void		intrmode_1();
+void		intrmode_2();
+void		runwatch();
+int		kbhit();
+void		exit(int exitode);
+unsigned	sysclock();
+int		powerlo();
+int		z180baud(int clock, int baud);
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+inport                       <BIOS.LIB>
+
+SYNTAX: unsigned inport(unsigned port);
+
+KEYWORDS: bios
+
+DESCRIPTION: Reads value from I/O port. This may be an internal Z180
+register, or it may access external hardware. See the miniature
+controller hardware manual for a list of I/O ports.
+
+RETURN VALUE: Value from I/O port.
+
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+outport                      <BIOS.LIB>
+
+SYNTAX: void outport(unsigned port, unsigned value);
+
+KEYWORDS: bios
+
+DESCRIPTION: Writes value to I/O port. This may be an internal Z180
+register, or it may access external hardware. See the miniature
+controller hardware manual for a list of I/O ports.
+
+RETURN VALUE: None.
+
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+ee_rd                        <BIOS.LIB>
+
+SYNTAX: int ee_rd(int address);
+
+KEYWORDS: bios
+
+DESCRIPTION: Reads value from EEPROM at specified address.
+
+RETURN VALUE: EEPROM data (0-255) if successful; negative value if
+unable to read EEPROM.
+
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+ee_wr                        <BIOS.LIB>
+
+SYNTAX: int ee_wr(int address, char value);
+
+KEYWORDS: bios
+
+DESCRIPTION: Writes value to EEPROM at specified address.
+
+RETURN VALUE: 0 if successful; negative value if unable to read EEPROM.
+
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+di                           <BIOS.LIB>
+
+SYNTAX: void di();
+
+KEYWORDS: bios
+
+DESCRIPTION: Disables interrupts. Use DI (upper-case) for better
+efficiency.
+
+RETURN VALUE: None.
+
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+ei                           <BIOS.LIB>
+
+SYNTAX: void ei();
+
+KEYWORDS: bios
+
+DESCRIPTION: Enables interrupts. Use EI (upper-case) for better
+efficiency.
+
+RETURN VALUE: None.
+
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+DI                           <BIOS.LIB>
+
+SYNTAX: void DI();
+
+KEYWORDS: bios
+
+DESCRIPTION: Disables interrupts. Dynamic C expands this call inline.
+
+RETURN VALUE: None.
+
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+EI                           <BIOS.LIB>
+
+SYNTAX: void EI();
+
+KEYWORDS: bios
+
+DESCRIPTION: Enables interrupts. Dynamic C expands this call inline.
+
+RETURN VALUE: None.
+
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+bit                          <BIOS.LIB>
+
+SYNTAX: unsigned bit(void *address, unsigned bit);
+
+KEYWORDS: bios
+
+DESCRIPTION: Reads value of specified bit at memory address. bit may
+be from 0 to 31. Use BIT (upper-case) for inline expansion of this
+call. This is equivalent to the following expression, but more
+efficient:
+	(*(long *)address >> bit) & 1
+
+RETURN VALUE: 1 if specified bit is set; 0 if bit is clear.
+
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+BIT                          <BIOS.LIB>
+
+SYNTAX: unsigned BIT(void *address, unsigned bit);
+
+KEYWORDS: bios
+
+DESCRIPTION: Reads value of specified bit at memory address. bit may
+be from 0 to 31. Dynamic C will attempt to expand this call inline.
+This is equivalent to the following expression, but more efficient:
+	(*(long *)address >> bit) & 1
+
+RETURN VALUE: 1 if specified bit is set; 0 if bit is clear.
+
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+set                          <BIOS.LIB>
+
+SYNTAX: void set(void *address, unsigned bit);
+
+KEYWORDS: bios
+
+DESCRIPTION: Sets specified bit at memory address to 1. bit may be
+from 0 to 31. Use SET (upper-case) for inline expansion of this
+call. This is equivalent to the following expression, but more
+efficient:
+	*(long *)address |= 1L << bit
+
+RETURN VALUE: None.
+
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+SET                          <BIOS.LIB>
+
+SYNTAX: void SET(void *address, unsigned bit);
+
+KEYWORDS: bios
+
+DESCRIPTION: Sets specified bit at memory address to 1. bit may
+be from 0 to 31. Dynamic C will attempt to expand this call inline.
+This is equivalent to the following expression, but more efficient:
+	*(long *)address |= 1L << bit
+
+RETURN VALUE: None.
+
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+res                          <BIOS.LIB>
+
+SYNTAX: void res(void *address, unsigned bit);
+
+KEYWORDS: bios
+
+DESCRIPTION: Clears specified bit at memory address to 0. bit may be
+from 0 to 31. Use RES (upper-case) for inline expansion of this call.
+This is equivalent to the following expression, but more efficient:
+	*(long *)address &= ~(1L << bit)
+
+RETURN VALUE: None.
+
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+RES                          <BIOS.LIB>
+
+SYNTAX: void RES(void *address, unsigned bit);
+
+KEYWORDS: bios
+
+DESCRIPTION: Clears specified bit at memory address to 0. bit may
+be from 0 to 31. Dynamic C will attempt to expand this call inline.
+This is equivalent to the following expression, but more efficient:
+	*(long *)address &= ~(1L << bit)
+
+RETURN VALUE: None.
+
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+IBIT                         <BIOS.LIB>
+
+SYNTAX: unsigned IBIT(unsigned port, unsigned bit);
+
+KEYWORDS: bios
+
+DESCRIPTION: Reads I/O port and returns value of specified bit. bit
+may be from 0 to 7. port may be an internal Z180 register, or it may
+access external hardware. See the miniature controller hardware
+manual for a list of I/O ports.
+
+RETURN VALUE: 1 if specified bit is set; 0 if bit is clear.
+
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+ISET                         <BIOS.LIB>
+
+SYNTAX: void ISET(unsigned port, unsigned bit);
+
+KEYWORDS: bios
+
+DESCRIPTION: Reads I/O port, set specified bit to 1, and writes the
+value back to the port. bit may be from 0 and 7. port may be an
+internal Z180 register, or it may access external hardware. See the
+miniature controller hardware manual for a list of I/O ports.
+
+RETURN VALUE: None.
+
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+IRES                         <BIOS.LIB>
+
+SYNTAX: void IRES(unsigned port, unsigned bit);
+
+KEYWORDS: bios
+
+DESCRIPTION: Reads I/O port, clears specified bit to 0, and writes
+the value back to the port. bit may be from 0 and 7. port may be an
+internal Z180 register, or it may access external hardware. See the
+miniature controller hardware manual for a list of I/O ports.
+
+RETURN VALUE: None.
+
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+hitwd                        <BIOS.LIB>
+
+SYNTAX: void hitwd();
+
+KEYWORDS: bios
+
+DESCRIPTION: Hits the watchdog timer, postponing a hardware reset
+for approximately 1.2 - 1.6 seconds (value depends on hardware
+configuration). Unless the watchdog timer is disabled, a program
+must call this function periodically or the miniature controller
+will automatically reset itself. This allows the controller to
+recover from many programming errors that cause the program to
+execute invalid code or enter an infinite loop.
+
+If the virtual driver is enabled, it will call hitwd in the
+background but provide virtual watchdogs in its place. See
+VdWdogHit for more information. For information about setting
+jumpers to enable/disable the watchdog (not available on all
+boards), see the appropriate miniature controller hardware manual.
+
+RETURN VALUE: None.
+
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+wderror                      <BIOS.LIB>
+
+SYNTAX: int wderror();
+
+KEYWORDS: bios
+
+DESCRIPTION: Determines if the previous reset was caused by the
+watchdog timer. This feature is not available on all boards. See
+the hardware manual for more information.
+
+RETURN VALUE: Positive non-zero value if watchdog caused last reset;
+zero if not; negative value if not supported.
+
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+intrmode_0                   <BIOS.LIB>
+
+SYNTAX: void intrmode_0();
+
+KEYWORDS: bios
+
+DESCRIPTION: Sets Z180 interrupt mode to 0. The default mode for
+Dynamic C is mode 2. Do not select another mode unless you have
+disabled interrupts for all peripheral devices using mode 2
+interrupts.
+
+RETURN VALUE: None.
+
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+intrmode_1                   <BIOS.LIB>
+
+SYNTAX: void intrmode_1();
+
+KEYWORDS: bios
+
+DESCRIPTION: Sets Z180 interrupt mode to 1. The default mode for
+Dynamic C is mode 2. Do not select another mode unless you have
+disabled interrupts for all peripheral devices using mode 2
+interrupts.
+
+RETURN VALUE: None.
+
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+intrmode_2                   <BIOS.LIB>
+
+SYNTAX: void intrmode_2();
+
+KEYWORDS: bios
+
+DESCRIPTION: Sets Z180 interrupt mode to 2. This is the default
+mode for Dynamic C. Do not select another mode unless you have
+disabled interrupts for all peripheral devices using mode 2
+interrupts.
+
+RETURN VALUE: None.
+
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+runwatch                     <BIOS.LIB>
+
+SYNTAX: void runwatch();
+
+KEYWORDS: bios
+
+DESCRIPTION: Allows Dynamic C to update watch expressions. Calling
+runwatch periodically enables evaluation of watch expressions while
+the program is running. Watch expressions may always be evaluated
+when the program is stopped.
+
+RETURN VALUE: None.
+
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+kbhit                        <BIOS.LIB>
+
+SYNTAX: int kbhit();
+
+KEYWORDS: bios
+
+DESCRIPTION: Detects keystrokes in the Dynamic C STDIO window.
+
+RETURN VALUE: Non-zero if a key has been pressed; zero otherwise.
+
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+exit                         <BIOS.LIB>
+
+SYNTAX: void exit(int exitode);
+
+KEYWORDS: bios
+
+DESCRIPTION: Stops the program and returns exitcode to Dynamic C.
+Dynamic C uses values above 128 for run-time errors. When not
+debugging, exit will run an infinite loop, causing a watchdog
+timeout if the watchdog is enabled.
+
+RETURN VALUE: Does not return.
+
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+sysclock                     <BIOS.LIB>
+
+SYNTAX: unsigned sysclock();
+
+KEYWORDS: bios
+
+DESCRIPTION: Returns system clock speed in units of 1200Hz. Some
+common clock speeds and the corresponding sysclock values are listed
+below:
+		6.144MHz		-	0x1400 (5120)
+		9.216MHz		-	0x1E00 (7680)
+		12.288MHz	-	0x2800 (10240)
+		18.432MHz	-	0x3C00 (15360)
+		24.576MHz	-	0x5000 (20480)
+
+RETURN VALUE: Clock speed / 1200.
+
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+powerlo                      <BIOS.LIB>
+
+SYNTAX: int powerlo();
+
+KEYWORDS: bios
+
+DESCRIPTION: It is possible for the supply voltage to drop low enough
+to generate a power-fail interrupt but then return to normal without
+ever dropping low enough to reset the board. Call this routine from
+an NMI (power-fail) interrupt handler to detect if power has returned.
+
+RETURN VALUE: 1 if voltage is below NMI level; 0 otherwise.
+
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+z180baud                     <BIOS.LIB>
+
+SYNTAX: int z180baud(int clock, int baud);
+
+KEYWORDS: bios
+
+DESCRIPTION: Returns the control byte for register CNTLBx for generation of
+the requested baud rate. Clock is the system clock in units of 1200 and baud
+is the desired baud rate in units of 1200. For example, to compute the control
+byte with 9600 baud and 9Mhz, the function call would be: z180baud(0x1e00, 8).
+The returned value only affects bits 0-3 and 5 of CNTLBx. Other bits should be
+set accordingly before outputting the control to CNTLBx.
+
+RETURN VALUE: Control byte for CNTLBx for baud rate generation.
+
+END DESCRIPTION **********************************************************/

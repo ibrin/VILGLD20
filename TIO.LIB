@@ -1,0 +1,239 @@
+/*** BeginHeader tioSetEcho, _tioStatus */
+
+int tioSetEcho(int on_off);
+
+extern int _tioStatus;
+
+/*** EndHeader */
+
+int _tioStatus;
+
+nodebug int tioSetEcho(int on_off) {
+	auto int oldValue;
+	oldValue = _tioStatus;
+	_tioStatus = on_off;
+	return oldValue;
+}
+
+/*** BeginHeader _tioChan */
+
+#use aasc.lib
+extern struct _Channel *_tioChan;
+
+/*** EndHeader */
+
+struct _Channel *_tioChan;
+
+/*** BeginHeader tioInit */
+
+int tioInit(int devType, long devParam);
+
+/*** EndHeader */
+
+#ifndef TIOINBUFSIZ
+#define TIOINBUFSIZ 256
+#endif
+
+#ifndef TIOOUTBUFSIZ
+#define TIOOUTBUFSIZ 256
+#endif
+
+char _tioInBuf[TIOINBUFSIZ];
+char _tioOutBuf[TIOOUTBUFSIZ];
+
+nodebug int tioInit(int devType, long devParam) {
+	_tioChan = aascOpen(devType,0,devParam,NULL);
+	if (_tioChan) {
+		aascSetReadBuf(_tioChan, _tioInBuf, sizeof(_tioInBuf));
+		aascSetWriteBuf(_tioChan, _tioOutBuf, sizeof(_tioOutBuf));
+		aascFlush(_tioChan);
+		aascTxSwitch(_tioChan,1);
+		aascRxSwitch(_tioChan,1);
+		_tioStatus = 1;
+		return 1;
+	} else {
+		return 0;
+	}
+}
+
+/*** BeginHeader tioprintf */
+
+int tioprintf(char *fmt,...);
+
+/*** EndHeader */
+
+nodebug speed int __tioputch(char ch) {
+	while (!aascWriteChar(_tioChan,ch));
+	if (ch == '\n')
+		while (!aascWriteChar(_tioChan,'\r'));
+}
+
+nodebug int tioprintf(char *fmt,...) {
+	doprnt(__tioputch,fmt,((char*)&fmt+sizeof(fmt)));
+//	__tioputch(0);
+}
+
+/*** BeginHeader tiogetswf */
+
+int tiogetswf(char *, int size);
+
+/*** EndHeader */
+
+nodebug int tiogetswf(char *s, int size) {
+	auto res;
+	char *p, c;
+
+	res = 0;
+	costate {
+		p = s;
+		while (1)
+		{
+			waitfor(aascReadChar(_tioChan,&c));
+			switch (c)
+			{
+				case '\b':
+					if (s != p)
+					{
+						if (_tioStatus)
+							waitfor(aascWriteBlk(_tioChan,"\b \b",3,1));
+						p--;
+					}
+					break;
+				case '\r':
+					*p = 0;
+					waitfor(aascWriteBlk(_tioChan,"\n\r",2,1));
+					c = 0;
+					break;
+				default:
+					if ((p-s)<size) {
+						*p++= c;
+						if (_tioStatus)
+							waitfor(aascWriteChar(_tioChan,c));
+					}
+					break;
+			}
+			if (! c)
+				break;
+		}
+		res = 1;
+	}
+	return res;
+}
+
+/*** BeginHeader tioselectkey */
+
+int tioselectkey(char *selection);
+
+/*** EndHeader */
+
+nodebug int tioselectkey(char *selection) {
+	auto int retval;
+	auto char *p;
+	auto char ch;
+
+	retval = 0;
+	if (aascReadChar(_tioChan,&ch)) {
+		p = strchr(selection,ch);
+		if (p) {
+			if (_tioStatus) aascWriteChar(_tioChan,ch);
+			aascWriteBlk(_tioChan,"\n\r",2,1);
+			}
+		return p ? p-selection+1 : 0;
+	} else {
+		return 0;
+	}
+}
+
+/*** BeginHeader tioOutFree */
+
+int tioOutFree();
+
+/*** EndHeader */
+
+nodebug speed int tioOutFree() {
+	return aascWriteBufFree(_tioChan);
+}
+
+/*** BeginHeader tioOutUsed */
+
+int tioOutUsed();
+
+/*** EndHeader */
+
+nodebug speed int tioOutUsed() {
+	return aascWriteBufLeft(_tioChan);
+}
+
+/*** BeginHeader tioInFree */
+
+int tioInFree();
+
+/*** EndHeader */
+
+nodebug speed int tioInFree() {
+	return aascReadBufFree(_tioChan);
+}
+
+/*** BeginHeader tioInUsed */
+
+int tioInUsed();
+
+/*** EndHeader */
+
+nodebug speed int tioInUsed() {
+	return aascReadBufLeft(_tioChan);
+}
+
+/*** BeginHeader tioputswf */
+
+int tioputswf(char *);
+
+/*** EndHeader */
+
+nodebug speed int tioputswf(char *str) {
+	auto int res;
+	static char *next;
+	static int left;
+	auto int chunk;
+	
+	res = 0;
+	costate {
+		left = strlen(str);
+		next = str;
+		while (*next) {
+			chunk = aascWriteBlk(_tioChan,next,left,0);
+			if (chunk) {
+				if (chunk == left) {
+					res = 1;
+					abort;
+					}
+				left -= chunk;
+				next += chunk;
+				yield;
+			} else {
+				yield;
+			}
+		}
+	}
+	return res;
+}
+
+/*** BeginHeader tioputch */
+
+int tioputch(char ch);
+
+/*** EndHeader */
+
+int tioputch(char ch) {
+	return aascWriteChar(_tioChan,ch);
+}
+
+/*** BeginHeader tiogetch */
+
+int tiogetch(char *ch);
+
+/*** EndHeader */
+
+int tiogetch(char *ch) {
+	return aascReadChar(_tioChan,ch);
+}

@@ -1,0 +1,460 @@
+/* START LIBRARY DESCRIPTION *********************************************
+LSTAR.LIB
+    Copyright (c) 1995, Z-World.
+
+DESCRIPTION: Support for the Little Star.
+
+SUPPORT LIB'S: sys.lib, drivers.lib
+END DESCRIPTION **********************************************************/
+
+/*** BeginHeader */
+#if BOARD_TYPE!=L_STAR
+#error "PK22xx/Little Star only."
+#endif
+/*** EndHeader */
+
+/*** BeginHeader */
+
+#ifndef BUSRD2
+#define BUSRD2 0xc4
+#endif
+    
+    char OUT14, OUT13, OUT12, OUT11, OUT10, OUT9;
+    char OUT8, OUT7, OUT6, OUT5, OUT4, OUT3, OUT2, OUT1;
+
+    // *** Previous digital register inputs:
+    char BANK2PREV, BANK1PREV;
+        
+    // Virtual reg's for digital inputs; hold image of digital inputs:
+    char DIGIN16,DIGIN15,DIGIN14,DIGIN13,DIGIN12,DIGIN11,DIGIN10,DIGIN9;
+    char DIGIN8, DIGIN7, DIGIN6, DIGIN5, DIGIN4, DIGIN3, DIGIN2, DIGIN1;
+
+/*** EndHeader */
+
+/*** BeginHeader VIOInit, VIODrvr */
+void VIOInit();
+void VIODrvr();
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+VIOInit                      <LSTAR.LIB>
+
+SYNTAX: void VIOInit();
+
+KEYWORDS: Virtual IO's, Initialize.
+
+DESCRIPTION: Dummy function used as a host for GLOBAL_INIT of the
+             Virtual IO variables. Virtual input's are read and virtual
+             outputs are written out whenever the function VIODrvr() is
+             called. Inputs are DIGIN1 to DIGIN16. Outputs are OUT1 to 
+             OUT16. DIGIN's has to be the same for two successive reads to 
+             be valid.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug
+void VIOInit()
+{
+    char *p;
+    int k;
+   
+#GLOBAL_INIT
+    {
+        p = &OUT14;
+        for (k = 0; k < 14; k++) 
+            *p--= 0;
+    }
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+VIODrvr                      <LSTAR.LIB>
+
+SYNTAX: void VIODrvr();
+
+KEYWORDS: Virtual IO's Driver
+
+DESCRIPTION: Update the virtual inputs DIGIN1 to DIGIN16.
+             The virtual outputs OUT1 to OUT14 are send out to corresponding 
+             output ports.
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+#asm nodebug fast
+VIODrvr::
+; make sure 1 bit is on on all nonzero outputs
+    ld      hl,OUT1
+    ld      b,14                ; 14 outputs
+uoutb:
+    ld      a,(hl)              ; 7
+    add     a,0feh              ; 6 if hl other than zero or 1 is carry
+    jr      nc,uoutc
+    ld      (hl),1              ; 6 set to 1 if other than 0 or 1
+uoutc:
+    inc     hl                  ; 6
+    djnz    uoutb               ; 9
+;
+    ld      hl, OUT1
+    ld      bc, DRV1
+    ld      d,8
+ddout1:
+    ld      a,(hl)
+    or      a
+    jr      z, dout11
+    ld      a,0ffh
+dout11:
+    out     (c),a
+
+    inc     c
+
+    inc     hl
+    dec     d
+    jr      nz,ddout1
+
+    ld      hl, OUT9
+    ld      bc, DRV9
+    ld      d,6
+ddout2:
+    ld      a,(hl)
+    or      a
+    jr      z,dout21
+    ld      a,0ffh
+dout21:
+    out     (c),a
+
+    inc     c
+
+    inc     hl
+    dec     d
+    jr      nz,ddout2
+
+; now get digital inputs from bank1
+    ld      a,(BANK1PREV)
+    ld      d,a
+    ld      bc, DIGBANK1
+    in      a, (c)
+
+    ld      (BANK1PREV),a           ; update previous
+    ld      e,a                     ; e has current value
+    xor     a,d                     ; a has differences
+    ld      hl,DIGIN1               ; point to first bit
+    call    alloc_bits              ; allocate the bits
+
+; now get digital inputs from bank2
+    ld      a,(BANK2PREV)
+    ld      d,a
+    ld      bc, DIGBANK2
+    in      a, (c)
+
+    ld      (BANK2PREV),a           ; update previous
+    ld      e,a                     ; e has current value
+    xor     a,d                     ; a has differences
+    ld      hl,DIGIN9               ; point to first bit
+    call    alloc_bits              ; allocate the bits
+    ret
+
+alloc_bits:
+    ld      b,8
+    ld      c,0
+uoutd:
+    bit     0,a
+    jr      nz,uoutd5
+    bit     0,e
+    jr      z,uoutd4
+    ld      (hl),1
+    jr      uoutd5
+uoutd4:
+    ld      (hl),c                  ; zero
+uoutd5:
+    rra                             ;rla
+    rr      e                       ;rl e
+    inc     hl
+    djnz    uoutd
+    ret
+#endasm
+
+/*** BeginHeader up_digin */
+
+int up_digin(int chan);
+
+/*** Endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+up_digin                     <LSTAR.LIB>
+
+SYNTAX: int up_digin(int chan);
+
+KEYWORDS: input, digital
+
+DESCRIPTION: Reads value of digital input port.  "chan" is the digital 
+channel 1-16.
+
+RETURN VALUE: 1 or 0, depending on the input voltage to the port.
+END DESCRIPTION **********************************************************/
+nodebug int up_digin(int chan)
+{
+    if (chan < 1 || chan > 16) 
+        return -1;
+    
+    if (chan < 9) 
+       return (IBIT(DIGBANK1, chan -1));
+    else 
+       return (IBIT(DIGBANK2, chan -9));
+}
+
+/*** BeginHeader up_setout */
+
+int up_setout(int nout, int onoff);
+
+/*** Endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+up_setout                    <LSTAR.LIB>
+
+SYNTAX: int up_setout(int nout, int onoff);
+
+KEYWORDS: digital, output
+
+DESCRIPTION: Sets a digital output to 1 (active) or 0 (inactive).  
+"nout" is the digital output channel number 1-14. 
+"onoff" is the binary output value for the specified channel: 
+1 => active; 0 => inactive.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug int up_setout(int nout, int onoff)
+{
+    auto char     k;
+
+    int ioadr[16] =
+    {
+        0xff, DRV1, DRV2, DRV3, DRV4, DRV5, DRV6, DRV7, DRV8,
+        DRV9, DRV10, DRV11, DRV12, DRV13, DRV14
+    };
+    if (nout < 1 || nout > 14) 
+        return -1;
+
+    if (iff())          // If at least 1 interrupt is on
+    {
+        DI();
+        k = 1;          // change sequence to avoid conflict during INT call
+    }
+    else 
+        k = 0;          // No int's are on
+
+    nout = nout & 15;   // Mask for address domain.
+    *(&OUT1 - 1 + nout) = (onoff != 0); // Store image in virtual reg
+                        // tempout = 0;
+    
+    if (onoff)  outport(ioadr[nout], 0xff); // Init output
+    else outport(ioadr[nout], 0x00);
+    if (k) EI();
+}
+
+/*** BeginHeader _sysZIfPwrFail */
+
+/*** EndHeader */
+
+#asm
+_sysZIfPwrFail::
+			ld		bc,NMI
+			in    a, (c)       ; read NMI bit
+			bit   6, a              ;
+			ret
+#endasm
+
+/*** BeginHeader lc_beepcount */
+
+extern int lc_beepcount;
+
+/*** EndHeader */
+
+int lc_beepcount;
+
+#funcchain _GLOBAL_INIT _lcbeepinit
+void _lcbeepinit() {
+	lc_beepcount = 0;
+}
+
+#funcchain _sys_781 lcBeep781
+#asm
+lcBeep781::
+	ld  hl,(lc_beepcount)
+	ld  a,h
+	or  l
+	ret z       ; if zero
+	dec hl
+	ld  (lc_beepcount),hl
+	ld  a,h
+	or  l
+	ret nz
+	ld  bc,BUZZER
+	xor a
+	out (c),a
+	ret
+#endasm
+
+/*** BeginHeader brdChkKB, brdQuitChkKB, brdResKB */
+
+void brdChkKB();
+void brdQuitChkKB();
+void brdResKB();
+
+/*** EndHeader */
+
+#asm
+brdChkKB::
+	ld       bc,KROW1L       ; read row1 lower nibble
+	in       a,(c)
+	and      0f0h            ; mask bits to be safe
+	cp       0f0h
+	jr       nz, kbtest1     ; if any key is detected proceed to process key
+	ld       bc,KROW1H       ; read row1 upper nibble
+	in       a,(c)
+	and      030h            ; mask bits to be safe
+	cp       030h
+	jr       nz, kbtest1     ; if any key is detected proceed to process key
+	
+;11-4-94,aoc   
+#ifdef  KEY4x6
+	ld       bc,KROW3L       ; read row3 lower nibble
+	in       a,(c)
+	and      0f0h            ; mask bits to be safe
+	cp       0f0h
+	jr       nz, kbtest1     ; if any key is detected proceed to process key
+	ld       bc,KROW3H       ; read row3 upper nibble
+	in       a,(c)
+	and      030h            ; mask bits to be safe
+	cp       030h
+	jr       nz, kbtest1     ; if any key is detected proceed to process key
+	
+	ld       bc,KROW4L       ; read row4 lower nibble
+	in       a,(c)
+	and      0f0h            ; mask bits to be safe
+	cp       0f0h
+	jr       nz, kbtest1     ; if any key is detected proceed to process key
+	ld       bc,KROW4H       ; read row4 upper nibble
+	in       a,(c)
+	and      030h            ; mask bits to be safe
+	cp       030h
+	jr       nz, kbtest1     ; if any key is detected proceed to process key
+#endif
+	
+	ld       bc,KROW2L       ; read row2 lower nibble
+	in       a,(c)
+	and      0f0h            ; mask bits to be safe
+	cp       0f0h
+	jr       nz, kbtest1     ; if any key is detected proceed to process key
+	ld       bc,KROW2H       ; read row2 upper nibble
+	in       a,(c)
+	and      030h            ; mask bits to be safe
+	cp       030h
+	ret      z     ; jump if no codes (all high)
+;
+kbtest1:
+	ld      h, 0             ; remember as row 1
+	ld      bc, KROW1L       ; read lower nibble
+	in      l, (c)
+	rrc     l
+	rrc     l
+	rrc     l
+	rrc     l                ;  move data from (d7,d4) to (d3,d0)
+
+	ld      bc, KROW1H
+	in      a,(c)            ; read upper nibble
+
+	and     l                ; and upper nibble and lower nibble together
+	rlc      a
+	rlc      a               ;    make same as CPLC
+
+	cpl                      ; complement, key pressed is 1
+	ld      l,a              ; copy to l
+	and     0fch             ; mask the 6 keys
+	ret     nz      ; check for key pressed
+
+	ld      h, 1             ; remember as row 2
+	ld      bc, KROW2L       ; read lower nibble
+	in      l, (c)
+	rrc     l
+	rrc     l
+	rrc     l
+	rrc     l                ;  move data from (d7,d4) to (d3,d0)
+
+	ld      bc, KROW2H
+	in      a,(c)            ; read upper nibble
+
+	and     l                ; and upper nibble and lower nibble together
+	rlc     a
+	rlc     a
+
+	cpl                      ; complement, key pressed is 1
+	ld      l,a              ; copy to l
+	and     0fch             ; mask the 6 keys
+	ret     nz      ; check for key pressed
+
+;11-4-94,aoc
+#ifdef KEY4x6
+	ld      h, 2             ; remember as row 3
+	ld      bc, KROW3L       ; read lower nibble
+	in      l, (c)
+	rrc     l
+	rrc     l
+	rrc     l
+	rrc     l                ;  move data from (d7,d4) to (d3,d0)
+
+	ld      bc, KROW3H
+	in      a,(c)            ; read upper nibble
+
+	and     l                ; and upper nibble and lower nibble together
+	rlc     a
+	rlc     a
+
+	cpl                      ; complement, key pressed is 1
+	ld      l,a              ; copy to l
+	and     0fch             ; mask the 6 keys
+	ret     nz      ; check for key pressed
+	
+	ld      h, 3             ; remember as row 4
+	ld      bc, KROW4L       ; read lower nibble
+	in      l, (c)
+	rrc     l
+	rrc     l
+	rrc     l
+	rrc     l                ;  move data from (d7,d4) to (d3,d0)
+
+	ld      bc, KROW4H
+	in      a,(c)            ; read upper nibble
+
+	and     l                ; and upper nibble and lower nibble together
+	rlc     a
+	rlc     a
+
+	 cpl                      ; complement, key pressed is 1
+	 ld      l,a              ; copy to l
+	 and     0fch             ; mask the 6 keys
+#endif
+	ret
+
+brdQuitChkKB::
+brdResKB::
+	ret
+	
+#endasm
+
+/*** BeginHeader */
+
+#define TREGD 0x10d
+#define TREGE 0x10e
+#define TREGF 0x10f
+#define SEC1 0x100
+
+#define set72421Hold(x) {if(x)ISET(TREGD,0);else IRES(TREGD,0);}
+#define get72421Hold() IBIT(TREGD,0)
+
+#define unlock8250() {outport(RTALE,0xe); outport(RTRW,5);}
+#define lock8250() {outport(RTALE,0xe); outport(RTRW,0); }
+#define set8250TOUT(x) {outport(RTALE,0xd);outport(RTRW,x);}
+#define get8250TOUT() (outport(RTALE,0xd),inport(RTRW))
+
+#use epsonrtc.lib
+#use toshrtc.lib
+
+/*** EndHeader */

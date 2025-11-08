@@ -1,0 +1,1666 @@
+/* START LIBRARY DESCRIPTION *********************************************
+GATE_P.LIB
+    Copyright (c) 1994, Z-World.
+
+DESCRIPTION: Support for gate programming of ladder logic using the 
+5key system.  Not recommended for 16x2 display because the display 
+area should be at least 19 columns.  By default, CPLC.LIB has virtual 
+drivers (logic elements) for digital inputs, universal inputs, digital 
+outputs and the ten timers.  Other logical elements (counters, discrete 
+DAC and function keys) are included in this library.  Customized logic 
+elementS can also be created by duplicating the functions in this library.
+Gate execution and logic element service functions should be grouped
+in one Real Time Kernel Task.  Gate Programmer should be run under a 5key 
+system RTK task.
+
+SUPPORT LIB'S:  sys.lib, cplc.lib
+END DESCRIPTION **********************************************************/
+
+/*** BeginHeader */
+#if ((BOARD_TYPE!=CPLC_BOARD) && (BOARD_TYPE!=L_STAR))
+#error "Rugged Giant or Little Star only."
+#endif
+/*** EndHeader */
+
+
+/*** Beginheader */
+// logic gates supported and their tag
+#define IOR 0                // logical OR
+#define IAND 1               // logical AND
+#define INOT 2               // logical NOT
+
+// logic constants
+#define IZERO 0              // logical zero
+#define IONE  1              // logical one
+
+// digital input tags
+#define ID1   2              // digin 1
+#define ID2   3
+#define ID3   4
+#define ID4   5
+#define ID5   6
+#define ID6   7
+#define ID7   8              // digin 7
+
+// universal input logic level tags
+// The high gain channel 7 is not supported in gate programming.
+#define IU1   9              // universal input 1
+#define IU2   10
+#define IU3   11
+#define IU4   12
+#define IU5   13
+#define IU6   14             // universal input 6
+
+// digital output tags
+#define IO1   15             // digout 1
+#define IO2   16
+#define IO3   17
+#define IO4   18
+#define IO5   19
+#define IO6   20
+#define IO7   21
+#define IO8   22
+#define IO9   23
+#define IO10  24             // digout 10
+#define IR1   25             // relay 1
+#define IR2   26             // relay 2
+
+// virtual timer tags
+#define IT1I  27             // timer 1 input
+#define IT1O  28             // timer 1 output
+#define IT2I  29
+#define IT2O  30
+#define IT3I  31
+#define IT3O  32
+#define IT4I  33
+#define IT4O  34
+#define IT5I  35
+#define IT5O  36
+#define IT6I  37
+#define IT6O  38
+#define IT7I  39
+#define IT7O  40
+#define IT8I  41
+#define IT8O  42
+#define IT9I  43
+#define IT9O  44
+#define ITAI  45             // timer 10 input
+#define ITAO  46             // timer 10 output
+
+// virtual counter tags
+#define IC1R  47             // counter 1 reset
+#define IC1P  48             // counter 1 pulse or data input
+#define IC1O  49             // counter 1 output
+#define IC2R  50
+#define IC2P  51
+#define IC2O  52
+#define IC3R  53
+#define IC3P  54
+#define IC3O  55
+#define IC4R  56
+#define IC4P  57
+#define IC4O  58
+#define IC5R  59             // counter 5 reset
+#define IC5P  60             // counter 5 pulse or data input
+#define IC5O  61             // counter 5 output
+
+// Function key tags
+#define IF1   62             // Function key F1
+#define IF2   63
+#define IF3   64
+#define IF4   65             // Function key F4
+
+// Discrete DAC tags
+#define IDAC1 66             // dacout is 1 volt
+#define IDAC2 67
+#define IDAC3 68
+#define IDAC4 69
+#define IDAC5 70             // dacout is 5 volts
+
+// memory latches
+#define IL1   71             //  memory latch 1
+#define IL2   72
+#define IL3   73
+#define IL4   74
+#define IL5   75
+#define IL6   76
+#define IL7   77
+#define IL8   78
+#define IL9   79
+#define IL10  80
+
+#define IL11   81
+#define IL12   82
+#define IL13   83
+#define IL14   84
+#define IL15   85
+#define IL16   86
+#define IL17   87
+#define IL18   88
+#define IL19   89
+#define IL20   90
+
+#define IL21   91
+#define IL22   92
+#define IL23   93
+#define IL24   94
+#define IL25   95
+#define IL26   96
+#define IL27   97
+#define IL28   98
+#define IL29   99
+#define IL30   100           // memory latch 30
+
+#define MAX_ELEMENT 100      // maximum logic tag value (see IL30)
+#define MAX_GATES  100       // cannot be more than 255
+#define STATE_BASE IL1       // base of the memory latch elements
+
+// Structure For a Gate
+// A "gate" is composed of: an output tag, the logic operation tag, and 
+// 3 input tags.  For faster execution, a gate also keeps track of the 
+// output and input addresses.
+struct _gates
+{
+    char output;             // tag for output
+    char input[3];           // tags for inputs
+    char *outaddr;           // output memory location
+    char gate_mode;          // gate mode or logic operation
+    char *inaddr[3];         // input address, store right away
+};
+
+// Structure for the hysteresis values of a universal input.
+struct usetpoints
+{
+    int ulow_set;            // store hysteresis values for the
+    int uhigh_set;           // universal inputs
+};
+
+/*** Endheader */
+
+
+/*** Beginheader evaluate_gates, _TestGate, init_shadows,
+     counter_menu, dac_menu,    uset_menu, 
+     reset_ddacs,  reset_cntrs, reset_fkeys,  reset_latch, 
+     evaluate_counter,          evaluate_dac, find_fkey_press,
+     reset_fkey_press, 
+     f1press,      f2press,     f3press,      f4press */
+
+void f1press(void);          // 5key service for special function keys
+void f2press(void);          // for gate programming.
+void f3press(void);
+void f4press(void);
+void evaluate_counter(void); // virtual drivr for counter logic elements
+void evaluate_dac(void);     // virtual drivr for discrete dac logic elements
+void find_fkey_press(void);  // virtual drivr for function keys, front end.
+void reset_fkey_press(void); // virtual drivrs for function keys, tail end.
+void reset_ddacs(void);      // reset discrete DAC elements
+void reset_cntrs(void);      // reset counter elements
+void reset_fkeys(void);      // reset function key elements
+void reset_latch(void);      // reset memory latch elements
+void evaluate_gates(void);   // evaluates all gates for gate programming
+void _TestGate(struct _gates *); // evaluate a gate
+void init_shadows(void);     // dummy function for GLOBAL_INIT
+
+int counter_menu(void);      // 5key server for the counter reload values
+int dac_menu(void);          // 5key server for the discrete dac
+int uset_menu(void);         // 5key server for the hysteresis values
+                             // of the universal inputs.
+
+extern char DAC5,   DAC4,   DAC3,   DAC2,   DAC1;
+extern shared int  DACOUT5,DACOUT4,DACOUT3,DACOUT2,DACOUT1;
+
+extern shared int  C5CNT,  C5RLD;
+extern char C5LAST, C5P, C5O, C5R;
+extern shared int  C4CNT,  C4RLD;
+extern char C4LAST, C4P, C4O, C4R;
+extern shared int  C3CNT,  C3RLD;
+extern char C3LAST, C3P, C3O, C3R;
+extern shared int  C2CNT,  C2RLD;
+extern char C2LAST, C2P, C2O, C2R;
+extern shared int  C1CNT,  C1RLD;
+extern char C1LAST, C1P, C1O, C1R;
+
+extern char F4PRESS, F4, F3PRESS, F3, F2PRESS, F2, F1PRESS, F1;
+
+extern char L1,  L2,  L3,  L4,  L5,  L6,  L7,  L8,  L9,  L10;
+extern char L11, L12, L13, L14, L15, L16, L17, L18, L19, L20;
+extern char L21, L22, L23, L24, L25, L26, L27, L28, L29, L30;
+extern struct _gates gate_line[MAX_GATES];
+
+extern char gate_points;
+extern struct usetpoints upoint[6];
+
+extern char AONE;
+extern char AZERO;
+
+extern char *myinout[];
+extern char *iolabel[];
+extern char *oplabel[];
+
+/*** Endheader */
+
+// Logic Variable and DAC outputs for the Discrete DAC elements
+char       DAC5,    DAC4,    DAC3,    DAC2,    DAC1;
+shared int DACOUT5, DACOUT4, DACOUT3, DACOUT2, DACOUT1;
+
+// Logic Variable for the Counters
+shared int C5CNT,  C5RLD;
+char       C5LAST, C5P, C5O, C5R;
+shared int C4CNT,  C4RLD;
+char       C4LAST, C4P, C4O, C4R;
+shared int C3CNT,  C3RLD;
+char       C3LAST, C3P, C3O, C3R;
+shared int C2CNT,  C2RLD;
+char       C2LAST, C2P, C2O, C2R;
+shared int C1CNT,  C1RLD;
+char       C1LAST, C1P, C1O, C1R;
+
+// Logic and Shadow Variables for the Function Keys
+// (implemented as NC momentary contacts)
+char F4PRESS, F4, F3PRESS, F3, F2PRESS, F2, F1PRESS, F1;
+
+// Memory Latch Logic Variables
+char L1,  L2,  L3,  L4,  L5,  L6,  L7,  L8,  L9,  L10;
+char L11, L12, L13, L14, L15, L16, L17, L18, L19, L20;
+char L21, L22, L23, L24, L25, L26, L27, L28, L29, L30;
+
+struct _gates gate_line[MAX_GATES]; // allocate the number of gates
+char gate_points;            // track active gates, limit up to 255 gates
+struct usetpoints upoint[6]; // allocate for 6 universal input channels
+char AONE = 1;               // logic constant 1
+char AZERO = 0;              // logic constant 0
+
+// define addresses of logic variables into a char * array
+char *myinout[] =
+ {
+     &AZERO,  &AONE,
+     &DIGIN1, &DIGIN2, &DIGIN3, &DIGIN4, &DIGIN5, &DIGIN6, &DIGIN7,
+
+     &U1IN,&U2IN,&U3IN,&U4IN, &U5IN,      &U6IN,
+     &OUT1,&OUT2,&OUT3,&OUT4, &OUT5,      &OUT6,
+     &OUT7,&OUT8,&OUT9,&OUT10,&RELAY1,    &RELAY2,
+     &T1I, &T1O, &T2I, &T2O,  &T3I, &T3O, &T4I, &T4O, &T5I, &T5O,
+     &T6I, &T6O, &T7I, &T7O,  &T8I, &T8O, &T9I, &T9O, &T10I,&T10O,
+     &C1R, &C1P, &C1O, &C2R,  &C2P, &C2O, &C3R, &C3P, &C3O,
+     &C4R, &C4P, &C4O, &C5R,  &C5P, &C5O,
+     &F1,  &F2,  &F3,  &F4,
+     &DAC1,&DAC2,&DAC3,&DAC4, &DAC5,
+     &L1,  &L2,  &L3,  &L4,   &L5,  &L6,  &L7,  &L8,  &L9,  &L10,
+     &L11, &L12, &L13, &L14,  &L15, &L16, &L17, &L18, &L19, &L20,
+     &L21, &L22, &L23, &L24,  &L25, &L26, &L27, &L28, &L29, &L30,
+ };
+
+// define labels for logic variables
+char *iolabel[] =
+ {
+     "   ", "   ",
+     "D1 ", "D2 ", "D3 ", "D4 ", "D5 ", "D6 ", "D7 ",
+     "U1 ", "U2 ", "U3 ", "U4 ", "U5 ", "U6 ",
+     "O1 ", "O2 ", "O3 ", "O4 ", "O5 ", "O6 ",
+     "O7 ", "O8 ", "O9 ", "O10", "R1 ", "R2 ",
+     "T1I", "T1O", "T2I", "T2O", "T3I", "T3O", "T4I", "T4O", "T5I", "T5O",
+     "T6I", "T6O", "T7I", "T7O", "T8I", "T8O", "T9I", "T9O", "TAI", "TAO",
+     "C1R", "C1P", "C1O", "C2R", "C2P", "C2O", "C3R", "C3P", "C3O",
+     "C4R", "C4P", "C4O", "C5R", "C5P", "C5O",
+     "F1 ", "F2 ", "F3 ", "F4 ",
+     "DA1", "DA2", "DA3", "DA4", "DA5",
+     "L1 ", "L2 ", "L3 ", "L4 ", "L5 ", "L6 ", "L7 ", "L8 ", "L9 ", "L10",
+     "L11", "L12", "L13", "L14", "L15", "L16", "L17", "L18", "L19", "L20",
+     "L21", "L22", "L23", "L24", "L25", "L26", "L27", "L28", "L29", "L30"
+ };
+
+// define operator labels
+char *oplabel[] =
+   {
+       "OR ", "AND", "NOT"
+   };
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+init_shadows                 <GATE_P.LIB>
+
+SYNTAX: void init_shadows(void);
+
+KEYWORDS: init, gate
+
+DESCRIPTION: Dummy function to use GLOBAL INIT mechanism to init gate 
+programming variables.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+void init_shadows(void)
+{
+    int i;
+
+#GLOBAL_INIT
+    {
+        L1  = L2  = L3  = L4  = L5  = L6  = L7  = L8  = L9  = L10 = 0;
+        L11 = L12 = L13 = L14 = L15 = L16 = L17 = L18 = L19 = L20 = 0;
+        L21 = L22 = L23 = L24 = L25 = L26 = L27 = L28 = L29 = L30 = 0;
+
+        T1O = T2O = T3O = T4O = T5O = T6O = T7O = T8O = T9O = T10O = 0;
+        T1I = T2I = T3I = T4I = T5I = T6I = T7I = T8I = T9I = T10I = 0;
+        
+        T1RLD = T2RLD = T3RLD = T4RLD = 1; // 25ms for timers 1-4
+        T5RLD = T6RLD = T7RLD = 20; // 500ms for timers 5-7
+        T8RLD = T9RLD = T10RLD= 20; // 500ms for timers 8-10
+        C1R = C2R = C3R = C4R = C5R = 1;
+        C1P = C2P = C3P = C4P = C5P = 0;
+        C1O = C2O = C3O = C4O = C5O = 0;
+
+        C1LAST= C2LAST= C3LAST= C4LAST= C5LAST= 0;
+        C1RLD = C2RLD = C3RLD = C4RLD = C5RLD = 5; // 5 count per counters
+        C1CNT = C2CNT = C3CNT = C4CNT = C5CNT = 5;
+
+        F1 = F2 = F3 = F4 = 0;
+        F1PRESS = F2PRESS = F3PRESS = F4PRESS = 0;
+        DAC1    = DAC2    = DAC3    = DAC4    = DAC5 = 0;
+        DACOUT1 = 1000;
+        DACOUT2 = 2000;
+        DACOUT3 = 3000;
+        DACOUT4 = 4000;
+        DACOUT5 = 5000;
+
+        // default hysteresis level to 2 volts low and 3 volts high
+        for (i = 0; i < 6; i++)
+        {
+            upoint[i].ulow_set  = 2500 - 500;
+            upoint[i].uhigh_set = 2500 + 500;
+            *(&U1HIGH + 3 * i) = up_uncal(upoint[i].uhigh_set);
+            *(&U1LOW  + 3 * i) = up_uncal(upoint[i].ulow_set);
+        }
+        gate_points = 0;
+        init_gate(IL1, 1, 1, 1, 1); // default to 1 dummy gate at start
+    }
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+evaluate_gates               <GATE_P.LIB>
+
+SYNTAX: void evaluate_gates(void);
+
+KEYWORDS: gate
+
+DESCRIPTION: Evaluate all the active gates as track by gate_points. 
+Maximum gate number is 255.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+#asm nodebug 
+evaluate_gates::
+      ld a,(gate_points)   ; limit up to 255 gates only
+      cp 0
+      jp z, end_evaluate   ; if no gate, then just exit
+      ld b,a
+      ld hl,gate_line
+      ld de,4
+      add hl,de            ; offset right away to output address
+      push hl
+loop_line:
+      call _OneGate        ; evaluate individual gates
+      pop hl
+      ld de,13
+      add hl,de
+      push hl
+      djnz loop_line
+      pop hl
+end_evaluate:
+      ret
+#endasm
+
+/* START FUNCTION DESCRIPTION ********************************************
+_TestGate                    <GATE_P.LIB>
+
+SYNTAX: void _TestGate(struct _gates *thisgate);
+
+KEYWORDS: gate
+
+DESCRIPTION: C callable single gate execution. "thisgate" points to 
+a _gate structure.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+#asm nodebug
+_TestGate::
+      ld de,4
+      add hl,de
+      call _OneGate
+      ret
+#endasm
+
+/* START FUNCTION DESCRIPTION ********************************************
+_OneGate                     <GATE_P.LIB>
+
+SYNTAX: void _OneGate(void);
+
+KEYWORDS: gate
+
+DESCRIPTION: Called by evaluate_gate() to evaluate one logic gate 
+structure.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+#asm nodebug
+_OneGate::
+                            ; starting at outaddr
+      ld e,(hl)             ; hl pointing to low address
+      inc hl
+      ld d,(hl)             ; hl pointing to high address of outaddr
+
+      push de               ; push address of output to stack
+      inc hl                ; point hl to gate_mode
+      ld a,(hl)             ; a contains the mode of the gate
+      cp INOT               ; is it a not gate?
+      jp nz,not_NOT
+
+      inc hl                ; hl points to low address of input[0]
+      ld e,(hl)
+      inc hl                ; hl points to high address of input[0]
+      ld d,(hl)
+      ld a,(de)
+      cp 0                  ;cp a,0
+      jr nz, set_to_zero
+      pop de                ; set result to a 1
+      ld a,1
+      ld (de),a
+      jp _EndOneGate
+set_to_zero:
+      pop de                ; set result to a 0
+      ld a,0
+      ld (de),a
+      jp _EndOneGate
+not_NOT:
+      cp IOR            ; is it an Or gate
+      jp nz,not_OR
+      inc hl            ; hl points to low address of input[0]
+      ld e,(hl)
+      inc hl            ;   hl points to high address of input[0]
+      ld d,(hl)
+first_or:
+      ld a,(de)         ; get input[0] data
+      cp 0              ;cp a,0
+      jp z, second_or
+      pop de
+      ld (de),a
+      jp _EndOneGate
+second_or:
+      inc hl            ; hl points to low address of input[1]
+      ld e,(hl)
+      inc hl            ; hl points to high address of input[1]
+      ld d,(hl)
+      ld a,(de)
+      cp 0              ;a,0
+      jp z, third_or
+      pop de
+      ld (de),a
+      jp _EndOneGate
+third_or:
+      inc hl            ; hl points to low address of input[2]
+      ld e,(hl)
+      inc hl            ; hl points to high address of input[2]
+      ld d,(hl)
+      ld a,(de)
+      pop de
+      ld (de),a
+      jp _EndOneGate
+not_OR:
+      cp IAND
+      jp nz, _EndOneGate
+      inc hl            ;   hl point to low address of input[0]
+      ld e,(hl)
+      inc hl            ;   hl points to high address of input[0]
+      ld d,(hl)
+      ld a,(de)
+first_and:
+      cp 1
+      jp z,second_and
+      pop de
+      ld (de),a
+      jp nz,_EndOneGate
+second_and:
+      inc hl       ; hl points to low address of input[1]
+      ld e,(hl)
+      inc hl       ; hl points to high address of input[1]
+      ld d,(hl)
+      ld a,(de)
+      cp 1
+      jp z, third_and
+      pop de
+      ld (de),a
+      jp _EndOneGate
+third_and:
+      inc hl       ; hl points to low address of input[2]
+      ld e,(hl)
+      inc hl       ; hl points to high address of input[2]
+      ld d,(hl)
+      ld a,(de)
+      pop de
+      ld (de),a    ; result is just the last data
+_EndOneGate:
+      ret
+#endasm
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+counter_menu                 <GATE_P.LIB>
+
+SYNTAX: int counter_menu(void);
+
+KEYWORDS: init
+
+DESCRIPTION: 5key system menu to service the settings of the virtual 
+counters used by gate progamming.
+
+RETURN VALUE: Returns with MENU key when pressed.
+END DESCRIPTION **********************************************************/
+nodebug int counter_menu(void)
+{
+    float ftemp;
+    int   itemp;
+    char  pbuf[10];
+    int   i, k;
+    char  kint;
+    char  *counter_help[] =
+     {
+         "set up counter",
+         "count down value"
+     };
+
+    lcd_server(3, 0L, "Counter Set");
+    while (1)
+    {
+        for (i = 0; i < 5; i++)
+        {
+            if (iff())
+            {
+                di();
+                kint = 1;
+            }
+            else 
+                kint = 0;
+
+            itemp = *(&C1RLD + 4 * i);
+            if (kint) 
+                ei();
+            sprintf(pbuf, "C%dLoad ", i + 1);
+            k = _5key_integer(pbuf, &itemp, 200, 1, counter_help,
+                sizeof(counter_help), 1, 10);
+            if (iff())
+            {
+                di();
+                kint = 1;
+            }
+            else 
+                kint = 0;
+            *(&C1RLD + 4 * i) = itemp;
+            if (kint) 
+                ei();
+            if (k == MENU) 
+                return;
+        }
+    }
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+uset_menu                    <GATE_P.LIB>
+
+SYNTAX: int uset_menu(void);
+
+KEYWORDS: input
+
+DESCRIPTION: 5key system menu to service settings of the hysteresis 
+levels for universal input channels used in gate programming.
+
+RETURN VALUE: Returns with MENU key when pressed.
+END DESCRIPTION **********************************************************/
+nodebug int uset_menu(void)
+{
+    float ftemp;
+    char  pbuf[10];
+    int   i, k;
+    char  *uset_help[] =
+     {
+         "set low and high",
+         "thresholds for",
+         "the universals"
+     };
+
+    lcd_server(3, 0L, "UiHigh_Low Set");
+    while (1)
+    {
+        for (i = 0; i < 6; i++)
+        {
+            ftemp = 0.001 * upoint[i].ulow_set;
+            sprintf(pbuf, "U%dLow  ", i + 1);
+            k = _5key_float(pbuf, &ftemp, 10.00, 0.00, uset_help,
+            sizeof(uset_help), 1, 10);
+            
+            upoint[i].ulow_set = ftemp * 1000 + 0.50;
+            *(&U1LOW + 3 * i) = up_uncal(upoint[i].ulow_set);
+            if (k == MENU) 
+                return;
+            
+            ftemp = 0.001 * upoint[i].uhigh_set;
+            sprintf(pbuf, "U%dHigh ", i + 1);
+            k = _5key_float(pbuf, &ftemp, 10.00, 0.00, uset_help,
+            sizeof(uset_help), 1, 10);
+            
+            upoint[i].uhigh_set = ftemp * 1000 + 0.50;
+            *(&U1HIGH + 3 * i) = up_uncal(upoint[i].uhigh_set);
+            if (k == MENU) 
+                return;
+        }
+    }
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+dac_menu                     <GATE_P.LIB>
+
+SYNTAX: int dac_menu(void);
+
+KEYWORDS: output, analog
+
+DESCRIPTION: 5key system menu to service settings of discrete DAC 
+outputs used with gate progamming.
+
+RETURN VALUE: Returns with MENU key when pressed.
+END DESCRIPTION **********************************************************/
+nodebug int dac_menu(void)
+{
+    float ftemp;
+    char  pbuf[10];
+    int   i, k;
+    char  *dac_help[] =
+     {
+         "set values for",
+         "five discrete ",
+         "dacs "
+     };
+    lcd_server(3, 0L, "Discrete DAC Set");
+    while (1)
+    {
+        for (i = 0; i < 5; i++)
+        {
+            ftemp = ( *(&DACOUT1 + i)) * 0.001;
+            sprintf(pbuf, "DDAC%d  ", i + 1);
+            k = _5key_float(pbuf, &ftemp, 10.00, 0.00, dac_help,
+            sizeof(dac_help), 1, 10);
+
+            *(&DACOUT1 + i) = ftemp * 1000 + 0.50;
+            if (k == MENU) 
+                return;
+        }
+    }
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+reset_ddacs                  <GATE_P.LIB>
+
+SYNTAX: void reset_ddacs(void);
+
+KEYWORDS: output, analog
+
+DESCRIPTION: Resets Logic Variables associated with the Discrete Dac 
+Outputs.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void reset_ddacs(void)
+{
+    DAC1 = DAC2 = DAC3 = DAC4 = DAC5 = 0;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+reset_cntrs                  <GATE_P.LIB>
+
+SYNTAX: void reset_cntrs(void);
+
+KEYWORDS:
+
+DESCRIPTION: Resets Logic Variables associated with virtual counters.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void reset_cntrs(void)
+{
+    C1R = C2R = C3R = C4R = C5R = 1;
+    C1P = C2P = C3P = C4P = C5P = 0;
+    C1O = C2O = C3O = C4O = C5O = 0;
+    C1LAST = C2LAST = C3LAST = C4LAST = C5LAST = 0;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+reset_fkeys                  <GATE_P.LIB>
+
+SYNTAX: void reset_fkeys(void);
+
+KEYWORDS: keypad
+
+DESCRIPTION: Resets Logic Variables associated with the function keys.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void reset_fkeys(void)
+{
+    F1 = F2 = F3 = F4 = 0;
+    F1PRESS = F2PRESS = F3PRESS = F4PRESS = 0;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+reset_latch                  <GATE_P.LIB>
+
+SYNTAX: void reset_latch(void);
+
+KEYWORDS:
+
+DESCRIPTION: Resets Logic Variables associated with the memory latches.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void reset_latch(void)
+{
+    L1  = L2  = L3  = L4  = L5  = L6  = L7  = L8  = L9  = L10 = 0;
+    L11 = L12 = L13 = L14 = L15 = L16 = L17 = L18 = L19 = L20 = 0;
+    L21 = L22 = L23 = L24 = L25 = L26 = L27 = L28 = L29 = L30 = 0;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+evaluate_counter             <GATE_P.LIB>
+
+SYNTAX: void evaluate_counter(void);
+
+KEYWORDS:
+
+DESCRIPTION: Evaluates the 5 software rising edge counter for gate 
+programming or Ladder C programming.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+#asm nodebug
+evaluate_counter::
+      ld b,5
+      ld hl,C1R   ; base address of counters
+      push hl     ; push to make loop continuous
+_LoopCounter:
+      ld a,(hl)   ; check for reset condition
+      cp 0        ; is it off?
+      jp z,_NotCReset
+_CReset:
+      inc hl      ; hl has output location
+      ld (hl),0   ;  output = 0
+      inc hl      ; hl has new_in location
+      ld a,(hl)   ;
+      inc hl      ; hl has last_on location
+      ld (hl),a   ;  last_in = new_in
+      ; di        ;  no need, 1-10-94
+      inc hl      ; hl has low byte location of reload
+      ld e,(hl)
+      inc hl      ; hl has high byte location of reload
+      ld d,(hl)
+      inc hl      ; hl has low byte location of counter
+      ld (hl),e
+      inc hl      ; hl has high byte location of counter
+      ld (hl),d
+      ; ei          ; no need, 1-10-94
+      jp _NextCounter
+_NotCReset:
+      inc hl      ; hl has output location
+      push hl     ; keep a copy
+      ld a,(hl)
+      cp 0        ; is output off ?
+      jp nz,_PopHl   ; if on do nothing
+      inc hl      ; hl has new_in location
+      ld a,(hl)
+      inc hl      ; hl has last_in location
+      cp (hl)     ; a - (hl)
+      jp z,_PopHl  ; new_in = last_in , no need to update
+      ld (hl),a          ; last_in = new_in
+      jp c,_PopHl  ; if high to low transition, no need to count
+                   ; but has to update last_in
+      inc hl
+      inc hl
+      inc hl       ; hl has the low byte location of counter
+      ; di         ; no need, 1-10-94
+      ld e,(hl)
+      inc hl       ; hl has the high byte location of counter
+      ld d,(hl)
+      dec de       ; decrement counter
+      ld (hl),d
+      dec hl
+      ld (hl),e    ; store back counter value
+      ; ei         ; no need, 1-10-94
+_SetOutput:
+      ld a,e
+      or d              ; check if counter is zero
+      jp nz,_PopHl      ; count down not zero
+      pop hl              ; hl has output location
+      ld (hl),1         ; set the output to a 1
+      jp _NextCounter
+_PopHl: pop hl
+_NextCounter:
+      pop hl
+      ld de,8
+      add hl,de
+      push hl
+      djnz _LoopCounter
+      pop hl
+      ret
+#endasm
+
+/* START FUNCTION DESCRIPTION ********************************************
+evaluate_dac                 <GATE_P.LIB>
+
+SYNTAX: void evaluate_dac(void);
+
+KEYWORDS: output, analog
+
+DESCRIPTION: Evaluates the five discrete DACS for gate programming or 
+Ladder C programming.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void evaluate_dac(void)
+{
+    if (!(DAC1 | DAC2 | DAC3 | DAC4 | DAC5)) 
+        up_daccal(0);
+
+    if (DAC1)
+    {
+        up_daccal(DACOUT1);
+        return;
+    }
+    if (DAC2)
+    {
+        up_daccal(DACOUT2);
+        return;
+    }
+    if (DAC3)
+    {
+        up_daccal(DACOUT3);
+        return;
+    }
+    if (DAC4)
+    {
+        up_daccal(DACOUT4);
+        return;
+    }
+    if (DAC5)
+    {
+        up_daccal(DACOUT5);
+        return;
+    }
+    
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+find_fkey_press              <GATE_P.LIB>
+
+SYNTAX: void find_fkey_press(void);
+
+KEYWORDS: keypad
+
+DESCRIPTION: Look for function key pressed. For use with gate or Ladder 
+C programming.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void find_fkey_press(void)
+{
+    F1 = F1PRESS;
+    F2 = F2PRESS;
+    F3 = F3PRESS;
+    F4 = F4PRESS;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+reset_fkey_press             <GATE_P.LIB>
+
+SYNTAX: void reset_fkey_press(void);
+
+KEYWORDS: keypad
+
+DESCRIPTION: Resets function keys, if they have already been serviced.
+For use with gate or Ladder C programming.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void reset_fkey_press(void)
+{
+    if (F1) 
+        F1PRESS = 0;
+    if (F2) 
+        F2PRESS = 0;
+    if (F3) 
+        F3PRESS = 0;
+    if (F4) 
+        F4PRESS = 0;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+f1press                      <GATE_P.LIB>
+
+SYNTAX: void f1press(void);
+
+KEYWORDS: keypad
+
+DESCRIPTION: 5 key service routine for key F1 for gate or Ladder C 
+programming.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+indirect void f1press(void)
+{
+    F1PRESS = 1;
+}
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+f2press                      <GATE_P.LIB>
+
+SYNTAX: void f2press(void);
+
+KEYWORDS: keypad
+
+DESCRIPTION: 5 key service routine for key F2 for gate or Ladder C 
+programming.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+indirect void f2press(void)
+{
+    F2PRESS = 1;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+f3press                      <GATE_P.LIB>
+
+SYNTAX: void f3press(void);
+
+KEYWORDS: keypad
+
+DESCRIPTION: 5 key service routine for key F3 for gate or Ladder C 
+programming.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+indirect void f3press(void)
+{
+    F3PRESS = 1;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+f4press                      <GATE_P.LIB>
+
+SYNTAX: void f4press(void);
+
+KEYWORDS: keypad
+
+DESCRIPTION: 5 key service routine for key F4 for gate or Ladder C 
+programming.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+indirect void f4press(void)
+{
+    F4PRESS = 1;
+}
+
+
+/*** Beginheader _5key_gate, init_gate, copy_gate, do_the_gates,
+                 reset_p_gates */
+
+int  _5key_gate(int line_no, struct _gates *tgate, char _step_a_gate);
+int  init_gate(char output, char gate_mode, char input1, char input2, 
+     char input3);
+void copy_gate(struct _gates *dest, struct _gates *source);
+int  do_the_gates(char _step_a_gate);
+void reset_p_gates(void);
+
+/*** Endheader */
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+do_the_gates                 <GATE_P.LIB>
+
+SYNTAX: int do_the_gates(char _step_a_gate);
+
+KEYWORDS:
+
+DESCRIPTION: 5 key main server for the active gates in gate programming. 
+Use ADD and DELETE keys to add or to subtract from the gate lists.  
+_step_a_gate is 1, if single step execution is desired; 0, if no single 
+stepping is desired.
+
+RETURN VALUE: Returns with ITEM or MENU keys when pressed.
+END DESCRIPTION **********************************************************/
+nodebug int do_the_gates(char _step_a_gate)
+{
+    int  i, j, k;
+    
+    for (i = 0; i < gate_points; i++)
+    {
+        do
+        {
+            k = _5key_gate(i + 1, &gate_line[i], _step_a_gate);
+            switch (k)
+            {
+                case MENU: 
+                    return k;
+                case ADD:
+                    if (gate_points < MAX_GATES)
+                    {
+                        for (j = gate_points; j > i + 1; j--)
+                        {
+                            copy_gate(&gate_line[j], &gate_line[j - 1]);
+                        }
+                        gate_points++;
+                        insert_gate(i + 1, IL1, 1, 1, 1, 1);
+                        i = i + 1; // Add next point, if there is gate still.
+                    }
+                    break;
+                case DELETE:
+                    if (gate_points == 1)
+                    {
+                        reset_p_gates(); // leave at least one element
+                        init_gate(IL1, 1, 1, 1, 1);
+                    }
+                    else
+                    {
+                        for (j = i; j < gate_points - 1; j++)
+                        {
+                            copy_gate(&gate_line[j], &gate_line[j + 1]);
+                        }
+                        gate_points--;
+                        if (i == gate_points) 
+                            i--; // take one back and show last point
+                    }
+                    break;
+                case UP: 
+                    if (i == 0) 
+                        break;
+                    else
+                    {
+                        i--;
+                        break;
+                    }
+                default: 
+                    break;
+            }
+        } while (k != ITEM);
+    }
+    return k;                // return ITEM key
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+_5key_gate                   <GATE_P.LIB>
+
+SYNTAX: int _5key_gate(int line_no, struct _gates *tgate, 
+            char _step_a_gate);
+
+KEYWORDS: lcd, gate, display
+
+DESCRIPTION: 5 key function to service one gate for display to LCD 
+and modification through the keypad. line_no displays the current gate 
+number. tgate is a pointer to the current gate. _step_a_gate is 1 if 
+single execution of the gate is desired. 0 if no single stepping is 
+desired.
+
+RETURN VALUE: Returns with ITEM, MENU, DELETE or ADD key when pressed.
+END DESCRIPTION **********************************************************/
+nodebug int _5key_gate(int line_no, struct _gates *tgate, char _step_a_gate)
+{
+    char xcursor, ycursor;
+    struct _gates temp;
+    char itemp;
+    int  k, i;
+    char *my_help[] =
+     {
+         "gate program",
+         "sequencer"
+     };
+    
+    help_line = sizeof(my_help) / sizeof(char *);
+    for (k = 0; k < help_line; k++) 
+        active_help[k] = my_help[k];
+
+    copy_gate(&temp, tgate);
+    xcursor = 14;
+    ycursor = 0x00;
+
+    sprintf(menu_buf, "%s:%s %s %s %s", iolabel[temp.output],
+    oplabel[temp.gate_mode], iolabel[temp.input[0]],
+    iolabel[temp.input[1]], iolabel[temp.input[2]]);
+
+    lcd_server(2, 0x01000000L, menu_buf);
+    sprintf(menu_buf, "GATE NUMBER %3d", line_no);
+    lcd_server(1, 0x00001000L | xcursor, menu_buf);
+    if (_step_a_gate) 
+        _TestGate(&temp);
+    k = check_5key(0, 10);
+    if (k == MENU || k == ITEM) 
+        return k;
+    do
+    {
+        switch (k)
+        {
+            case UP:
+                if (ycursor == 0x00)
+                {
+                    if( (tgate->output   != temp.output)   ||
+                        (tgate->gate_mode!= temp.gate_mode)||
+                        (tgate->input[0] != temp.input[0]) ||
+                        (tgate->input[1] != temp.input[1]) ||
+                        (tgate->input[2] != temp.input[2]) )
+                    {  
+                        copy_gate(tgate, &temp);
+                        up_beep(LONG_BEEP);
+                    }
+                    return k;
+                }
+                switch (xcursor)
+                {
+                    case 0: 
+                        if (temp.output >= IO1 && temp.output <= IR2)
+                            temp.output = IT1I;
+                        else if (temp.output >= IT1I && temp.output <= ITAO)
+                            temp.output = IC1R;
+                        else if (temp.output >= IC1R && temp.output <= IC5O)
+                            temp.output = IDAC1;
+                        else if (temp.output >= IDAC1&& temp.output <= IDAC5)
+                            temp.output = IL1;
+                        temp.outaddr = myinout[temp.output];
+                        break;
+                    case 2: 
+                        ++temp.output;
+                             // service for timer
+                        if (temp.output == IT1O || temp.output == IT2O ||
+                            temp.output == IT3O || temp.output == IT4O ||
+                            temp.output == IT5O || temp.output == IT6O ||
+                            temp.output == IT7O || temp.output == IT8O ||
+                            temp.output == IT9O ||
+                            temp.output == ITAO || temp.output == IC1O ||
+                            temp.output == IC2O || temp.output == IC3O ||
+                            temp.output == IC4O) 
+                            ++temp.output;
+                        else if (temp.output == IC5O) 
+                            temp.output = IDAC1;
+                        if (temp.output > MAX_ELEMENT) 
+                            temp.output = MAX_ELEMENT;
+                        temp.outaddr = myinout[temp.output];
+                        break;
+                    case 6:
+                        if ((++temp.gate_mode) > 2) 
+                            temp.gate_mode = 2;
+                        switch (temp.gate_mode)
+                        {
+                            case IOR:
+                                for (i = 0; i < 3; i++)
+                                    if (temp.input[i] == 1)
+                                    {
+                                       temp.input[i] =0;
+                                       temp.inaddr[i]=myinout[temp.input[i]];
+                                    }
+                                break;
+                            case IAND:
+                                for (i = 0; i < 3; i++)
+                                    if (temp.input[i] == 0)
+                                    {
+                                       temp.input[i] =1;
+                                       temp.inaddr[i]=myinout[temp.input[i]];
+                                    }
+                                break;
+                            case INOT:
+                                for (i = 0; i < 3; i++)
+                                    if (temp.input[i] == 0)
+                                    {
+                                       temp.input[i] =1;
+                                       temp.inaddr[i]=myinout[temp.input[i]];
+                                    }
+                                break;
+                        }
+                        break;
+                    case 8:
+                    case 12:
+                    case 16: 
+                        itemp = temp.input[ (xcursor - 8) / 4];
+
+                        if (itemp >= IZERO && itemp <= IONE) 
+                            itemp = ID1;
+                        else if (itemp >= ID1 && itemp <= ID7)
+                            itemp = IU1;
+                        else if (itemp >= IU1 && itemp <= IU6) 
+                            itemp = IO1;
+                        else if (itemp >= IO1 && itemp <= IR2) 
+                            itemp = IT1I;
+                        else if (itemp >= IT1I && itemp <= ITAO) 
+                            itemp = IC1O;
+                        else if (itemp >= IC1R && itemp <= IC5O) 
+                            itemp = IF1;
+                        else if (itemp >= IF1 && itemp <= IF4) 
+                            itemp = IDAC1;
+                        else if (itemp >= IDAC1 && itemp <= IDAC5) 
+                            itemp = IL1;
+
+                        temp.input[ (xcursor - 8) / 4] = itemp;
+                        temp.inaddr[(xcursor - 8) / 4] = myinout[itemp];
+                        break;
+                    case 10:
+                    case 14:
+                    case 18: 
+                        itemp = temp.input[ (xcursor - 10) / 4];
+                             // service for timer io
+                        ++itemp;
+                        if (itemp == IC1R || itemp == IC2R || 
+                            itemp == IC3R || itemp == IC4R || 
+                            itemp == IC5R ) 
+                            itemp = itemp + 2;
+                        if (itemp == 1 && temp.gate_mode == IOR) 
+                            ++itemp;
+                        if (itemp > MAX_ELEMENT) 
+                            itemp = MAX_ELEMENT;
+                        temp.input[ (xcursor - 10) / 4] = itemp;
+                        temp.inaddr[(xcursor - 10) / 4] = myinout[itemp];
+                        break;
+                    default: 
+                        break;
+                }
+                break;
+            case DOWN:
+                if (ycursor == 0x00) 
+                    break;   // do nothing
+                switch (xcursor)
+                {
+                    case 0:
+                        if (temp.output >= IT1I && temp.output <= ITAO)
+                            temp.output = IO1;
+                        else if (temp.output >= IC1R && temp.output <= IC5O)
+                            temp.output = IT1I;
+                        else if (temp.output >= IL1  && temp.output <= IL30)
+                            temp.output = IDAC1;
+                        else if (temp.output >= IDAC1&& temp.output <= IDAC5)
+                            temp.output = IC1R;
+                        temp.outaddr = myinout[temp.output];
+                        break;
+
+                    case 2: 
+                        --temp.output;
+                        if (temp.output == ITAO || temp.output == IT9O ||
+                            temp.output == IT8O || temp.output == IT7O ||
+                            temp.output == IT6O || temp.output == IT5O ||
+                            temp.output == IT4O ||
+                            temp.output == IT3O || temp.output == IT2O ||
+                            temp.output == IT1O || temp.output == IC5O ||
+                            temp.output == IC4O || temp.output == IC3O ||
+                            temp.output == IC2O || temp.output == IC1O ) 
+                            --temp.output;
+                        else if (temp.output == IDAC5) 
+                            temp.output = IC5P;
+                        if (temp.output < IO1) 
+                            temp.output = IO1;
+                        temp.outaddr = myinout[temp.output];
+                        break;
+                    case 6:
+                        if ( (--temp.gate_mode) < 0) 
+                            temp.gate_mode = 0;
+                        switch (temp.gate_mode)
+                        {
+                            case IOR:
+                                for (i = 0; i < 3; i++)
+                                   if (temp.input[i] == 1)
+                                   {
+                                      temp.input[i] =0;
+                                      temp.inaddr[i]=myinout[temp.input[i]];
+                                   }
+                                break;
+                            case IAND:
+                                for (i = 0; i < 3; i++)
+                                   if (temp.input[i] == 0)
+                                   {
+                                      temp.input[i] =1;
+                                      temp.inaddr[i]=myinout[temp.input[i]];
+                                   }
+                                break;
+                            case INOT:
+                                for (i = 0; i < 3; i++)
+                                   if (temp.input[i] == 0)
+                                   {
+                                       temp.input[i] =1;
+                                       temp.inaddr[i]=myinout[temp.input[i]];
+                                   }
+                                break;
+                        }
+                        break;
+                    case 8:
+                    case 12:
+                    case 16: 
+                        itemp = temp.input[ (xcursor - 8) / 4];
+                        if (itemp >= IL1 && itemp <= IL30) 
+                            itemp = IDAC1;
+                        else if (itemp >= IDAC1&& itemp <= IDAC5) 
+                            itemp = IF1;
+                        else if (itemp >= IF1  && itemp <= IF4) 
+                            itemp = IC1O;
+                        else if (itemp >= IC1R && itemp <= IC5O) 
+                            itemp = IT1I;
+                        else if (itemp >= IT1I && itemp <= ITAO) 
+                            itemp = IO1;
+                        else if (itemp >= IO1  && itemp <= IR2) 
+                            itemp = IU1;
+                        else if (itemp >= IU1  && itemp <= IU6) 
+                            itemp = ID1;
+                        else if (itemp >= ID1  && itemp <= ID7)
+                        {
+                            if (temp.gate_mode == IOR) 
+                                itemp = IZERO;
+                            else 
+                                itemp = IONE;
+                        }
+                        temp.input[ (xcursor - 8) / 4] = itemp;
+                        temp.inaddr[(xcursor - 8) / 4] = myinout[itemp];
+                        break;
+
+                    case 10:
+                    case 14:
+                    case 18: 
+                        itemp = temp.input[(xcursor - 10) / 4];
+                        // service for timer
+                        itemp--;
+                        if (itemp == IC5P || itemp == IC4P || 
+                            itemp == IC3P || itemp == IC2P || itemp == IC1P ) 
+                            itemp = itemp - 2;
+
+                        if (itemp < 2 || itemp == 255)
+                        {
+                            if (temp.gate_mode != INOT) 
+                                itemp = temp.gate_mode;
+                            else 
+                                itemp = 1;
+                        }
+                        temp.input[(xcursor - 10)  / 4] = itemp;
+                        temp.inaddr[(xcursor - 10) / 4] = myinout[itemp];
+                        break;
+                    default: 
+                        break;
+                }
+                break;
+            case FIELD:
+                if (ycursor == 0x00)
+                {
+                    xcursor = 0;
+                    ycursor = 0x10;
+                }
+                else
+                {
+                    switch (xcursor)
+                    {
+                        case 0: 
+                            xcursor = 2;
+                            break;
+                        case 2: 
+                            xcursor = 6;
+                            break;
+                        case 6: 
+                            xcursor = 8;
+                            break;
+                        case 8: 
+                            xcursor = 10;
+                            break;
+                        case 10: 
+                            xcursor = 12;
+                            break;
+                        case 12: 
+                            xcursor = 14;
+                            break;
+                        case 14: 
+                            xcursor = 16;
+                            break;
+                        case 16: 
+                            xcursor = 18;
+                            break;
+                        case 18: 
+                            xcursor = 14;
+                            ycursor = 0x00;
+                            break;
+                        default:
+                            break;
+                    }
+                }
+                break;
+            case ADD:
+            case DELETE:
+            case MENU:
+            case ITEM:
+                if ((tgate->output   != temp.output)   ||
+                    (tgate->gate_mode!= temp.gate_mode)||
+                    (tgate->input[0] != temp.input[0]) ||
+                    (tgate->input[1] != temp.input[1]) ||
+                    (tgate->input[2] != temp.input[2]) )
+                {
+                    copy_gate(tgate, &temp);
+                    up_beep(LONG_BEEP);
+                }
+                return k;
+                break;
+            default: 
+                break;
+        }
+        if (ycursor == 0x10)
+        {
+            sprintf(menu_buf, "%s:%s %s %s %s", iolabel[temp.output],
+            oplabel[temp.gate_mode], iolabel[temp.input[0]],
+            iolabel[temp.input[1]], iolabel[temp.input[2]]);
+
+            lcd_server(2, 0x01001100L | xcursor, menu_buf);
+            if (_step_a_gate) 
+                _TestGate(&temp);
+        }
+        else if (k != DOWN)
+        {
+            sprintf(menu_buf, "GATE NUMBER %3d", line_no);
+            lcd_server(1, 0x00001000L | xcursor, menu_buf);
+        }
+        k = check_5key(0, 10);
+    } while (1);
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+insert_gate                  <GATE_P.LIB>
+
+SYNTAX: int insert_gate( int gate_no,char output, char gate_mode, 
+            char input1, char input2, char input3);
+
+KEYWORDS: data, gate
+
+DESCRIPTION: Copies gate information to the target gate whose number 
+is specified by "gate_no.  "output" is the tag of the output logic 
+variable.  "gate_mode" is AND, OR or NOT.  "input1," "input2" and 
+"input3" are the tags for the input logic variables.
+
+RETURN VALUE: -1, if gate_no is out of range (gate_no ranges from 0 
+to MAX_GATES-1); 1, if gate information is properly copied.
+END DESCRIPTION **********************************************************/
+nodebug int insert_gate(int gate_no, char output, char gate_mode, 
+            char input1, char input2, char input3)
+{
+    if (gate_no >= MAX_GATES) 
+        return -1;
+    gate_line[gate_no].output    = output;
+    gate_line[gate_no].gate_mode = gate_mode;
+    gate_line[gate_no].input[0]  = input1;
+    gate_line[gate_no].input[1]  = input2;
+    gate_line[gate_no].input[2]  = input3;
+    gate_line[gate_no].inaddr[0] = myinout[input1];
+    gate_line[gate_no].inaddr[1] = myinout[input2];
+    gate_line[gate_no].inaddr[2] = myinout[input3];
+    gate_line[gate_no].outaddr   = myinout[output];
+    return 1;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+init_gate                    <GATE_P.LIB>
+
+SYNTAX: int init_gate(char output, char gate_mode, char input1, 
+            char input2, char input3);
+
+KEYWORDS: init, gate
+
+DESCRIPTION: Initializes current gate_point counter with gate 
+information. "gate_point" is incremented.  "output" is the tag of the 
+output logic variable.  "gate_mode" is AND, OR or NOT. "input1," "
+input2" and "input3" are the tags for the input logic variables.
+
+RETURN VALUE:  -1, if there are no more gates available; 1, if gate 
+information is properly copied.
+END DESCRIPTION **********************************************************/
+nodebug int init_gate(char output, char gate_mode, char input1,
+            char input2, char input3)
+{
+    if (gate_points >= MAX_GATES) 
+        return - 1;
+    gate_line[gate_points].output    = output;
+    gate_line[gate_points].gate_mode = gate_mode;
+    gate_line[gate_points].input[0]  = input1;
+    gate_line[gate_points].input[1]  = input2;
+    gate_line[gate_points].input[2]  = input3;
+    gate_line[gate_points].inaddr[0] = myinout[input1];
+    gate_line[gate_points].inaddr[1] = myinout[input2];
+    gate_line[gate_points].inaddr[2] = myinout[input3];
+    gate_line[gate_points].outaddr   = myinout[output];
+    gate_points++;
+    return 1;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+copy_gate                    <GATE_P.LIB>
+
+SYNTAX: void copy_gate(struct _gates *dest, struct _gates *source);
+
+KEYWORDS: data, gate
+
+DESCRIPTION: Copies information from one gate structure to another.
+"dest" points to the destination gate structure. "source" points to 
+the source structure.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void copy_gate(struct _gates *dest, struct _gates *source)
+{
+    dest->output   = source->output;
+    dest->gate_mode= source->gate_mode;
+    dest->input[0] = source->input[0];
+    dest->input[1] = source->input[1];
+    dest->input[2] = source->input[2];
+    dest->inaddr[0]= source->inaddr[0];
+    dest->inaddr[1]= source->inaddr[1];
+    dest->inaddr[2]= source->inaddr[2];
+    dest->outaddr  = source->outaddr;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+reset_p_gates                <GATE_P.LIB>
+
+SYNTAX: void reset_p_gates(void);
+
+KEYWORDS: gate, init
+
+DESCRIPTION: Resets the active gate number to zero.  i.e. prevents
+evaluate_gates() from executing.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+void reset_p_gates(void)
+{
+    gate_points = 0;
+}
+
+/*** Beginheader timer_menu */
+
+int timer_menu(void);        // 5key server for the timer reload values
+
+/*** Endheader */
+
+
+/* START FUNCTION DESCRIPTION ********************************************
+timer_menu                   <GATE_P.LIB>
+
+SYNTAX: int timer_menu(void);
+
+KEYWORDS: timer
+
+DESCRIPTION: 5key system menu to service the settings of the virtual 
+timers used in gate progamming.
+
+RETURN VALUE: Returns with MENU key when pressed.
+END DESCRIPTION **********************************************************/
+nodebug int timer_menu(void)
+{
+    float ftemp;
+    char  pbuf[10];
+    char  kint;
+    int   i, k;
+    char  *kptr;
+    char  *timer_help[] =
+     {
+         "set up delay ",
+         "counts for timer"
+     };
+
+    lcd_server(3, 0L, "Timer Set");
+
+    kptr = (char *)&T1RLD;
+
+    while (1)
+    {
+        for (i = 0; i < 10; i++)
+        {
+            if (iff())
+            {
+                di();
+                kint = 1;
+            }                // disable interrupt for shared variable
+            else 
+                kint = 0;
+            ftemp = 0.025 * *( (int *)(kptr + 7 * i) );
+            if (kint) 
+                ei();        // enable interrupt if disabled
+            sprintf(pbuf, "T%dLoad ", i + 1);
+            k = _5key_float(pbuf, &ftemp, 200.0, 0.025, timer_help,
+                sizeof(timer_help), 1, 10);
+            if (iff())
+            {
+                di();
+                kint = 1;
+            }
+            else 
+                kint = 0;
+            *( (int *)(kptr + 7 * i)) = (int)(ftemp / 0.025 + 0.5);
+            if (kint) 
+                ei();
+            if (k == MENU) 
+                return;
+        }
+    }
+}
+
+/*** Beginheader reset_timers */
+
+void reset_timers(void);
+
+/*** Endheader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+reset_timers                 <GATE_P.LIB>
+
+SYNTAX: void reset_timers(void);
+
+KEYWORDS: timer
+
+DESCRIPTION: Resets Logic Variables associated with the virtual timers.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void reset_timers(void)
+{
+    T1O = T2O = T3O = T4O = T5O = T6O = T7O = T8O = T9O = T10O = 0;
+    T1I = T2I = T3I = T4I = T5I = T6I = T7I = T8I = T9I = T10I = 0;
+}

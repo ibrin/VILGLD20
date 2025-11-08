@@ -1,0 +1,251 @@
+
+/*****************************************************************\
+* Get character from keyboard. If mode==0 removes character from
+* buffer and returns it. If mode !=0 returns character but leaves it
+* in the buffer. Returns -1 if no characters in buffer.
+*	 Keypad response set 
+*
+*		7	8	9	-
+*		4	5	6	+
+*		1	2	3	#
+*		0	*	.	enter
+*
+\*****************************************************************/
+
+/*** BeginHeader kxget,kxinit,keytestr */
+
+	int kxget(char mode);
+	int kxinit();
+char keytestr,kxkey,kxdead;
+char kxbuf[16],kxinptr,kxoutptr; /* keystroke buffer */
+
+/*** Endheader */
+
+int kxinit(){		/* initialize keyboard I/O */
+	kxinptr=kxoutptr=0; /* set buffer empty */
+	}
+
+int kxget(char mode){		/* get character from keyboard or return -1 */
+	static char temp;
+	static unsigned kk;
+#ifdef USETG
+	static char keycodes[16]={0x81, 0x41, 0x21, 0x11,
+										0x82, 0x42, 0x22, 0x12,
+										0x84, 0x44, 0x24, 0x14,
+										0x88, 0x48, 0x28, 0x18};
+#else  /* use little giant */
+	static char keycodes[16]={0x81, 0x82, 0x84, 0x88,
+										0x41, 0x42, 0x44, 0x48,
+										0x21, 0x22, 0x24, 0x28,
+										0x11, 0x12, 0x14, 0x18};
+#endif
+	static char outcodes[16]={'7', '8', '9', '-', '4', '5', '6', '+',
+										'1', '2', '3', '#', '0', '*', '.', 10};
+
+	if(kxinptr==kxoutptr) return -1; /* if buffer empty, return */
+	temp=kxbuf[kxoutptr];
+	if(!mode) kxoutptr= ++kxoutptr & 0xf; /* step circular buffer ptr */
+	for(kk=0; kk<16; kk++) if(keycodes[kk]==temp) {temp=outcodes[kk]; break;}
+	return temp;
+	}
+
+/*** BeginHeader initparkey */
+	int initparkey(); /* initialize parallel port for keyboard */
+/*** Endheader */
+
+#ifdef USETG
+
+/* initialize parallel port Tiny Giant for keypad */
+initparkey(){
+	outport(PIOCA,0x07); /* interrupts disabled */
+	outport(PIOCA,0xcf); /* mode 3*/
+	outport(PIOCA,0xfe); /* bit zero output */
+	outport(PIOCB,0x07); /* interrupts disabled */
+	outport(PIOCB,0xcf); /* mode 3*/
+	outport(PIOCB,0x0f); /* upper 4 bits output */
+	}
+#else  /* use little giant */
+/* initialize parallel port Tiny Giant for keypad */
+initparkey(){
+	outport(PIOCB,0x07); /* interrupts disabled */
+	outport(PIOCB,0xcf); /* mode 3*/
+	outport(PIOCB,0x7f); /* bit 7 output */
+	outport(PIOCA,0x07); /* interrupts disabled */
+	outport(PIOCA,0xcf); /* mode 3*/
+	outport(PIOCA,0x0f); /* upper 4 bits output */
+	}
+
+#endif
+
+#funcchain _sys_781 kx_781
+
+#asm
+kx_781::
+	ld    a,(keytestr)
+	inc   a
+	ld    (keytestr),a
+	and   0fh
+	call z,keybdtest     ; jump 1/16 of time
+	ret
+
+keybdtest:
+#ifdef USETG
+	ld    bc,PIODB       ; use B port for keyboard matrix
+#else
+	ld    bc,PIODA
+#endif
+	xor   a
+	out   (c),a          ; lower all rows
+	nop                  ; settling time
+	nop
+	nop
+	in    a,(c)
+	and   0fh
+	cp    0fh
+	jr    z,kbtest1aa    ; quick test for no codes
+	ld    l,7fh          ; output the 4 columns
+	ld    h,4            ; count 4 columns
+kbtest1:
+	out   (c),l
+	dec   h              ; settling time
+	rrc   l              ; shift to next row
+	nop
+	in    a,(c)          ; get rows
+	and   0fh
+	cp    0fh            ; if any low, key depressed
+	jr    nz,kbtest2
+	ld    a,h
+	or    a
+	jr    nz,kbtest1     ; loop 4 times
+kbtest1aa:
+	ld    a,0f0h      ; remove drive from outputs
+	out   (c),a
+	ld    a,(kxkey)
+	or    a
+	ret   z              ; if kxkey ==0 and code==0 noactivity
+kbtest1a:               ; here to process counting dead time
+	ld    a,(kxdead)
+	or    a
+	jr    nz,kbtest1b
+	xor   a
+	ld    (kxkey),a      ; done process on key
+	ret
+kbtest1b:
+	dec   a
+	ld    (kxdead),a     ; step dead time count
+	ret
+; here a code was detected on keyboard
+kbtest2:
+	ld    h,a      ; lower code
+	ld    a,0f0h      ; remove drive from outputs
+	out   (c),a
+	ld    a,l      ;upper code
+	rla
+	and   0f0h
+	or    h
+	cpl            ;easier to understand
+	ld    hl,kxkey
+	cp    (hl)           ; is this code a key holding?
+	ret   z              ; if so return
+	push  af
+	ld    a,(hl)
+	or    a              ; is kxcode==0?
+	jr    z,kbtest4      ; new key
+	pop   af
+	jr    kbtest1a       ; go count out dead time
+kbtest4:
+	pop   af
+	ld    (hl),a
+	call  kxput          ; put key in output circular buffer
+	ld    a,3
+	ld    (kxdead),a     ; set dead time count
+	ret
+; place next keystroke into output buffer
+kxput:
+	push  af       ; save keycode
+	ld a,(kxinptr)
+	ld hl,kxoutptr
+	inc   a
+	and   0fh
+	cp    (hl)  ; inptr+1 == outptr??
+	jr    z,kxovfl    ; buffer full
+	ld    h,a         ; new buffer
+	ld a,(kxinptr)
+	ld l,a
+	ld a,h   ;new buf
+	ld (kxinptr),a    ; save updated buf ptr
+	ld h,0
+	ld bc,kxbuf
+	add   hl,bc    ; address in buffer
+	pop   af       ;keycode
+	ld    (hl),a   ;save it
+	ret
+kxovfl:
+	ld    hl,500
+	ld (beepcount),hl    ; make a long beep
+	ret
+
+#endasm
+/*** BeginHeader setbeep */
+
+void setbeep(int count);
+
+/*** endHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+setbeep                      <DRIVERS.LIB>
+
+SYNTAX: void setbeep(int delay);
+
+KEY WORDS: TIMER, OUTPUT
+
+DESCRIPTION: Sets up a timed beep. The timer 1 interrupt performs the beep 
+in the background, so this function returns immediately.
+
+PARAMETER1: "delay" specifies the length of the 
+beep in number of timer 1 ticks. 
+
+RETURN VALUE: N/A.
+END DESCRIPTION **********************************************************/
+int beepcount;               // count of cycles on beeper
+
+useix void setbeep(int delay)
+{
+#asm
+	ld l,(ix+delay)
+	ld h,(ix+delay+1)
+	ld (beepcount),hl ; a shared with interrupt variable
+#endasm
+}
+
+#funcchain _sys_781 _misc_781
+
+#asm
+_misc_781::
+	ld    hl,(beepcount)
+	ld    a,l
+	or    h
+	jr    z,timer2a
+	dec   hl
+	ld    (beepcount),hl
+#ifdef USETG
+	ld    bc,PIODA
+#else
+	ld    bc,PIODB
+#endif
+	in    a,(c)
+	rra         ; shift right
+	rr    l
+#ifdef USETG
+	rla         ; shift left, replace bit 0
+#else
+	rra         ; shift right, replace bit 7 for little giant
+#endif
+	out   (c),a
+timer2a:
+	ret
+#endasm
+
+/*** BeginHeader */
+
+/*** EndHeader */
