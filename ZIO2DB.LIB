@@ -1,0 +1,36 @@
+//	common call interface to local and PLC-bus devices
+
+/*** BeginHeader */
+
+#ifndef EIODBNC
+#define EIODBNC 1
+#endif
+
+#define EIO_SAFEST 1
+
+#use zionet.lib
+
+#define	EIOUSEPLC	1
+#use ezio.lib
+
+#define zDigIn				eioDigIn
+#define zDigOut				eioDigOut
+#define zAnIn		eioAnIn
+#define zAnOut		eioAnOut
+#define zAnInCalib			eioAnCalib
+#define zWakeNode				eioReset
+#define zNodeStatus		eioPing
+#define zSetSafeSt			eioSetSafeSt
+#define zBegDefSafeSt		eioBegDefSafeSt
+#define zEndDefSafeSt		eioEndDefSafeSt
+#define zWakeNodeList		eioWakeUpSlave
+#define rioGetAllAlive		eioGetAllAlive
+#define zInitMaster		eioDefInit
+#define zIOError			eioErrorCode
+#define zNewNodeID		eioAssignNewID
+#define rioChgMyID			eioChgMyID
+#define zDelayMs		DelayMs
+#define zDelaySec		DelaySec
+
+/*** EndHeader */
+

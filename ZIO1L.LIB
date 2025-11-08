@@ -1,0 +1,35 @@
+/* call interface long range networked remote I/O */
+
+/*** BeginHeader */
+
+#define RIOLONGRANGE 1
+#define EIOUSEPLC		0
+#define EIODBNC		1
+#define eioDigIn		eioBrdDI
+#define eioDigOut		eioBrdDO
+#define eioAnIn		eioBrdAI
+#define eioAnOut		eioBrdAO
+#define eioAnCalib	eioBrdACalib
+#define EIO_SAFEST 1
+
+#use zionet.lib
+#define zDigIn				_rioInput
+#define zDigOut				_rioOutput
+#define zAnIn		_rioReadAnalog
+#define zAnOut		_rioWriteAnalog
+#define zAnInCalib			_rioAnCalib
+#define zWakeNode				_rioReset
+#define zNodeStatus		_rioPing
+#define zSetSafeSt			_rioSetSafeSt
+#define zBegDefSafeSt		_rioBegDefSafeSt
+#define zEndDefSafeSt		_rioEndDefSafeSt
+#define zWakeNodeList		_rioWakeUpSlave
+#define rioGetAllAlive		_rioGetAllAlive
+#define zInitMaster		_rioInitMaster
+#define zIOError			rioErrorCode
+#define zNewNodeID		_rioAssignNewID
+#define rioChgMyID			_rioChgMyID
+#define zDelayMs		DelayMs
+#define zDelaySec		DelaySec
+
+/*** EndHeader */

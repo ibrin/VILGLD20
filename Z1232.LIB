@@ -1,0 +1,1067 @@
+// 7-13-95, compute 80% and 20% of buffer with float multiply.
+/* START LIBRARY DESCRIPTION *********************************************
+Z1232.LIB
+    Copyright (c) 1994, Z-World.
+
+DESCRIPTION:  Drivers for Z180 port 1.  
+
+SUPPORT LIB'S: modem232.lib, rtk.lib
+END DESCRIPTION **********************************************************/
+
+
+/*** Beginheader  Dinit_z1, Dwrite_z1, Dread_z1, Dkill_z1, Dwrite_z11ch,
+                  Dread_z11ch, Dreset_tbuf, Dreset_rbuf, z1modemstat,
+                  z1modemset, z1binaryset, z1binaryreset, Drestart_z1modem */
+
+int  Dinit_z1(char *rbuf, char *tbuf, int rsize, int tsize,
+     char mode, char baud, char ismodem, char isecho);
+int  Dwrite_z1(char *buf, int count);// Initiate send
+int  Dread_z1(char *buf, char terminate);// Initiate receive
+int  Dwrite_z11ch(char data);
+int  Dread_z11ch(char *data);
+void Dreset_z1tbuf(void);
+void Dreset_z1rbuf(void);
+void Dz1send_prompt(void);
+void Drestart_z1modem(void);
+void Dkill_z1(void);
+int  Dz1modem_chk(char *buf);
+void Dz1_circ_int(void);
+int  z1modemstat(void);
+int  z1modemset(void);
+void z1binaryset(void);
+void z1binaryreset(void);
+
+/*** Endheader */
+
+char *z1_write_buf;          // Static pointer to the transmit buffer
+char *z1_read_buf;           // Static pointer to the receive buffer
+shared int z1_rx_head;       // Head pointer for the receive buffer
+shared int z1_rx_tail;       // Tail pointer for the receive buffer
+shared int z1_tx_head;       // Head pointer for the transmit buffer
+shared int z1_tx_tail;       // Tail pointer for the transmit buffer
+int z1_rx_size;              // Static storage of receive buffer size
+int z1_tx_size;              // Static storage of transmit buffer size
+                             // 1, if in xmodem file xfer mode; else 0
+                                
+shared int z1_80rbuf;
+shared int z1_20rbuf;
+shared int z1_rbufcnt;
+shared int z1_tbufcnt;
+char z1_CRTS_ENB;
+char z1_CTS_ON;
+char z1_echo;
+char z1Binary;               // 1, if serial receive is in binary mode.
+                             // 0 (default), if serial receive in text mode.
+char z1CmdOrData;            // 1, if modem is in command mode
+char z1UseModem;             // 1, if using modem
+
+/* START FUNCTION DESCRIPTION ********************************************
+z1binaryset                  <Z1232.LIB>
+
+SYNTAX: void z1binaryset(void);
+
+DESCRIPTION: Sets serial communication mode to binary. All receive data
+are stuffed directly into the receive buffer.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void z1binaryset(void)
+{
+    z1Binary = 1;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+z1binaryreset                <Z1232.LIB>
+
+SYNTAX: void z1binaryreset(void);
+
+DESCRIPTION: Resets serial communication to ASCII mode. Backspace char
+is tracked to adjust the receive buffer head index.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void z1binaryreset(void)
+{
+    z1Binary = 0;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+z1modemstat                  <Z1232.LIB>
+
+SYNTAX: int z1modemstat(void);
+
+DESCRIPTION: Returns the status of the modem.
+
+RETURN VALUE: 1, if modem is in command mode; 0, if modem is in data mode
+(i.e. open to communication).
+END DESCRIPTION **********************************************************/
+nodebug int z1modemstat(void)
+{
+    return (z1CmdOrData);
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+z1modemset                   <Z1232.LIB>
+
+SYNTAX: int z1modemset(void);
+
+DESCRIPTION: Returns information about modem selection.
+
+RETURN VALUE: 1, if modem option is selected; else 0.
+END DESCRIPTION **********************************************************/
+nodebug int z1modemset(void)
+{
+    return (z1UseModem);
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+Dz1send_prompt               <Z1232.LIB>
+
+SYNTAX: void Dz1send_prompt(void);
+
+DESCRIPTION: Sends 'CR','LINEFEED' and '>' to the z180 channel 1. Does 
+not check for available space in the transmit buffer.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void Dz1send_prompt(void)
+{
+    static char prompt[4] =
+            {
+                ENTER, LINEFEED, '>', '\0'
+            };
+    Dwrite_z1(prompt, 3);
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+Dinit_z1                     <Z1232.LIB>
+
+Initialize the z180 port 1 for serial communication.
+
+SYNTAX: int Dinit_z1(char *rbuf, char *tbuf, int rsize, int tsize, 
+            char mode, char baud, char ismodem, char isecho)
+
+DESCRIPTION: Initializes Z180 port 1 for serial communication. "rbuf" 
+points to a user defined (receive) character array; "tbuf" points to a 
+user defined (transmit) character array; "rsize" is the size of rbuf; 
+"tsize" is the size of tbuf; "mode" is defined as follows: bit0 = 0 for 1 
+stop bit, 1 for 2 stop bits;  bit1 = 0 for no parity, 1 for parity;
+bit2 = 0 for 7 data bits, 1 for 8 data bits; bit3 = 0 for even parity, 
+1 for odd; bit4 = 0/1 for CTS, RTS control disabled/enabled; "baud" is the 
+baud rate in multiples of 1200 (e.g. 8 for 9600 baud). "ismodem" is 0, if 
+no modem is used; 1, if modem is used. "isecho" is 0, if no char echoing; 
+1 for automatic echoing.
+
+RETURN VALUE: 1.
+END DESCRIPTION **********************************************************/
+nodebug int Dinit_z1(char *rbuf, char *tbuf, int rsize, int tsize,
+            char mode, char baud, char ismodem, char isecho)
+{
+    z1Binary   = 0;
+    z1UseModem = ismodem;
+    z1_echo    = isecho;
+    z1_read_buf  = rbuf;      // Initialize receive buffer
+    z1_write_buf = tbuf;
+    z1_rx_size = rsize;
+    z1_tx_size = tsize;
+    Dreset_z1tbuf();
+    Dreset_z1rbuf();
+    z1_CRTS_ENB = 0;         // do not support CTS RTS for this port
+    z1_CTS_ON = 1;
+
+    Dkill_z1();
+
+#if ((BOARD_TYPE==SCoreZ1)*(ROM==0))
+    reload_vec(16, Dz1_circ_int);
+#endif
+
+
+    outport(STAT1, 0);       // reset port
+    outport(CNTLB1, z180baud(sysclock(), baud) | ((mode << 1) & 0x10));
+                             // set baud rate, odd or even parity
+    outport(CNTLA1, (mode & 7));// set stop bits, etc. enb rts
+    outport(CNTLA1, inport(CNTLA1) | 0x20);
+    inport(RDR1);
+    inport(RDR1);            // clear out reader registers
+    outport(CNTLA1, inport(CNTLA1) | 0x40);// enable receiverr clear EFR
+    outport(STAT1, inport(STAT1) | 8);// enable receiver interrupt
+    if (z1UseModem)
+        Drestart_z1modem();
+    else 
+        z1CmdOrData = 0;
+    return 1;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+Dreset_z1rbuf                <Z1232.LIB>
+
+Reset the receive buffer for the z180 channel 1.
+
+SYNTAX: void Dreset_z1rbuf(void);
+
+DESCRIPTION: Resets receive buffer for the Z180 channel 1.  Sets head
+and tail indexes to zero. Sets z0_rbufcnt to zero.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void Dreset_z1rbuf(void)
+{
+    z1_rbufcnt = z1_rx_head = z1_rx_tail = 0;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+Dreset_z1tbuf                <Z1232.LIB>
+
+SYNTAX: void Dreset_z1tbuf(void);
+
+DESCRIPTION: Resets transmit buffer of the Z180 channel 1.  Sets head
+and tail indexes to zero. Sets z1_tbufcnt to zero.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void Dreset_z1tbuf(void)
+{
+    z1_tbufcnt = z1_tx_head = z1_tx_tail = 0;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+Dwrite_z1                    <Z1232.LIB>
+
+SYNTAX: int Dwrite_z1(char *buf, int count);
+
+DESCRIPTION: Writes character data array of length "count" to transmit 
+buffer.  "buf" is pointer to character array.  "count" is number of char's 
+to send.  The transmit interrupt is automatically turned on, if off.
+
+RETURN VALUE: 1, if array is succesfully copied; 0, if there's no space 
+in transmit buffer.
+END DESCRIPTION **********************************************************/
+nodebug int Dwrite_z1(char *buf, int count)
+{
+    int dum_tail, dum_head;
+    int i;
+
+    if (!count) 
+        return 1;            // no need to write
+    if ((z1_tbufcnt + count) >= z1_tx_size) 
+        return 0;            // not enough space
+    dum_head = z1_tx_head;
+    i = 0;
+    do
+    {
+        *(z1_write_buf + dum_head++) = *(buf + i++);
+        if (dum_head == z1_tx_size) 
+            dum_head = 0;
+    } while (i < count);
+    DI();                   // disable interrupt, 5-3-94
+    if (z1_tx_tail == z1_tx_head)
+    {
+        EI();               // enable interrupt, 5-3-94
+        z1_tx_head = dum_head;
+        z1_tbufcnt = count;  
+        outport(STAT1, inport(STAT1) | 1);
+                             // Initiate transfer if not transferring
+    }
+    else
+    {
+        z1_tx_head = dum_head;
+        z1_tbufcnt = z1_tbufcnt + count;
+        EI();               // enable interrupt, 5-3-94
+    }
+    return 1;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+Dread_z1                     <Z1232.LIB>
+
+SYNTAX: int Dread_z1(char *buf, char terminate);
+
+DESCRIPTION: Reads serial receive buffer for stream with specified 
+terminate character. "buf" is pointer to user defined character array.
+"terminate" is the terminating character of the stream, which is replaced 
+by '\0'. If the modem option is selected with Dinit_z1(...), the receive 
+stream is automatically parsed for modem messages. The latter are 
+automatically processed and the serial service routines are automatically 
+called.  Note that modem messages are terminated with 'CR'.
+
+RETURN VALUE: 1, if stream is found and copied to buf; 0, if no stream 
+is found or if modem option is selected and stream matched a modem message.
+END DESCRIPTION **********************************************************/
+nodebug int Dread_z1(char *buf, char terminate)
+{
+    int i;
+    int dum_head, dum_tail;
+
+    dum_head = z1_rx_head;
+    dum_tail = z1_rx_tail;
+    i = 0;
+    if (dum_head == dum_tail) 
+        return 0;
+    else
+    {
+        do
+        {
+            *(buf + i) = *(z1_read_buf + dum_tail++);
+            if (dum_tail == z1_rx_size) 
+                dum_tail = 0;
+            if (*(buf + i++) == terminate)
+            {
+                *(buf + i - 1) = '\0';
+                z1_rx_tail = dum_tail;
+                if (z1_CRTS_ENB)
+                {
+                    z1_rbufcnt = z1_rbufcnt - i;
+                    if (!z1_CTS_ON)
+                    {
+                        if (z1_rbufcnt <= z1_20rbuf)
+                        {
+                            outport(CNTLA1, inport(CNTLA1) & '\B11101111');
+                            z1_CTS_ON = 1;
+                        }
+                    }
+                }
+                if (z1UseModem)
+                {
+                    if (Dz1modem_chk(buf) == -1) 
+                        return 1;       // Not a modem msg
+                    else 
+                        return 0;       // A modem msg 
+                }
+                return 1;
+            }
+        } while (dum_tail != dum_head); // 'til inbuf is empty
+        return 0;
+    }
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+Dwrite_z11ch                 <Z1232.LIB>
+
+SYNTAX: Dwrite_z11ch(char data);
+
+DESCRIPTION: Writes a character to the transmit buffer.  Transmit 
+interrupt is turned on, if off.
+
+RETURN VALUE: 1, if data is succesfully written to transmit buffer;
+else 0, if there is no space in buffer to write the data.
+END DESCRIPTION **********************************************************/
+nodebug int Dwrite_z11ch(char data)
+{
+    int dum_tail, dum_head;
+
+    if ((z1_tbufcnt + 1) >= z1_tx_size) 
+        return 0;
+    dum_head = z1_tx_head;
+    *(z1_write_buf + dum_head++) = data;
+    if (dum_head == z1_tx_size) 
+        dum_head = 0;
+    DI();                   // disable interrupt, 5-3-94
+    if (z1_tx_tail == z1_tx_head)
+    {
+        EI();               // enable interrupt, 5-3-94
+        z1_tbufcnt = 1; 
+        z1_tx_head = dum_head;
+        outport(STAT1, inport(STAT1) | 1);
+                             // Initiate transfer if not transferring
+    }
+    else
+    {
+        z1_tx_head = dum_head;
+        z1_tbufcnt++;
+        EI();               // enable interrupt, 5-3-94
+    }
+    return 1;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+Dread_z11ch                  <Z1232.LIB>
+
+SYNTAX: int Dread_z11ch(char *data);
+
+DESCRIPTION: Reads serial receive buffer for a character.  "data" is 
+pointer to a character.
+
+RETURN VALUE: 1, if a byte is copied to *data; 0, if buffer is empty.
+END DESCRIPTION **********************************************************/
+nodebug int Dread_z11ch(char *data)
+{
+    int dum_head, dum_tail;
+
+    dum_head = z1_rx_head;
+    dum_tail = z1_rx_tail;
+    if (dum_head == dum_tail) 
+        return 0;
+    else
+    {
+        *data = *(z1_read_buf + z1_rx_tail++);
+        if (z1_rx_tail == z1_rx_size) 
+            z1_rx_tail = 0;
+        if (z1_CRTS_ENB)
+        {
+            z1_rbufcnt--;
+            if (!z1_CTS_ON)
+            {
+                if (z1_rbufcnt <= z1_20rbuf)
+                {
+                    outport(CNTLA1, inport(CNTLA1) & '\B11101111');
+                    z1_CTS_ON = 1;
+                }
+            }
+        }
+        return 1;
+    }
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+Dkill_z1                     <Z1232.LIB>
+
+SYNTAX: void Dkill_z1(void);
+
+DESCRIPTION: Resets the Z180  channel 1.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void Dkill_z1(void)
+{
+    outport(STAT1, 0);
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+Drestart_z1modem             <Z1232.LIB>
+
+SYNTAX: void Drestart_z1modem(void);
+
+DESCRIPTION: Sends command to set/reset the modem connected to Z180, 
+channel 1.  Hayes smart modem is desirable.  Required hardware 
+connections:
+
+                       MODEM               Z180 CHAN 1
+                        RX  ----------------- TX
+                        TX  ----------------- RX
+                        GND ----------------- GND
+                        RTS --+           +-- RTS
+                        CTS --|           +-- CTS
+                        DTR --+
+
+i.e. On modem side, RTS,CTS and DTR are tied together.  On SCC side, 
+RTS is connected to CTS.
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug void Drestart_z1modem(void)
+{
+    int  ercode;
+    int  ok_count;
+    char buf[20];
+
+    /* If modem is available, master should insure that modem
+       is in command mode on power-up.                        */
+
+    z1CmdOrData = 1;         // Modem in command mode
+    ok_count = 0;
+    Dwrite_z1("+++", 3);
+    Ddelay_1sec();
+    while ((++ok_count < 4) && ((ercode = Dread_z1(buf, ENTER)) == 0 ||
+           (Dget_modem_command(buf) != 0))) 
+        Ddelay_1sec();
+
+    Dwrite_z1("AT H0", 5);   // or time out
+    Dwrite_z11ch(ENTER);
+    ok_count = 0;
+    while ((++ok_count < 4) && ((ercode = Dread_z1(buf, ENTER)) == 0 ||
+           (Dget_modem_command(buf) != 0))) 
+        Ddelay_1sec();// Wait for OK
+
+    Dwrite_z1("AT E0 V1 M0 S0=2", 16); // or time out
+    /*****************************
+     E0 for commands not echoed
+     V1 for word responses
+     M0 for internal speaker off
+     S0=2 for automatic answering
+     ******************************/
+    Dwrite_z11ch(ENTER);
+    ok_count = 0;
+    while ((++ok_count < 4) && ((ercode = Dread_z1(buf, ENTER)) == 0 ||
+           (Dget_modem_command(buf) != 0))) 
+        Ddelay_1sec();       // Wait for OK
+    
+    Dwrite_z1("AT &D0 &R1", 10);// or time out
+    /********************************************
+     &D0 for ignore the Data Terminal Ready (DTR)
+     &R1 for ignore the Ready To Send (RTS)
+     *******************************************/
+    Dwrite_z11ch(ENTER);
+    ok_count = 0;
+    while ((++ok_count < 4) && ((ercode = Dread_z1(buf, ENTER)) == 0 ||
+           (Dget_modem_command(buf) != 0))) 
+        Ddelay_1sec();       // Wait for OK
+    
+    Ddelay_1sec();
+    Dreset_z1rbuf();
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+Dz1modem_chk                 <Z1232.LIB>
+
+SYNTAX: int Dz1modem_chk(char *buf);
+
+DESCRIPTION: Checks 'CR' terminated stream for modem messages. The serial 
+service routines are tagged to reflect the modem condition (if selected).
+buf points to a 'CR' terminated stream that was copied from the receive 
+buffer.
+
+RETURN VALUE: -1, if no match to any modem messages; 0, if stream was 
+processed as a modem message.
+END DESCRIPTION **********************************************************/
+nodebug int Dz1modem_chk(char *buf)
+{
+    int which_one;
+    int i;
+    int j;
+
+    which_one = Dget_modem_command(buf);
+    switch (which_one)
+    {
+        case - 1: 
+            if (!z1CmdOrData) 
+                return - 1;
+            break;
+        case 2:             // Set for auto answer
+                             // Dwrite_z1("ATA",3);
+                             // Dwrite_z11ch(ENTER);
+            break;           /* Manually receive call, if ring 
+                                is detected                   */
+        case 9:
+            Ddelay_5sec();
+            Ddelay_5sec();
+            Dreset_z1tbuf();
+            Dreset_z1rbuf();
+            z1CmdOrData = 0;
+            Dz1send_prompt();
+            Dwrite_z1("Welcome to the Remote System", 28);
+            Dz1send_prompt();
+            break;
+                             // connect at 2400 bps
+                             // switch to data mode
+        case 0:
+            break;      // ok from command to modem
+        case 3:
+            z1CmdOrData = 1; // no carrier detect
+            Ddelay_5sec();   // Wait and reset all buffers
+            Dreset_z1tbuf();
+            Dreset_z1rbuf();
+            break;
+        case 4:
+            break;      // command error
+        case 5:
+            Ddelay_5sec();
+            Ddelay_5sec();
+            Dreset_z1tbuf();
+            Dreset_z1rbuf();
+            z1CmdOrData = 0;
+            Dz1send_prompt();
+            Dwrite_z1("Welcome to the Remote System", 28);
+            Dz1send_prompt();
+            break;           // switch to data mode
+        case 6:             // no dial tone
+        case 7:             // busy
+        case 8:             // no answer
+        case 10:            // just line feed
+        default:
+            break;
+    }
+    return 0;
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+Dz1_circ_int                 <Z1232.LIB>
+
+SYNTAX: Dz1_circ_int(void);
+
+DESCRIPTION: Transmit and receive interrupt service routine for Z180 
+chan 1. For boards that use this port for programming, the vector should
+be loaded during runtime.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+// 4-14-95, modify to allow application usage of the programming port Z1.
+#if ((BOARD_TYPE==SCoreZ1)*(ROM==0))
+// if SCoreZ1 and ROM==0, then do not define the vector. Load at runtime.
+#else
+#INT_VEC SER1_VEC Dz1_circ_int// set interrupt vector
+#endif
+
+#asm root nodebug
+Dz1_circ_int::
+        push af
+        push hl
+        push bc
+        push de
+
+
+        in0 a,(STAT1)
+        bit 7,a
+        jp z,_z1Txmit     ; not receiving, go to transmit
+
+_z1Recvr:
+        in0 c,(RDR1)      ; c has the character received
+        in0 a,(CNTLA1)    ; reset error bit
+        res 3,a
+        out0 (CNTLA1),a
+
+        ld a,(z1Binary)   ; binary mode ?
+        cp 1
+        jr z, _StuffData  ; just stuff data in if binary mode.
+                ; if text mode, process BACKSPACE character and echoing.
+        ld a,c
+        cp BACKSPACE      ; is character a backspace?
+        jr nz, _notBackSpace
+        ld a,(z1CmdOrData)
+        cp 1
+        jr z, _noEcho
+        ld a,(z1_echo)
+        cp 1
+        jr nz,_noEcho
+        out0 (TDR1),c     ; echo back the character
+
+_noEcho:
+        ld de,(z1_rx_tail) ; see if (rx_head) == (rx_tail)
+        ld hl,(z1_rx_head)
+        ld a,d
+        cp h               ;  if(rx_head)==(rx_tail)
+        jr nz, _notHTR     ;
+        ld a,e
+        cp l
+        jr nz, _notHTR
+        jp _z1Txmit
+_notHTR:
+        ld a,h           ; if (rx_head)==0, (rx_head)=(rx_size) - 1;
+        or l
+        jr nz,_HeadnotZero
+        ld hl,(z1_rx_size)
+        dec hl
+        ld (z1_rx_head),hl
+        jp _decRbufcount
+
+_HeadnotZero:
+        ld hl,(z1_rx_head)  ; else (rx_head) = (rx_head) -1
+        dec hl
+        ld (z1_rx_head),hl
+_decRbufcount:
+        ld a,(z1_CRTS_ENB)
+        cp 1
+        jp nz, _z1Txmit
+        ld hl, (z1_rbufcnt)
+        dec hl
+        ld (z1_rbufcnt),hl
+        jp _z1Txmit
+
+_notBackSpace:       ; not a BACKSPACE, so push data into receive queue
+        ld a,(z1CmdOrData)
+        cp 1
+        jr z, _StuffData
+        ld a,(z1_echo)
+        cp 1
+        jr nz,_StuffData
+        out0 (TDR1),c     ; echo character back
+_StuffData:
+        ld a,(z1_CTS_ON)
+        cp 1
+        jp nz,_z1Txmit
+        ld de,(z1_read_buf)
+        ld hl,(z1_rx_head)
+        add hl,de
+        ld (hl),c        ; store data
+        ld de,(z1_rx_size)  ; do the modulo test
+        ld hl,(z1_rx_head)
+        inc hl
+        ld a,d
+        cp h             ; compare high byte
+        jp nz,_notRollOver
+        ld a,e
+        cp l              ; compare low byte
+        jp nz,_notRollOver
+        ld hl,00
+        ld (z1_rx_head),hl
+        jp _checkforCTS
+ _notRollOver:
+        ld (z1_rx_head),hl
+_checkforCTS:
+        ld a,(z1_CRTS_ENB)
+        cp 1
+        jp nz, _z1Txmit
+        ld hl, (z1_rbufcnt)
+        inc hl
+        ld (z1_rbufcnt),hl
+        ld de, (z1_80rbuf)
+        ld a,e
+        cp l
+        jp nz, _z1Txmit
+        ld a,d
+        cp h
+        jp nz, _z1Txmit
+        in0 a,(CNTLA1)
+        set 4,a
+        out0 (CNTLA1),a   ; make the rts0 line high
+        ld a,0
+        ld (z1_CTS_ON),a  ; software has to know too.
+ _z1Txmit:
+        in0 a,(STAT1)     ; is it a transmit interrupt?
+        and 0x03
+        xor 0x03
+        jr nz, _z1TheEnd
+        ld de,(z1_tx_head)  ; see if (tx_head) == (tx_tail)
+        ld hl,(z1_tx_tail)
+        ld a,d
+        cp h                ; compare d to h
+        jr nz, _notTxEnd
+        ld a,e
+        cp l
+        jr nz, _notTxEnd
+        in0 a,(STAT1) ; turn off interrupt when no more char's to send
+        and 0xfe
+        out0 (STAT1),a
+        jp _z1TheEnd
+ _notTxEnd:
+        ld hl,(z1_tbufcnt)
+        dec hl
+        ld (z1_tbufcnt),hl
+        ld de, (z1_write_buf)   ; send next character out
+        ld hl, (z1_tx_tail)
+        add hl,de
+        ld c,(hl)
+        out0 (TDR1),c
+        ld de,(z1_tx_size)
+        ld hl,(z1_tx_tail) ; do the modulo test
+        inc hl
+        ld a,d
+        cp h               ; compare high byte
+        jp nz,_notTRollOver
+        ld a,e
+        cp l
+        jp nz,_notTRollOver
+        ld hl,00
+        ld (z1_tx_tail),hl
+        jp _z1TheEnd
+ _notTRollOver:
+        ld (z1_tx_tail),hl
+_z1TheEnd:
+        pop de
+        pop bc
+        pop hl
+        pop af
+        ei
+        ret
+#endasm
+
+/*** BeginHeader Dxmodem_z1down, Dxmodem_z1up */
+
+int Dxmodem_z1down(char *mydata, int n_blocks);
+int Dxmodem_z1up(unsigned long baseAddress, int *no_of_pages, int dest,
+    int (*data_parsing)() );
+
+/*** EndHeader */
+extern char z1Binary;           // 12-15-94
+
+/* START FUNCTION DESCRIPTION ********************************************
+Dxmodem_z1down               <Z1232.LIB>
+
+SYNTAX: int Dxmodem_z1down(char *mydata, int n_blocks)
+
+DESCRIPTION: Sends blocks of data to a PC or dumb terminal with xmodem 
+file transfer protocol. "mydata" is pointer to a character array. n_blocks 
+is the size of the array in 128-byte blocks.
+
+RETURN VALUE: 0, if there's a timeout during transfer; 1, if transfer 
+was successful; 2, if transfer was cancelled.
+END DESCRIPTION **********************************************************/
+nodebug int Dxmodem_z1down(char *mydata, int n_blocks)
+{
+    int  i;
+    int  timeout;
+    unsigned char nth_block, not_nth;
+    unsigned int testcrc;
+    int  checksum;
+    int  ercode;
+    char cdata;
+    int  iblock;
+
+    nth_block = 1;
+    not_nth = ~nth_block;
+
+    z1Binary = 1;
+    timeout = 0;
+    Dwrite_z1("Ready to Download File", 22);
+    Dz1send_prompt();
+    Dwrite_z1("Do an xmodem receive", 20);
+    Dz1send_prompt();
+    while (((ercode = Dread_z11ch(&cdata)) == 0) || ((cdata != XCRC) && 
+            (cdata != ESC) && (cdata != CAN)) )
+    {
+        Ddelay_1sec();
+        if (++timeout >= 30)
+        {
+            z1Binary = 0;
+            Ddelay_5sec();
+            return 0;
+        }
+    }
+    if (cdata == CAN || cdata == ESC) // Monitor for a quick ABORT
+    {
+        z1Binary = 0;
+        Ddelay_5sec();
+        return 2;
+    }
+    else 
+        timeout = 0;
+    do
+    {
+        iblock = (nth_block - 1) * 128;
+        Dwrite_z11ch(SOH);
+        Dwrite_z11ch(nth_block);
+        Dwrite_z11ch(not_nth);
+        Dwrite_z1(mydata + iblock, 128);
+    /** DO THIS IF CHECKSUM IS NEEDED: *******************
+        checksum = 0;
+        for(i=0;i<128;i++)
+            checksum = (checksum + mydata[i+iblock])& 0xff;
+        Dwrite_z11ch(checksum);
+     *****************************************************/
+        testcrc = getcrc(mydata + iblock, 128, 0);
+        cdata = (testcrc >> 8) & 0xff;
+        Dwrite_z11ch(cdata);
+        cdata = (testcrc & 0xff);
+        Dwrite_z11ch(cdata);
+        timeout = 0;
+        while (((ercode = Dread_z11ch(&cdata)) == 0) ||
+                ((cdata != XCRC) && (cdata != NAK) && (cdata != ACK) && 
+                 (cdata != CAN)) )
+        {
+            Ddelay_1tick();
+            if (++timeout > 200)
+            {
+                z1Binary = 0;
+                Ddelay_5sec();
+                return 0;
+            }
+        }
+        if (cdata == CAN)
+        {
+            z1Binary = 0;
+            Ddelay_5sec();
+            return 2;
+        }
+        else if (cdata == ACK)
+        {
+            if (++nth_block <= n_blocks) 
+                not_nth = ~nth_block;
+            else
+            {
+                Dwrite_z11ch(EOT);
+                timeout = 0;
+                while (((ercode = Dread_z11ch(&cdata)) == 0) || 
+                         cdata != ACK)
+                {
+                    Ddelay_1tick();
+                    if (++timeout > 200)
+                    {
+                        z1Binary = 0;
+                        Ddelay_5sec();
+                        return 0;
+                    }
+                };
+                // Wait for final acknowledge for end of 
+                // xfer time out, if necessary.
+                z1Binary = 0;
+                Ddelay_5sec();
+                return 1;    // Successful transfer
+            }
+        }
+    }
+    while (1);
+}
+
+/* START FUNCTION DESCRIPTION ********************************************
+Dxmodem_z1up                 <Z1232.LIB>
+
+SYNTAX: int Dxmodem_z1up(unsigned long baseAddress, int *no_of_pages, 
+            int dest, int (*data_parsing)() );
+
+DESCRIPTION: Uploads data from a PC using the xmodem file transfer protocol.
+"baseAddress" is the destination's physical ram address.  "*no_of_pages" is 
+the size of the uploaded file in number of pages.  "dest" is an additional 
+parameter to locate the uploaded file.  "*data_parsing" is the address of 
+the function to parse the uploaded file into memory.  The required parsing 
+function prototype is:
+
+int parse_function(char *mydata, int blockcount, 
+    unsigned long baseAddress, int dest);
+
+where "mydata" is a pointer to a 128 byte block of data;  "blockcount" is 
+the nth block;  "baseAddress" is the base address of the uploaded file;  and
+"dest" is an added parameter to locate the data.  The parser function should 
+return 1 for successful copy or else 0.
+
+RETURN VALUE: 0, if there's a timeout during transfer; 1, if transfer 
+was successful; 2, if transfer was cancelled.
+END DESCRIPTION **********************************************************/
+nodebug int Dxmodem_z1up(unsigned long baseAddress, int *no_of_pages, 
+            int dest, int (*data_parsing)() )
+{
+    int  i;
+    unsigned char nth_block, not_nth;
+    unsigned int testcrc;
+    unsigned int myblockcount;
+    int  checksum;
+    int  ercode;
+    int  timeout;
+    char cdata;
+    char locrc, hicrc, mylocrc, myhicrc;
+    static char mydata[130];
+
+    myblockcount = 1;
+    z1Binary     = 1;
+    timeout      = 0;
+    Dwrite_z1("Ready to receive", 16);
+    Dz1send_prompt();
+    Dwrite_z1("Xmodem File Up", 14);
+    Dz1send_prompt();
+    do
+    {
+     // Dwrite_z11ch(NAK);  use this if checksum is needed.
+        Dwrite_z11ch(XCRC);
+        Ddelay_1sec();
+        if (++timeout >= 30)
+        {
+            z1Binary = 0;
+            Ddelay_5sec();
+            return 0;
+        }
+    } while (((ercode = Dread_z11ch(&cdata)) == 0) || ((cdata != SOH) &&
+              (cdata != ESC) && (cdata != CAN)));
+
+    if (cdata == CAN || cdata == ESC) // somehow cancelled
+    {
+        z1Binary = 0;
+        Ddelay_5sec();
+        return 2;
+    }
+    do
+    {
+        timeout = 0;
+        while (++timeout < 100 && (ercode = Dread_z11ch(&cdata) == 0)) 
+            Ddelay_1tick();
+        
+        if (timeout >= 100)
+        {
+            z1Binary = 0;
+            Ddelay_5sec();
+            return 0;
+        }
+        else 
+            nth_block = cdata;
+
+        timeout = 0;
+        while (++timeout < 100 && (ercode = Dread_z11ch(&cdata) == 0)) 
+            Ddelay_1tick();
+        
+        if (timeout >= 100)
+        {
+            z1Binary = 0;
+            Ddelay_5sec();
+            return 0;
+        }
+        else 
+            not_nth = cdata;
+
+        checksum = 0;
+        timeout = 0;
+        for (i = 0; i < 128; i++)
+        {
+            while (++timeout < 100 && (ercode = Dread_z11ch(&cdata)) == 0)
+                Ddelay_1tick();
+            
+            if (timeout >= 100)
+            {
+                z1Binary = 0;
+                Ddelay_5sec();
+                return 0;
+            }
+            else
+            {
+                timeout = 0;
+             // checksum = (checksum + cdata ) & 0xff;
+                mydata[i] = cdata;
+            }
+        }
+        testcrc = getcrc(mydata, 128, 0);
+        myhicrc = (testcrc >> 8) & 0xff;
+        mylocrc = testcrc & 0xff;
+
+        timeout = 0;
+        while (++timeout <= 100 && (ercode = Dread_z11ch(&cdata) == 0))
+            Ddelay_1tick();
+        
+        if (timeout >= 100)
+        {
+            z1Binary = 0;
+            Ddelay_5sec();
+            return 0;
+        }
+        else 
+            hicrc = cdata;
+
+        timeout = 0;
+        while (++timeout <= 100 && (ercode = Dread_z11ch(&cdata) == 0))
+            Ddelay_1tick();
+        
+        if (timeout >= 100)
+        {
+            z1Binary = 0;
+            Ddelay_5sec();
+            return 0;
+        }
+        else
+        {
+            if (cdata == mylocrc && hicrc == myhicrc)
+            {
+                if ((*data_parsing)(mydata, myblockcount, baseAddress, 
+                dest) == 1)
+                {
+                    Dwrite_z11ch(ACK);
+                    ++myblockcount;
+                }
+                else 
+                    Dwrite_z11ch(XCRC); // use Dwrite_z11ch(NAK) for chksum
+            }
+            else 
+                Dwrite_z11ch(XCRC); // use Dwrite_z11ch(NAK) for checksum
+        }
+        timeout = 0;
+        while (((ercode = Dread_z11ch(&cdata)) == 0) ||
+               ((cdata != EOT) && (cdata != SOH) && (cdata != CAN)))
+        {
+            Ddelay_1tick();
+            if (++timeout > 100) // time out after 2-3 seconds
+            {
+                z1Binary = 0;
+                Ddelay_5sec();
+                return 0;
+            }
+        }
+        if (cdata == EOT)
+        {
+            Dwrite_z11ch(ACK);
+            z1Binary = 0;
+            *no_of_pages = myblockcount / 32;
+            Ddelay_5sec();
+            return 1;        // Successful xfer
+        }
+        if (cdata == CAN)
+        {
+            z1Binary = 0;
+            Ddelay_5sec();
+            return 2;
+        }
+    } while (1);
+}
+

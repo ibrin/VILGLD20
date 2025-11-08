@@ -1,0 +1,2810 @@
+/* START LIBRARY DESCRIPTION *********************************************
+SRRIOW.LIB
+    Copyright (c) 1995, Z-World.
+
+DESCRIPTION: Utilities for master to slave half duplex RS485 communication,
+using the protocol below. Requires one master and can have as many as 15
+slaves. The simple interfaces in this library allow the programmer to extend
+the i/o capabilities of boards by addressing the slaves' i/o channels.
+
+The slaves send only data requested data back. The master does not perform
+parity checking.
+
+Busy wait and costatement paradigm versions are provided for each i/o
+function.
+
+SUPPORT LIB'S: vdriver.lib
+END DESCRIPTION **********************************************************/
+
+/*
+
+Packet format
+
+from master to slave:
+
+ssss indicates the slave address, 1-15
+cccccccc indicates a 8-bit channel number
+
+p000ssss set digital: turn on a digital channel
+	followed by cccccccc
+p001ssss reset digital: turn off a digital channel
+	followed by cccccccc
+p010ssss read digital: read a digital channel
+	followed by cccccccc
+	expects return code 	0000000d
+p011ssss read analog: read an analog channel
+	followed by cccccccc
+	expects return code	dddddddd
+								dddddddd
+								dddddddd
+								dddddddd
+p100ssss define safe state
+	followed by ?
+p101ssss write analog: set a value
+	followed by cccccccc
+	followed by dddddddd dddddddd
+p110ssss	set safe state
+	followed by ?
+p111ssss reserved code
+	followed by xxxxxxxx
+					...
+*/
+
+/*** Beginheader */
+
+#use ezio.lib
+
+#define  MASTER 0
+#define  SLV01 0x0100
+#define  SLV02 0x0200
+#define  SLV03 0x0300
+#define  SLV04 0x0400
+#define  SLV05 0x0500
+#define  SLV06 0x0600
+#define  SLV07 0x0700
+#define  SLV08 0x0800
+#define  SLV09 0x0900
+#define  SLV10 0x0a00
+#define  SLV11 0x0b00
+#define  SLV12 0x0c00
+#define  SLV13 0x0d00
+#define  SLV14 0x0e00
+#define  SLV15 0x0f00
+
+#define ZIO_CHK_BRD_STAT 	EIO_AI_SYS_B+0
+#define ZIO_RST_BRD 			EIO_AI_SYS_B+1
+#define ZIO_RET_BRD_TYPE	EIO_AI_SYS_B+2
+#define ZIO_CHG_BRD_ADDR 	EIO_AO_SYS_B+0
+#define ZIO_SET_SAFE			EIO_DO_SYS_B+0
+#define ZIO_DEFN_SAFE		EIO_DO_SYS_B+1
+
+#define ZIO_ACK	0x06
+#define ZIO_NAK	0x0a
+
+#define 	SLAVE_ID_EE2_LOC 2
+
+#define 	UNIT_START_UP 				1
+#define 	WAIT_FOR_1RST_COMMAND 	2
+#define 	HANDLE_MESSAGES 			4
+#define 	ERROR_RESET		 			9
+
+#define 	START_ALL_SLAVES			2
+#define 	POLL_ALL_SLAVES			3
+
+#define 	ZIO_RESERVED_CODE		0x00
+#define 	ZIO_RESET_DIGITAL  	0x10
+#define 	ZIO_READ_DIGITAL   	0x20
+#define 	ZIO_READ_ANALOG	   0x30
+#define	ZIO_CAL_ANALOG			0x40
+#define 	ZIO_SET_ANALOG	   	0x50
+#define 	ZIO_SET_DIGITAL		0x70
+
+#define	ZIO_SEND_NAK			0x01
+
+#define 	ZIO_NO_MESSAGE     	0xf0
+#define 	ZIO_AWAITING_1ST   	0xff
+#define 	ZIO_BAUD_RATE 			16
+#define 	ZIO_DFLT_TIMOUT		10
+#define 	ZIO_DFLT_SAFESTSTT	0
+#define 	DEFAULT_DEBNC_INT  	20
+
+/*
+
+types of error that can happen:
+
+transmission timeout
+reception timeout
+hardware error
+software parity error
+bad slave spec.
+bad dev spec.
+
+*/
+
+#define ZIO_NODEV			0x02		//	device doesn't exist
+#define ZIO_BAD_PARITY	0x04		//	bad parity, possibly transmission error
+#define ZIO_BAD_CMD		0x08		//	bad command, command doesn't exist
+#define ZIO_HW_FRAME		0x10		//	hardware framing error, transmission error
+#define ZIO_HW_PARITY	0x20		//	hardware parity error, should never get this
+#define ZIO_HW_OVRN		0x40		//	hardware overun error, interrupt turned off for too long
+#define ZIO_HW_MASK		0x70		//	used only internally, do not include in manual
+#define ZIO_BAD_ECHO		0x80		//	bad echo, not receiving byte transmitted
+#define ZIO_TO				0x100		//	time out, slave did not respond
+#define ZIO_BAD_NODE		0x200		//	bad node
+#define ZIO_WD_TO			0x2000	//	slave watch dog timeout
+#define ZIO_BAD_CHKSUM	0x4000	//	bad check sum
+#define ZIO_NOT_ACK		0x8000	//	reply is not proper acknowledgement
+
+#define 	WD_INIT_VALUE 			10
+
+struct _rioOpParam
+{
+	CoData processState;
+	union {
+		int logical;
+		struct {
+			char dev;
+			char node;
+		} net;
+	} channel;
+	char opCode;
+	union _rioInfo {
+		int i;
+		long l;
+		float f;
+		unsigned u;
+		struct _calibPak {
+			int d1,d2;
+			float v1,v2;
+		} calib;
+	} v;
+	char outBuf[64];
+	int opResult;
+	char i;
+	char inuse;
+	unsigned long startTime;
+	int retry;
+} _rioOp;
+
+jmp_buf rio_xceptn;
+
+//char *rio_send_buf;
+//char *rio_rec_buf;
+//char *rio_rbuf_base;
+extern int  rio_vwdog;
+int rioRetryCnt;
+int	rioTOLim;
+int rioPollPeriod;
+
+char rio_poll_request;
+char rio_drvr_in_use;
+char var_len_opcode;
+extern char rio_wd_active;
+char rio_current_op;
+char rio_send_count;
+//char _rx_len;
+//char _len_rdy;
+char receive_ready;
+//char aclock;
+//char _myaddress;         
+//char rio_reply_buf[8];
+char rioCurrentState;
+//char rio_rec_rbuf[8];
+//char rio_reply_length;
+char calc_parity;
+char rec_parity;
+char simparerr;
+//char _rio_outBuf[8];
+//char rioCmdLen[8];
+
+unsigned long rio_time_out_lim;
+
+CoData MstSendMessCS;
+CoData MstSendCS;
+CoData SlvSendCS;
+CoData MstSMPollCS;
+CoData SlvStateCS;
+CoData readDBCS;
+
+int rioErrorCode;
+char _rio_slave_array[16];
+char _rio_num_slave;
+char rio_rbuf_avail;
+char rio_out_mask1;
+char rio_out_mask2;
+#makechain _rio_init
+/*** Endheader    */
+
+/*** BeginHeader rio_vwdog, rio_wd_active */
+
+extern char rio_wd_active;
+extern int rio_vwdog;
+
+/*** EndHeader */
+
+#if RIOLONGRANGE
+#error "Not shorts range!"
+#endif
+char rio_wd_active;
+int rio_vwdog;
+
+/*** Beginheader _rioInput */
+char _rioInput(int dest);
+/*** Endheader    */
+
+/* START FUNCTION DESCRIPTION ********************************************
+_rioInput                   <SRRIOW.LIB>
+
+SYNTAX:			char _rioInput(int DIChannel);
+
+DESCRIPTION:	This function implements rioInput in the I/O driver (when
+rio3s or rio3l is used). The function deals with on-controller, PLC-bus
+based devices as well as I/O devices on slaves on the network. This
+function waits for the entire transaction to complete before returning,
+therefore the turnaround time (between call and return) can be up to 15ms.
+If the variable "rioErrorCode" is non-zero, all remote operations will
+not be performed, but local (on-controller and PLC-bus) operations can
+still be performed.
+
+PARAMETER1:		"DIChannel" is the digital input channel number (i.e., the channel
+to read from). Please see the description of rioInput for details of
+deriving channel numbers.
+
+RETURN VALUE: 0 if the remote port reads low, 1 otherwise.
+END DESCRIPTION **********************************************************/
+
+nodebug char _rioInput(int dest){
+	if (*((char*)&dest+1) != _rioMyAddress) {
+		//	this is a remote operation
+#if !RIOLONGRANGE
+		_rioPollSlaves();
+#endif
+		if (rioErrorCode) return 0;
+		while(!LockTestAndSet(&_rioOp.inuse,1));
+		_rioOp.channel.logical = dest;
+		CoBegin(&_rioOp.processState);
+		_rioOp.v.i = 0;
+		_rioOp.opCode = ZIO_READ_DIGITAL;
+		while(!rioInputWF());
+		LockReset(&_rioOp.inuse,1);
+		return _rioOp.v.i;
+	} else {
+		//	this is a local operation
+//		_rioOp.channel.logical = dest;
+//		_rioOp.v.i = eioDigIn(dest);
+//		_rioOp.opResult = (_rioOp.v.i == 0xff) ? ZIO_BAD_DEV : 0;
+		return eioDigIn(dest);	//	_rioOp.v.i;
+	}
+}
+
+/*** BeginHeader _rioAnCalib */
+
+char _rioAnCalib(int netChan, int d1, int d2, float v1, float v2);
+
+/*** EndHeader */
+
+char _rioAnCalib(int netChan, int d1, int d2, float v1, float v2) {
+	if (*((char*)&netChan+1) != _rioMyAddress) {
+		//	this is a remote operation
+#if !RIOLONGRANGE
+		_rioPollSlaves();
+#endif
+		if (rioErrorCode) return 0;
+		while(!LockTestAndSet(&_rioOp.inuse,1));
+		_rioOp.channel.logical = netChan;
+		CoBegin(&_rioOp.processState);
+		_rioOp.v.calib.d1 = d1;
+		_rioOp.v.calib.d2 = d2;
+		_rioOp.v.calib.v1 = v1;
+		_rioOp.v.calib.v2 = v2;
+		_rioOp.opCode = ZIO_CAL_ANALOG;
+		while(!rioAnCalibWF());
+		LockReset(&_rioOp.inuse,1);
+		return _rioOp.v.i;
+	} else {
+		//	this is a local operation
+//		_rioOp.channel.logical = netChan;
+//		_rioOp.v.i = eioAnCalib(netChan,d1,d2,v1,v2);
+//		_rioOp.opResult = (_rioOp.v.i == 0xff) ? ZIO_BAD_DEV : 0;
+		return eioAnInCal(netChan,d1,d2,v1,v2);	//	_rioOp.v.i;
+	}
+}
+
+/*** Beginheader _rioOutput */
+void _rioOutput(int dest, int value);
+/*** Endheader    */
+
+/* START FUNCTION DESCRIPTION ********************************************
+_rioOutput                   <SRRIOW.LIB>
+
+SYNTAX:			void _rioOutput(int DOChannel, int value);
+
+DESCRIPTION:	This function implements rioInput in the I/O driver (when
+rio3s or rio3l is used). The function deals with on-controller, PLC-bus
+based devices as well as I/O devices on slaves on the network. This
+function waits for the entire transaction to complete before returning,
+therefore the turnaround time (between call and return) can be up to 15ms.
+If the variable "rioErrorCode" is non-zero, all remote operations will
+not be performed, but local (on-controller and PLC-bus) operations can
+still be performed.
+
+PARAMETER1:		"DOChannel" is the digital output channel number (i.e., the channel
+to read from). Please see the description of rioOutput for details of
+deriving channel numbers.
+
+PARAMETER2:		"value" is the value to send to the destination. The driver
+only differentiates whether value is 0 or non-zero. Any non-zero value
+is treated the same way.
+
+RETURN VALUE:	None.
+END DESCRIPTION **********************************************************/
+
+nodebug void _rioOutput(int dest, int value){
+	if (*((char*)&dest+1) != _rioMyAddress) {
+		//	this is a remote operation
+#if !RIOLONGRANGE
+		_rioPollSlaves();
+#endif
+		if (rioErrorCode) return;
+		while(!LockTestAndSet(&_rioOp.inuse,1));
+		_rioOp.channel.logical = dest;
+		CoBegin(&_rioOp.processState);
+		_rioOp.v.i = value;
+		_rioOp.opCode = value ? ZIO_SET_DIGITAL : ZIO_RESET_DIGITAL;
+		while(!rioOutputWF());	
+		LockReset(&_rioOp.inuse,1);
+	} else {
+		//	this is a local operation
+//		_rioOp.channel.logical = dest;
+//		_rioOp.opResult = (eioDigOut(dest, value)
+//				== 0xff) ? ZIO_BAD_DEV : 0;
+		eioDigOut(dest,value);
+	}
+}
+
+/*** Beginheader _rioSetSafeSt */
+void _rioSetSafeSt(int dest);
+/*** Endheader    */
+
+/* START FUNCTION DESCRIPTION ********************************************
+_rioSetSafeSt                   <SRRIOW.LIB>
+
+SYNTAX: 			void _rioSetSafeSt(int nodeID);
+
+DESCRIPTION:	This function returns a node on the network to its
+"safe state". This is the actual implementation of rioSetSafeSt when
+libraries rio3s or rio3l are used.
+
+PARAMETER1:		"nodeID" is the ID of the node to switch back to safe state.
+The high-byte should indicate the node number, and the low-byte should be
+zero.
+
+RETURN VALUE: n/a
+END DESCRIPTION **********************************************************/
+
+nodebug void _rioSetSafeSt(int dest){
+	_rioOutput(dest|ZIO_SET_SAFE,1);
+}
+
+/*** Beginheader _rioAssignNewID */
+
+void _rioAssignNewID(int dest, int newID);
+
+/*** EndHeader */
+
+void _rioAssignNewID(int dest, int newID) {
+	_rioWriteAnalog(dest|ZIO_CHG_BRD_ADDR,newID >> 8);
+}
+
+/*** Beginheader _rioBegDefSafeSt */
+void _rioBegDefSafeSt(int dest);
+/*** Endheader    */
+
+/* START FUNCTION DESCRIPTION ********************************************
+_rioBegDefSafeSt                   <SRRIOW.LIB>
+
+SYNTAX:			void _rioBegDefSafeSt(int nodeID);
+
+DESCRIPTION: This function instructs a node on the network to begin
+safe state definition. This function is the actual implementation of
+rioBegDefSafeSt when libraries rio3s or rio3l are used. Please refer
+to the description of rioBegDefSafeSt for more details about safe states.
+
+PARAMETER1:		"nodeID" indicates the node on the network that should
+begin safe state definition. The high byte should indicate the node
+number, and the low byte should be zero.
+
+RETURN VALUE: n/a
+END DESCRIPTION **********************************************************/
+
+nodebug void _rioBegDefSafeSt(int dest){
+	_rioOutput(dest|ZIO_DEFN_SAFE,1);
+}
+
+/*** Beginheader _rioEndDefSafeSt */
+void _rioEndDefSafeSt(int dest);
+/*** Endheader    */
+
+/* START FUNCTION DESCRIPTION ********************************************
+_rioEndDefSafeSt                   <SRRIOW.LIB>
+
+SYNTAX: 			void _rioEndDefSafeSt(int nodeID);
+
+DESCRIPTION:	This function is the actual implementation of rioEndDefSafeSt
+when the libraries rio3s or rio3l is used. It instructs a node on the
+network to exit safe state definition mode. Please refer to the description
+of rioEndDefSafeSt for details about safe state definition.
+
+PARAMETER1:		"nodeID"  indicates the node on the network that should
+end safe state definition. The high byte should indicate the node
+number, and the low byte should be zero.
+
+RETURN VALUE: n/a
+END DESCRIPTION **********************************************************/
+
+nodebug void _rioEndDefSafeSt(int dest){
+	_rioOutput(dest|ZIO_DEFN_SAFE,0);
+}
+
+/*** Beginheader _rioReadAnalog */
+float _rioReadAnalog(int Channel);
+/*** Endheader    */
+
+/* START FUNCTION DESCRIPTION ********************************************
+_rioReadAnalog                   <SRRIOW.LIB>
+
+SYNTAX: float _rioReadAnalog(char AIChannel);
+
+DESCRIPTION:	This function implements rioReadAnalog if the libraries
+rio3s or rio3l are used. The function reads the converted or unconverted
+value from an ADC channel. Please refer to the description of
+rioReadAnalog for more details about analog input channel derivation.
+
+PARAMETER1:		"AIChannel" indicates which ADC channel to read from.
+
+RETURN VALUE:	The converted or raw value read from an ADC channel.
+END DESCRIPTION **********************************************************/
+
+nodebug float _rioReadAnalog(int Channel){
+	if (*((char*)&Channel+1) != _rioMyAddress) {
+#if !RIOLONGRANGE
+		_rioPollSlaves();
+#endif
+		if (rioErrorCode) return 0;
+		while(!LockTestAndSet(&_rioOp.inuse,1));
+		_rioOp.channel.logical = Channel;
+		CoBegin(&_rioOp.processState);
+		_rioOp.opCode = ZIO_READ_ANALOG;
+		while(!rioReadAnalogWF());
+		LockReset(&_rioOp.inuse,1);
+		return _rioOp.v.f;
+	} else {
+//		_rioOp.channel.logical = Channel;
+//		_rioOp.opResult = 1;
+		return /*_rioOp.v.f = */ eioAnIn(Channel);
+	}
+}
+
+/*** Beginheader _rioWriteAnalog */
+void _rioWriteAnalog(int Channel, int value);
+/*** Endheader    */
+/* START FUNCTION DESCRIPTION ********************************************
+_rioWriteAnalog                   <SRRIOW.LIB>
+
+SYNTAX:			void _rioWriteAnalog(char AOCHannel, int value);
+
+DESCRIPTION:	This function implements rioWriteAnalog when libraries
+rio3s or rio3l are used. This function instructs an DAC channel to output
+the specified level. For more details about channel assignment, please
+refer to the description of rioWriteAnalog.
+
+PARAMETER1:		"AOChannel" is the analog output channel.
+
+PARAMETER2:		"value" is the actual value to output.
+
+RETURN VALUE:	None.
+END DESCRIPTION **********************************************************/
+nodebug void _rioWriteAnalog(int Channel, int value){
+	if (*((char*)&Channel+1) != _rioMyAddress) {
+		//	remote operation
+#if !RIOLONGRANGE
+		_rioPollSlaves();
+#endif
+		if (rioErrorCode) return;
+		while(!LockTestAndSet(&_rioOp.inuse,1));
+		_rioOp.channel.logical = Channel;
+		CoBegin(&_rioOp.processState);
+		_rioOp.v.i = value;
+		_rioOp.opCode = ZIO_SET_ANALOG;
+		while(!rioWriteAnalogWF());
+		rioPostWrAn();
+		LockReset(&_rioOp.inuse,1);
+	} else {
+		//	local operation
+//		_rioOp.channel.logical = Channel;
+		eioAnOut(Channel,value);	//	_rioOp.opResult =
+//			(eioAnOut(Channel,value) == 0xff) ?
+//					ZIO_BAD_DEV : 1;
+	}
+}
+
+/*** Beginheader _rioReset */
+int _rioReset(int dest);
+/*** Endheader    */
+
+/* START FUNCTION DESCRIPTION ********************************************
+_rioReset                   <SRRIOW.LIB>
+
+SYNTAX: int _rioReset(int nodeID);
+
+DESCRIPTION:	This function implements rioReset.
+
+RETURN VALUE:
+	Possible return value flags:
+		-1 if slave not found
+		0 if slave found and okay
+		flags if slave found but not okay
+		
+END DESCRIPTION **********************************************************/
+
+void rioPostRdAn();
+
+nodebug int _rioReset(int dest){
+	auto int OldError;
+
+	if (*((char*)&dest+1) != _rioMyAddress) {
+		OldError = rioErrorCode;
+		rioErrorCode = 0;
+#if !RIOLONGRANGE
+		_rioPollSlaves();
+#endif
+		while (!LockTestAndSet(&_rioOp.inuse,1));
+		_rioOp.channel.logical = dest | ZIO_RST_BRD;
+		_rioOp.v.i = 0;
+		_rioOp.opCode = ZIO_READ_ANALOG;
+		CoBegin(&_rioOp.processState);
+		while(!rioReadAnalogWF());
+		rioPostRdAn();
+		rioErrorCode = OldError;
+		LockReset(&_rioOp.inuse,1);
+		return (_rioOp.opResult==1)?_rioOp.v.i:_rioOp.opResult;
+	} else {
+//		_rioOp.channel.logical = dest | ZIO_RST_BRD;
+//		_rioOp.opResult = 1;
+		/*_rioOp.v.f = */	return (int)eioAnIn(ZIO_RST_BRD);
+//		return 0;
+	}
+}
+
+void rioPostRdAn() {
+	if(_rioOp.opResult == 1){
+		// if the _rioOp.channel.net.node is not
+		//	in the slave array reinsert it
+		if(!_rioSlaveFound(_rioOp.channel.net.node)){
+		++_rio_num_slave;
+#if !RIOLONGRANGE
+		rioPollPeriod = 500/_rio_num_slave;
+#endif
+		_rio_slave_array[_rio_num_slave-1]=
+			_rioOp.channel.net.node;
+		}
+	}
+}
+/*** BeginHeader _rioGetAllAlive */
+
+void _rioGetAllAlive();
+
+/*** EndHeader */
+
+void _rioGetAllAlive() {
+	int i;
+
+	for (i = 0x100; i < 0x1000; i+=0x100) {
+		_rioReset(i);
+#if !RIOLONGRANGE
+		_rioPollSlaves();
+#endif
+	}
+}
+
+/*** BeginHeader _rioPing */
+
+int _rioPing(int dest);
+
+/*** EndHeader */
+
+// turn around time is about 4.5ms, this is *not* a waitfor function, so it
+//	will take up 4.5 ms. Turn around time largely depends on the response
+//	time of the slave and communication speed. 4.5ms is measured at 19200bps
+//	and a 9MHz slave.
+
+nodebug int _rioPing(int dest) {
+	auto int OldError;
+
+	if (*((char*)&dest+1) != _rioMyAddress) {
+		OldError = rioErrorCode;
+		rioErrorCode = 0;
+#if !RIOLONGRANGE
+		_rioPollSlaves();
+#endif
+		while (!LockTestAndSet(&_rioOp.inuse,1));
+		_rioOp.v.i = 0;
+		_rioOp.channel.logical = dest | ZIO_CHK_BRD_STAT;
+		_rioOp.opCode = ZIO_READ_ANALOG;
+		CoBegin(&_rioOp.processState);
+		while(!rioReadAnalogWF());
+		rioErrorCode = OldError;
+		LockReset(&_rioOp.inuse,1);
+		return (_rioOp.opResult==1)?_rioOp.v.i:
+			((_rioOp.opResult&ZIO_TO)?-1:_rioOp.opResult);
+	} else {
+//		_rioOp.channel.logical = dest | ZIO_CHK_BRD_STAT;
+//		_rioOp.opResult = 1;
+		/*_rioOp.v.f = */ return (int)eioAnIn(ZIO_CHK_BRD_STAT);
+//		return 0;
+	}
+}
+
+/*** Beginheader rioOutputWF */
+int rioOutputWF();
+/*** Endheader    */
+/* START FUNCTION DESCRIPTION ********************************************
+rioOutputWF                   <SRRIOW.LIB>
+
+SYNTAX: int rioOutputWF(int dest, int Chan);
+
+DESCRIPTION: Costatement (waitfor) paradigm version of Short Range Network
+function to set digital output channel
+on slave to on or off. This function does not busy wait. It should
+be called periodically until the return value is non-zero.
+The slave id is passed in the high byte
+of "dest". The strings SLV01 - SLV15 are #defined as the appropriate slave ids
+shifted to the high byte. The channel id is passed in the low byte of "dest."
+MASTER can be used to make this function work on the master, and this
+function may be called by a slave to send to itself if desired 
+ 
+RETURN VALUE: 0 - transmitting/receiving or waiting for driver,
+				  1 - transmission complete,
+				 -1 -	timeout error (or called from slave for another slave) 
+END DESCRIPTION **********************************************************/
+nodebug int rioOutputWF(){
+	CoData *OutputCS;
+	auto int res;
+
+	OutputCS = &_rioOp.processState;
+	costate OutputCS {
+		_rioOp.opResult = 0;									// set return value to unfinished
+		if(_rioMyAddress && (_rioOp.channel.net.node!=_rioMyAddress))
+				// called from one slave for another
+			_rioOp.opResult = ZIO_BAD_NODE;			  	//    can't do that.
+		else{											// called from master for slave, OK
+			CoBegin(&rioMstSendCD);
+			waitfor(rioMstSend());
+		}
+	}
+	return _rioOp.opResult;
+}
+
+/*** Beginheader rioWriteAnalogWF */
+int rioWriteAnalogWF();
+void rioPostWrAn();
+/*** Endheader    */
+/* START FUNCTION DESCRIPTION ********************************************
+rioWriteAnalogWF                   <SRRIOW.LIB>
+
+SYNTAX: int rioWriteAnalogWF(int dest, int Chan);
+
+DESCRIPTION: Costatement (waitfor) paradigm version of Short Range Network
+function to set digital output channel
+on slave to on or off. This function does not busy wait. It should
+be called periodically until the return value is non-zero.
+The slave id is passed in the high byte
+of "dest". The strings SLV01 - SLV15 are #defined as the appropriate slave ids
+shifted to the high byte. The channel id is passed in the low byte of "dest."
+MASTER can be used to make this function work on the master, and this
+function may be called by a slave to send to itself if desired 
+ 
+RETURN VALUE: 0 - transmitting/receiving or waiting for driver,
+				  1 - transmission complete,
+				 -1 -	timeout error (or called from slave for another slave) 
+END DESCRIPTION **********************************************************/
+nodebug int rioWriteAnalogWF(){
+	auto CoData *WriteAnalogCS;
+	auto unsigned i;
+	auto int res;
+
+	WriteAnalogCS = &_rioOp.processState;
+	costate WriteAnalogCS {
+		_rioOp.opResult = 0;									// set return value to unfinished
+		if(_rioMyAddress && (_rioOp.channel.net.node!=_rioMyAddress))
+				// called from one slave for another
+			_rioOp.opResult = ZIO_BAD_NODE; 						 	//    can't do that.
+		else {		  // send analog
+			CoBegin(&rioMstSendCD);
+			waitfor(rioMstSend());
+		} 
+	}
+	return _rioOp.opResult;
+}
+
+nodebug void rioPostWrAn() {
+	auto int i;
+	
+	if ((_rioOp.channel.net.dev == ZIO_CHG_BRD_ADDR)
+			&& (_rioOp.opResult == 1)) {
+		for(i=0;i<_rio_num_slave;i++){
+			if(_rioOp.channel.net.node==_rio_slave_array[i]){
+				_rio_slave_array[i] = (char)_rioOp.v.i;
+				break;
+			}
+		}
+	}
+}
+/*** Beginheader rioInputWF */
+int rioInputWF();
+/*** Endheader    */
+/* START FUNCTION DESCRIPTION ********************************************
+rioInputWF                   <SRRIOW.LIB>
+
+SYNTAX: int rioInputWF(SLVxx, char *value);
+
+DESCRIPTION: Costatement paradigm version of Short Range Network
+function to read digital input channel on slave or master. This function does
+not busy wait. It should be called periodically until the return value is non-zero.
+"*value" will contain 1 or 0 for on or off. The slave id is passed in the high byte
+of "dest". The strings SLV01 - SLV15 are #defined as the appropriate slave ids
+shifted to the high byte. The channel id is passed in the low byte of "dest."
+MASTER can be used to make this function work on the master, and this
+function may be called by a slave read from itself if desired 
+
+RETURN VALUE: 0 - transmitting/receiving or waiting for driver,
+				  1 - transmission complete,
+				 -1 -	timeout error or called from slave for another slave
+						
+END DESCRIPTION **********************************************************/
+// see rioOutputWF for internal comments
+nodebug int rioInputWF(){
+	auto CoData *InputCS;
+	auto int res;
+
+	InputCS = &_rioOp.processState;
+	costate InputCS {
+		_rioOp.opResult = 0;
+		if(_rioMyAddress && _rioOp.channel.net.node!=_rioMyAddress) 
+			_rioOp.opResult = ZIO_BAD_NODE;
+		else{
+			CoBegin(&rioMstSendCD);
+			waitfor(rioMstSend());
+		}
+	}
+	return _rioOp.opResult;
+}
+
+/*** Beginheader rioReadAnalogWF */
+int rioReadAnalogWF();
+/*** Endheader    */
+/* START FUNCTION DESCRIPTION ********************************************
+rioReadAnalogWF                   <SRRIOW.LIB>
+
+SYNTAX: char rioReadAnalogWF(char Node, char Chan, int *value);
+
+DESCRIPTION: Costatement paradigm version of Short Range Network
+function to read analog output channel
+"Chan" on slave "Node". This function does not busy wait. "*value" will
+contain the analog reading. It should
+be called periodically until the return value is non-zero.
+
+RETURN VALUE: 0 - transmitting/receiving or waiting for driver,
+				  1 - transmission complete,
+				 -1 -	timeout error (or called from slave for another slave)
+END DESCRIPTION **********************************************************/
+//nodebug
+int rioReadAnalogWF(){
+	// see rioOutputWF for internal comments
+	static char found,i;
+	CoData *ReadAnalogCS;
+	auto int res;
+
+	ReadAnalogCS = &_rioOp.processState;
+	costate ReadAnalogCS {
+		_rioOp.opResult = 0;
+		if(_rioMyAddress && _rioOp.channel.net.node!=_rioMyAddress){
+			_rioOp.opResult = ZIO_BAD_NODE;
+		}
+		else{
+			CoBegin(&rioMstSendCD);
+			waitfor(rioMstSend());
+		}
+	}
+	return _rioOp.opResult;
+}
+
+/*** BeginHeader rioAnCalibWF */
+
+int rioAnCalibWF();
+
+/*** EndHeader */
+
+int rioAnCalibWF() {
+	// see rioOutputWF for internal comments
+	CoData *CalAnalogCS;
+	auto int res;
+
+	CalAnalogCS = &_rioOp.processState;
+	costate CalAnalogCS {
+		_rioOp.opResult = 0;
+		if(_rioMyAddress && _rioOp.channel.net.node!=_rioMyAddress){
+			_rioOp.opResult = ZIO_BAD_NODE;
+		}
+		else{
+			CoBegin(&rioMstSendCD);
+			waitfor(rioMstSend());
+		}
+	}
+	return _rioOp.opResult;
+}
+
+/*** Beginheader _rioInitMaster */
+int  _rioInitMaster();
+void _rioPollSlaves();
+/*** Endheader    */
+
+#ifndef RIOLONGRANGE
+#define RIOLONGRANGE 0
+#endif
+
+/* _START FUNCTION DESCRIPTION ********************************************
+_z1_rio_mst_int                    <SRRIOW.LIB>
+
+SYNTAX: void _z1_rio_mst_int(void);
+
+DESCRIPTION: Interrupt service routine for Z180 port 1, half-duplex 
+receive and transmit.  Master and slaves handle incoming strings 
+differently: (1) Master sends slave address using the 9th bit mode.  After
+master receives its own 9th bit mode message, it switches to 8 bit data 
+mode. (2) Slave listens for a 9th bit mode.  When addressed, it switches
+to the 8 bit (data) mode to receive the rest of the transmission.  Slave
+responds in regular 8 bit data mode. The first byte the master sends contains
+the following information:
+
+				bits 0-3: the slave address	
+				bits 4-6: the operation code
+				bit  7:   the parity of the first byte, not including bit 7 and
+							 all bytes to follow for this op code
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+rioInitMaster                   <SRRIOW.LIB>
+
+SYNTAX: int rioInitMaster();
+
+DESCRIPTION: Initializes Z180 port 1 for RS485 9th bit half duplex 
+communication. Data format defaults to 8 bits, no parity, 1 stop bit.
+Master Message Protocol:
+
+First Byte:
+bits 0-3  	Destination Node (Slave) number
+bits 4-6		Opcode
+bit  7		parity
+
+Opcodes:						 Following Byte(s)		Reply
+Bytes
+ZIO_SET_DIGITAL	 0x00  1   Channel #		      0
+ZIO_RESET_DIGITAL  0x10  1   Channel #				0
+ZIO_READ_DIGITAL   0x20  1   Channel #				1 - value (0 or 1) (or status)
+ZIO_READ_ANALOG    0x30  1   Channel #				2 - integer value  (or status)
+ZIO_RESERVED_CODE	 0x70  ?   len. , 1...len.		0
+
+The slaves send only data requested data back. The master does not perform
+parity checking.
+
+Busy wait and costatement paradigm versions are provided for each i/o
+function.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+nodebug int _rioInitMaster()
+{
+	char retval,val,outBuf[2];
+	int i;
+   char mode = 0x04  | 6;
+	segchain _rio_init {
+		_rioOp.inuse = 0;
+
+		// message lengths
+   	rioCmdLen[0] = 2;
+	   rioCmdLen[1] = 2;
+   	rioCmdLen[2] = 2;
+	   rioCmdLen[3] = 2;
+   	rioCmdLen[4] = 14;
+	   rioCmdLen[5] = 4;
+   	rioCmdLen[6] = 2;
+	   rioCmdLen[7] = 2;
+
+//		for(i=0;i<256;i++)dig_ichan_val[i]=255;
+	}
+
+	CoBegin(&MstSendMessCS);
+	CoBegin(&MstSendCS);
+	CoBegin(&MstSMPollCS);
+   simparerr = 0;
+   rioRetryCnt = 5;
+//   _rio_kill_z1();             						// kill z1 port before init
+   outport(STAT1, 0);       							// Reset port
+   outport(CNTLA1, (mode & 7) | 0x80 | 0x20); 	// Set mpe, and tx enable
+   rioIntFSM.PS = z180baud(sysclock(), ZIO_BAUD_RATE);
+	rio_time_out_lim = 20 + ((48/ZIO_BAUD_RATE) *  ZIO_DFLT_TIMOUT)/3;
+
+   // Set baud rate , 0x40 set mp mode
+   // No need to init to zero, as rio_send_count=0;
+   outport(CNTLB1, rioIntFSM.PS | 0x40);
+
+//	rio_drvr_in_use = 0;
+//   rio_listen_count = 0;
+//   rio_send_count = 0;
+//	_rioOff();
+	rio_poll_request = 0;
+//   rio_rbuf_base = rio_rec_rbuf;
+//   _rx_len = 0;
+//   _len_rdy = 0;
+//   _rio_rec_z1();             // Reestablish the receive buffer
+//   _rio_rec_enb_z1();
+   _rioMyAddress = 0;
+   _rio_num_slave = 0;
+	i=1;
+//	rio_global_reset = 0;
+	rioErrorCode = 0;
+	rioCurrentState = HANDLE_MESSAGES;
+	rio_drvr_in_use = 0;
+   rio_send_count = 0;
+	rio_poll_request = 0;
+//   rio_rbuf_base = rio_rec_rbuf;
+//   _rx_len = 0;
+//   _len_rdy = 0;
+//   _rio_rec_z1();             // Reestablish the receive buffer
+//   _rio_rec_enb_z1();
+	rioCurrentState = POLL_ALL_SLAVES;
+	//	the following code checks if the EEPROM is initialized, if not
+	//	put default values to safe states.
+	if(ee_rd(SLAVE_ID_EE2_LOC+1)==SLAVE_ID_EE2_LOC+1){
+		_rioMyAddress = 0;
+		ee_wr(SLAVE_ID_EE2_LOC, 0);
+		ee_wr(SLAVE_ID_EE2_LOC+1,1);
+	 }
+	 // else use ID in EEPROM	
+	eioInit(EIO_SET_SAFE | EIO_INIT_PBUS);		//	initialize ezio module
+#if RIOLONGRANGE	
+	rioTOLim = 50;
+#else
+	rioTOLim = 20;
+	rioPollPeriod = 0;
+#endif
+   return;
+	 rioSysDI;
+	 rioSysDO;
+	 rioSysAI;
+	 rioSysAO;
+	 eioInitSafeState;
+}
+
+#funcchain _GLOBAL_INIT _rio_init
+
+#if !RIOLONGRANGE
+
+void _rioPollSlaves() {
+	static char mylock;
+	
+	segchain _GLOBAL_INIT {
+		rioPollPeriod = 0;
+		mylock = 0;
+	}
+	if (LockTestAndSet(&mylock,1)) {
+		if (rioPollPeriod && !rioErrorCode) {
+			costate {
+				waitfor(IntervalMs(rioPollPeriod));
+				rio_poll_request = 1;
+				do {
+					MstPollSlaves();
+					yield;
+				} while (rio_poll_request);
+			}
+		}
+		LockReset(&mylock,1);
+	} else {
+		return;
+	}
+
+}
+
+#ifdef EASYSTRT
+#funcchain _srtk_hightask _rioPollSlaves
+#endif
+
+#endif
+
+/*** Beginheader _rioSlaveFound */
+_rioSlaveFound(char Node);
+/*** Endheader    */
+nodebug _rioSlaveFound(char Node){
+	char i;
+	for(i=0; i < _rio_num_slave; i++){
+		if(_rio_slave_array[i] == Node)return 1;
+	}
+	return 0;
+}
+
+/*** Beginheader 	_reset_all_CS */
+int  _reset_all_CS();
+/*** Endheader    */
+_reset_all_CS(){
+	CoBegin(&MstSendMessCS);
+	CoBegin(&MstSendCS);
+	CoBegin(&MstSMPollCS);
+	rio_global_reset = 0;
+	rioInitMaster();
+}
+
+/*** Beginheader MstPollSlaves */
+int  MstPollSlaves();
+/*** Endheader    */
+/* START FUNCTION DESCRIPTION ********************************************
+MstPollSlaves()                   <SRRIOW.LIB>
+
+SYNTAX: int MstPollSlaves();
+
+DESCRIPTION: Short Range Network function to be run continuously in
+background priority loop to poll slaves continuously or reset
+master if necessary;  If rioErrorCode is set to non-zero, the function
+does not do anything, and returns -1.
+
+RETURN VALUE: n/a
+END DESCRIPTION **********************************************************/
+MstPollSlaves(){
+	static int indx;
+	int j;
+	static int retval;
+//	int val;
+	static int whatever;
+	int res;
+	auto union _rioInfo savedInfo;
+
+	segchain _rio_init { indx = 0; }
+
+	if (rioErrorCode) return -1;
+	if (rio_poll_request) {
+		if (!LockTestAndSet(&_rioOp.inuse,1)) return 0;
+		savedInfo = _rioOp.v;
+		CoBegin(&MstSMPollCS);
+		do {
+			costate MstSMPollCS always_on {
+				retval = 0;							// set return value to unfinished
+//				waitfor(LockTestAndSet(&_rioOp.inuse,1));
+				if (_rio_num_slave) {
+					if((indx >= _rio_num_slave) || (indx < 0)) indx = 0;  // cycle thru slaves
+					_rioOp.channel.logical = ZIO_CHK_BRD_STAT |
+						(_rio_slave_array[indx] << 8);
+					_rioOp.opCode = ZIO_READ_ANALOG;
+					CoBegin(&rioMstSendCD);
+					waitfor(rioMstSend());
+#ifdef CHKTM
+					lastDur = MS_TIMER-lastPolled;
+					lastPolled = MS_TIMER;
+#endif
+						// set error code and remove slave from array
+					if (_rioOp.opResult != 1) {
+#ifdef CHKTM
+#asm
+l1:
+	rst	028h
+	jr		l1
+#endasm
+#endif
+//						rioErrorCode |= _rio_slave_array[indx];
+						for(j = indx; j+1 <= _rio_num_slave; j++){
+							_rio_slave_array[j] = _rio_slave_array[j+1];
+						}
+						if (_rio_num_slave) _rio_num_slave--;
+						retval = rioErrorCode;
+					}
+					else {
+						++indx;								// do next slave on next pass
+						retval = 1;
+					}
+				}											// end costate
+				else {
+					retval = 1;
+				}
+			} 												// end else
+		} while (!retval);
+		if(retval){
+			CoBegin(&MstSMPollCS);
+			rio_poll_request = 0;
+		}
+		_rioOp.v = savedInfo;
+		LockReset(&_rioOp.inuse,1);
+		return retval;
+	}
+	else {
+		return 0;
+	}
+}
+
+/******************************************************************************
+*																										*
+* SLAVE ROUTINES START HERE 																	*
+*																										*
+******************************************************************************/
+
+/*** BeginHeader _rioForceTimeout */
+
+void _rioForceTimeout();
+
+/*** EndHeader */
+
+void _rioForceTimeout() {
+	auto char done;
+
+	done = 0;
+	while (!done) costate {
+		_eioBeeper(0xff);
+		waitfor(DelayMs(50));
+		_eioBeeper(0);
+		waitfor(DelayMs(50));
+		_eioBeeper(0xff);
+		waitfor(DelayMs(50));
+		_eioBeeper(0);
+		waitfor(DelayMs(50));
+		_eioBeeper(0xff);
+		waitfor(DelayMs(50));
+		_eioBeeper(0);
+		waitfor(DelayMs(50));
+		done = 1;
+//	   DI();				//	force a timeout
+//	   for(;;);
+	}
+}
+
+/*** Beginheader SlvStateMachine, rioRsvrd */
+
+int SlvStateMachine();
+
+#makechain rioRsvrdChain
+
+struct _rioRsvrdStruct {
+	char *msgPtr;
+	char processed;
+};
+
+extern struct _rioRsvrdStruct rioRsvrd;
+
+/*** Endheader    */
+
+struct _rioRsvrdStruct rioRsvrd;
+
+/* START FUNCTION DESCRIPTION ********************************************
+SlvStateMachine()                   <SRRIOW.LIB>
+
+SYNTAX: int SlvStateMachine();
+
+DESCRIPTION: Short Range Network function to be run continuously in
+background priority loop or task on slaves to handle messages from the
+master and local error conditions. Takes about 700micro seconds per loop
+as of 2/26/95 on a Little Star (9MHz).
+
+RETURN VALUE: n/a
+END DESCRIPTION **********************************************************/
+
+unsigned long ErrAt;
+
+nodebug SlvStateMachine(){
+	char i;int k,oldslaveID;
+	CoData SlvStateCS;
+	auto int tmpI, tmpI2;
+	auto float tmpF1, tmpF2;
+	auto char tmpC, tmpC2;
+	auto char tmpCmd;
+	char inFunc;
+	auto char *msgPtr;
+	auto unsigned count;
+	auto char crcBuf[256];	//	for getcrc
+	auto char *crcPtr;
+	auto struct _calibPak calib;
+	static unsigned long rioMsgTmr;
+#if RIOLONGRANGE
+	auto int crcChkSum;
+#endif
+
+//	CoBegin(&SlvStateCS);
+
+	segchain _GLOBAL_INIT { inFunc = 0; }
+
+	DI();
+	if (inFunc) {
+		EI();
+		return;
+	} else {
+		++inFunc;
+		EI();
+	}
+	
+costate {
+	waitfor(IntervalMs(25));
+	_eioDbnc();
+}
+
+#if !RIOLONGRANGE
+costate {
+	waitfor(IntervalMs(100));
+	if (rio_vwdog) --rio_vwdog;
+}
+if(rio_wd_active){
+	if(!rio_vwdog){
+		rioCurrentState = ERROR_RESET;
+	   rioErrorCode = ZIO_WD_TO;
+#ifdef RIODEBUG
+	  	printf("error!\n");
+#asm xmemok
+l1:
+		rst	028h
+		jr		l1
+#endasm
+#ifdef CHKTM
+	   ErrAt = MS_TIMER;
+#asm
+l1:
+	rst	028h
+	jr		l1
+#endasm
+#endif
+#endif
+	}
+}
+#endif
+
+costate SlvStateCS always_on{
+	if (rioSlvHasMess()) {
+#ifdef RIODEBUG
+		lcd_printf(0,"%d msgs",rioSlvHasMess());
+#endif
+#if RIOLONGRANGE
+		crcPtr = crcBuf;
+		*crcPtr++ = _rioMyAddress;	//	implicit byte not contained in CB
+#endif
+		rioSlvRmByte(&tmpCmd);
+#if RIOLONGRANGE
+		*crcPtr++ = tmpCmd;
+#endif
+		switch (tmpCmd) {
+			case ZIO_SET_DIGITAL:
+				rioSlvRmByte(&tmpC);
+#if RIOLONGRANGE
+				*crcPtr++ = tmpC;
+#endif
+				break;
+			case ZIO_RESET_DIGITAL:
+				rioSlvRmByte(&tmpC);
+#if RIOLONGRANGE
+				*crcPtr++ = tmpC;
+#endif
+				break;
+			case ZIO_READ_DIGITAL:
+				rioSlvRmByte(&tmpC);
+#if RIOLONGRANGE
+				*crcPtr++ = tmpC;
+#endif
+				break;
+			case ZIO_READ_ANALOG:
+				rioSlvRmByte(&tmpC);
+#if RIOLONGRANGE
+				*crcPtr++ = tmpC;
+#endif
+				break;
+			case ZIO_SET_ANALOG:
+				rioSlvRmByte(&tmpC);
+				rioSlvRmByte((char*)&tmpI);
+				rioSlvRmByte((char*)&tmpI+1);
+#if RIOLONGRANGE
+				*crcPtr++ = tmpC;
+				*((int*)crcPtr)++ = tmpI;
+#endif
+				break;
+			case ZIO_RESERVED_CODE:
+				rioSlvRmByte(&tmpC);
+				rioRsvrd.msgPtr = crcPtr;
+#if RIOLONGRANGE
+				*crcPtr++ = tmpC;
+#endif
+				for (count = tmpC; count; --count) {
+					rioSlvRmByte(crcPtr++);
+				}
+				break;
+			case ZIO_CAL_ANALOG:
+				rioSlvRmByte(&tmpC);
+#if RIOLONGRANGE:
+				*crcPtr++ = tmpC;
+#endif
+				msgPtr = (char*)&calib;
+				for (count = sizeof(struct _calibPak); count; --count) {
+					rioSlvRmByte(&tmpC2);
+					*msgPtr++ =
+#if RIOLONGRANGE:
+						*crcPtr++ =
+#endif
+						tmpC2;
+				}
+				break;
+			default:
+				break;
+		}
+#if RIOLONGRANGE
+		rioSlvRmByte((char*)&crcChkSum);
+		rioSlvRmByte((char*)&crcChkSum+1);
+#endif
+		rioSlvRmMsg();
+#if RIOLONGRANGE
+		if (getcrc(crcBuf,crcPtr-crcBuf,0) != crcChkSum) {
+			//	checksum doesn't match!
+			tmpCmd = ZIO_SEND_NAK;	//	special command to nak the package
+#ifdef RIODEBUG
+			lcd_printf(0,"badCrc");
+#endif
+		}
+#endif
+	} else {
+		//	now check whether a message is in process and should timeout
+#if 1
+		if (rioIntFSM.HWErr) {	//	hardware error just occurred
+			rioSlvRec();			//	reinitialize the driver
+			rioIntFSM.HWErr = 0;
+		} else if (inport(CNTLA1) & 0x80) {	//	message not in progress, waiting for ID
+			rioMsgTmr = MS_TIMER;
+		} else {	//	some activity
+			if (MS_TIMER-rioMsgTmr > 100) {
+				//	time out message in progress
+				rioSlvRec();
+			} else {
+			}
+		}
+#endif
+		tmpCmd = ZIO_NO_MESSAGE;
+	}
+
+/*	Done interpreting the incoming message, now reply */
+
+	switch (rioCurrentState){
+		case HANDLE_MESSAGES:
+processNReply:
+			msgPtr = _rioOp.outBuf;
+			// op is determined in first byte
+#if RIOLONGRANGE
+			*msgPtr++ = ZIO_ACK;
+#endif
+			switch(tmpCmd){
+				case ZIO_SET_DIGITAL	:
+#if !RIOLONGRANGE
+					rio_vwdog = WD_INIT_VALUE;
+#endif
+					eioDigOut(tmpC,1);
+					break;
+				case ZIO_RESET_DIGITAL :
+#if !RIOLONGRANGE
+					rio_vwdog = WD_INIT_VALUE;
+#endif
+					eioDigOut(tmpC,0);
+					break;
+				case  ZIO_READ_DIGITAL :
+#if !RIOLONGRANGE
+					rio_vwdog = WD_INIT_VALUE;
+#endif
+					*msgPtr++ = eioDigIn(tmpC);
+					break;
+				case  ZIO_READ_ANALOG :
+#if !RIOLONGRANGE
+					rio_vwdog = WD_INIT_VALUE;
+#endif
+					*((float*)msgPtr)++ = eioAnIn(tmpC);
+					break;
+				case  ZIO_SET_ANALOG:
+#if !RIOLONGRANGE
+					rio_vwdog = WD_INIT_VALUE;
+#endif
+					eioAnOut(tmpC, tmpI);
+					break;
+				case	ZIO_CAL_ANALOG:
+#if !RIOLONGRANGE
+					rio_vwdog = WD_INIT_VALUE;
+#endif
+					eioAnInCal(tmpC,calib.d1,calib.d2,calib.v1,calib.v2);
+					break;
+				case	ZIO_NO_MESSAGE:
+					msgPtr = _rioOp.outBuf;
+					break;
+#if RIOLONGRANGE
+				case	ZIO_SEND_NAK:
+					*_rioOp.outBuf = ZIO_NAK;
+					break;
+#endif
+				case ZIO_RESERVED_CODE:
+					rioRsvrd.processed = 0;
+					rioRsvrdChain();
+					if (!rioRsvrd.processed) *msgPtr++ = rioRsvrd.processed;
+					break;
+				default:
+					msgPtr = _rioOp.outBuf;
+					break;
+			}								// end current op switch
+			rioErrorCode |= eioErrorCode;
+			if (msgPtr != _rioOp.outBuf) {
+#if RIOLONGRANGE
+				crcChkSum = getcrc(_rioOp.outBuf,msgPtr-_rioOp.outBuf,0);
+				*((int*)msgPtr)++ = crcChkSum;
+#endif
+				rioMsgTmr = MS_TIMER;
+				rioSlvSend(_rioOp.outBuf,msgPtr-_rioOp.outBuf);
+				if (!rioSlvSentMess()) {
+					if (MS_TIMER-rioMsgTmr > 100) {
+						rioErrorCode |= ZIO_TO;
+						rioSlvRec();
+					} else {
+						yield;
+					}
+				} else {
+					rioErrorCode |= rioIntFSM.HWErr;
+				}
+			} else {
+			}
+			break;
+		case UNIT_START_UP:
+		   rioInitSlave(_rioMyAddress);						//	initialize
+			rioCurrentState = WAIT_FOR_1RST_COMMAND;	//	change state
+#if !RIOLONGRANGE
+			rio_wd_active = 0;
+#endif
+			CoBegin(&SlvStateCS);
+			break;
+		case ERROR_RESET:
+			waitfor(DelayMs(1000));	//	make sure master knows I just went down
+#if !RIOLONGRANGE
+			rio_wd_active = 0;
+#endif
+			rioCurrentState = UNIT_START_UP;
+			_rioForceTimeout();
+			break;
+		case WAIT_FOR_1RST_COMMAND:
+			switch(tmpCmd){
+				case  ZIO_READ_ANALOG :
+#ifdef RIODEBUG
+					lcd_printf(0,"1stRdAn");
+#endif
+					if((tmpC==ZIO_RST_BRD) || (tmpC == ZIO_CHK_BRD_STAT)){
+						if (tmpC == ZIO_CHK_BRD_STAT) {
+						} else {
+#if !RIOLONGRANGE
+							rio_wd_active = 1;
+							rio_vwdog = WD_INIT_VALUE;
+#endif
+					 		rioCurrentState = HANDLE_MESSAGES;
+						}
+						goto processNReply;
+					}
+					rio_current_op = ZIO_NO_MESSAGE;
+					break;
+				default:
+			}
+			break;
+		default:
+	}		// end outer switch
+
+}	// end costate
+
+--inFunc;
+
+}
+
+
+/*** Beginheader rioInitSlave */
+
+int  rioInitSlave(int dest);
+
+/*** Endheader    */
+/* _START FUNCTION DESCRIPTION ********************************************
+_z1_rio_slv_int                    <SRRIOW.LIB>
+
+SYNTAX: void _z1_rio_slv_int(void);
+
+DESCRIPTION: Interrupt service routine for Z180 port 1, half-duplex 
+receive and transmit.  Master and slaves handle incoming strings 
+differently: (1) Master sends slave address using the 9th bit mode.  After
+master receives its own 9th bit mode message, it switches to 8 bit data 
+mode. (2) Slave listens for a 9th bit mode.  When addressed, it switches
+to the 8 bit (data) mode to receive the rest of the transmission.  Slave
+responds in regular 8 bit data mode. The first byte the master sends contains
+the following information:
+
+				bits 0-3: the slave address	
+				bits 4-6: the operation code
+				bit  7:   the parity of the first byte, not including bit 7 and
+							 all bytes to follow for this message
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+rioInitSlave                   <SRRIOW.LIB>
+
+SYNTAX: int rioInitSlave(int dest);
+
+DESCRIPTION: Initializes Z180 port 1 for RS485 9th bit half duplex 
+communication. Data format 
+defaults to 8 bits, no parity, 1 stop bit.
+
+RETURN VALUE: None.
+END DESCRIPTION **********************************************************/
+
+#ifndef RIOLONGRANGE
+#define RIOLONGRANGE 0
+#endif
+
+nodebug int rioInitSlave(int dest)
+{
+	 int i,mask;
+    char mode = 0x04;
+    char cnt;
+	segchain _rio_init {
+//	for(i=0;i<256;i++)dig_ichan_val[i]=255;
+
+#if RIOLONGRANGE
+#define RIOCRC 2
+#else
+#define RIOCRC 0
+#endif
+
+	rioCmdLen[0] = 1+RIOCRC;
+	rioCmdLen[1] = 1+RIOCRC;
+	rioCmdLen[2] = 1+RIOCRC;
+	rioCmdLen[3] = 1+RIOCRC;
+	rioCmdLen[4] = 13+RIOCRC;
+	rioCmdLen[5] = 3+RIOCRC;
+	rioCmdLen[6] = 1+RIOCRC;
+   rioCmdLen[7] = 1+RIOCRC;
+}
+#ifdef RIODEBUG
+	 lc_init();
+#endif
+
+	 CoBegin(&SlvSendCS);
+	 CoBegin(&SlvStateCS);
+	 CoBegin(&readDBCS);
+
+	 // if this is a virgin EEPROM set ID to passed parameter
+	 if(ee_rd(SLAVE_ID_EE2_LOC+1)==SLAVE_ID_EE2_LOC+1){
+	   _rioMyAddress = (dest>>8)?(dest>>8):1;
+		ee_wr(SLAVE_ID_EE2_LOC, _rioMyAddress);
+		ee_wr(SLAVE_ID_EE2_LOC+1,1);
+		eioInitSafeState();
+	 }
+	 // else use ID in EEPROM	
+	 else{
+		 _rioMyAddress = ee_rd(SLAVE_ID_EE2_LOC);
+		 if (!_rioMyAddress
+#if !RIOLONGRANGE
+				|| (_rioMyAddress > 15)
+#endif
+		 ) {
+		 	_rioMyAddress = 1;
+		 	ee_wr(SLAVE_ID_EE2_LOC,_rioMyAddress);
+		 }
+	 }
+
+	 eioInit(0xffff);		//	initialize everything
+
+//	 dig_ichan_val[SLAVE_ID_SET] = _rioMyAddress;
+#if !RIOLONGRANGE
+	 rio_wd_active = 0;
+#endif
+	 rioCurrentState=WAIT_FOR_1RST_COMMAND;    
+	 rio_current_op = 0xff;
+
+    outport(STAT1, 0);       		// Reset port
+    outport(CNTLA1, (mode & 7) | 0x80 | 0x20); // Set mpe, and tx enable
+    rioIntFSM.PS = z180baud(sysclock(), ZIO_BAUD_RATE);
+	outport(CNTLB1, rioIntFSM.PS | 0x40);
+//	 rioErrorCode = 0;
+
+    // Set baud rate , 0x40 set mp mode
+    // No need to init to zero, as rio_send_count=0;
+    rioSlvRec();
+#if !RIOLONGRANGE
+	 rio_vwdog = WD_INIT_VALUE;
+#endif
+	 rioSysDI;
+	 rioSysDO;
+	 rioSysAI;
+	 rioSysAO;
+    return;
+}
+
+#funcchain _GLOBAL_INIT _rio_init
+
+/******************************************************************************
+
+BEGIN OF SYSTEM SERVICE SECTION
+	system services include:
+	check board status (analog in)
+	change board address (analog out)
+	reset board (digital out)
+	
+******************************************************************************/
+
+/*** BeginHeader rioSysDI, rioSysAI, rioSysDO, rioSysAO */
+
+void rioSysDI();
+void rioSysAI();
+void rioSysDO();
+void rioSysAO();
+
+/*** EndHeader */
+
+void rioSysDI() {
+	if (!eioSysPtr->handled) {
+		switch(eioSysPtr->channel) {
+			default:
+				eioSysPtr->result.c = 0xff;
+				rioErrorCode |= ZIO_NODEV;
+				break;
+		}
+	}
+}
+
+void rioSysDO() {
+	if (!eioSysPtr->handled) {
+		switch(eioSysPtr->channel) {
+			case ZIO_SET_SAFE:
+				eioInit(EIO_SET_SAFE);
+				eioSysPtr->result.c = 0;
+				eioSysPtr->handled = 1;
+				break;
+			case ZIO_DEFN_SAFE:
+				eio_def_safe = (eioSysPtr->param != 0);
+				break;
+			default:
+				eioSysPtr->result.c = 0xff;
+				rioErrorCode |= ZIO_NODEV;
+				break;
+		}
+	}
+}
+
+void rioSysAI() {
+	if (!eioSysPtr->handled) {
+		switch(eioSysPtr->channel) {
+			case ZIO_RST_BRD:
+				//	do board result stuff here!
+				*(long*)(&(eioSysPtr->result.f)) = 0;
+				eioSysPtr->handled = 1;
+				rioErrorCode = 0;
+				eioErrorCode = 0;
+				break;
+			case ZIO_CHK_BRD_STAT:
+				*(long*)(&(eioSysPtr->result.f)) =
+					rioErrorCode | ((char)inport(STAT1)&ZIO_HW_MASK);
+				eioSysPtr->handled = 1;
+#ifdef CHKTM
+				lastDur = MS_TIMER-lastPolled;
+				lastPolled = MS_TIMER;
+#endif
+				break;
+			case ZIO_RET_BRD_TYPE:
+				eioSysPtr->result.f = BOARD_TYPE;
+				eioSysPtr->handled = 1;
+				break;
+			default:
+				*(long*)(&(eioSysPtr->result.f)) = 0xff;
+				rioErrorCode |= ZIO_NODEV;
+				break;
+		}
+	}
+}
+
+void rioSysAO() {
+	if (!eioSysPtr->handled) {
+		switch(eioSysPtr->channel) {
+			case ZIO_CHG_BRD_ADDR:
+				ee_wr(SLAVE_ID_EE2_LOC,(char)eioSysPtr->param);
+		 		_rioMyAddress = (char)eioSysPtr->param;
+				eioSysPtr->result.c = 0;
+				eioSysPtr->handled = 1;
+				break;
+			default:
+				eioSysPtr->result.c = 0xff;
+				rioErrorCode |= ZIO_NODEV;
+				break;
+		}
+	}
+}
+
+#funcchain eioSysDI rioSysDI
+#funcchain eioSysDO rioSysDO
+#funcchain eioSysAI rioSysAI
+#funcchain eioSysAO rioSysAO
+
+/*** BeginHeader _rioChgMyID */
+
+void _rioChgMyID(int newID);
+
+/*** EndHeader */
+
+void _rioChgMyID(int newID) {
+	auto struct _eioSys tEioSys, *pPrev;
+	
+	pPrev = eioSysPtr;
+	eioSysPtr = &tEioSys;
+	eioSysPtr->handled = 0;
+	eioSysPtr->param = newID;
+	eioSysPtr->channel = ZIO_CHG_BRD_ADDR;
+	rioSysAO();
+	eioSysPtr = pPrev;
+}
+
+/*** BeginHeader _rioWakeUpSlave, rioWakeUpTimeOut */
+
+int _rioWakeUpSlave(int Slave1,...);
+extern int rioWakeUpTimeOut;
+
+/*** EndHeader */
+
+int rioWakeUpTimeOut;
+
+int _rioWakeUpSlave(int Slave1,...) {
+	auto int *pI;
+	auto long sec;
+	auto int res;
+	auto int tmp;
+	auto int *pI1;
+
+#GLOBAL_INIT { rioWakeUpTimeOut = 2; }
+	pI = &Slave1;
+	res = 0;
+	while (*pI) {
+		sec = SEC_TIMER;	//	start time
+		while ((tmp=_rioReset(*pI)) &&
+				 ((int)(SEC_TIMER-sec) < rioWakeUpTimeOut)) {
+			pI1 = &Slave1;
+			while (pI1 < pI) _rioPing(*pI1++);	//	keep the rest awake!
+		}
+		if (tmp) {
+			res = -1;
+			break;
+		} else {
+			++pI;
+		}
+	}
+	return res;
+}
+
+/*** BeginHeader _rioOff */
+
+void _rioOff();
+
+/*** EndHeader */
+
+#asm
+_rioOff::					;	12
+	push	af					;	12
+	xor	a					;	4
+;	out0	(CNTLA1),a
+;	out0	(CNTLB1),a
+	in0	a,(STAT1)
+	and	11110110b
+	out0	(STAT1),a		;	13
+	in0	a,(CNTLA1)		;	EFR=0
+	and	11110111b
+	out0	(CNTLA1),a
+	call	off_485			;	91
+	pop	af					;	9
+	ret						;	9
+#endasm
+
+//	takes about 187 states
+
+/*** BeginHeader rioIntFSM, _rioLock */
+
+struct _rioIntFSMs {
+	void (*curState)();
+	char *lastSentPtr;
+	char PS;
+	char *sendPtr;
+	char sendCnt;
+	char echoCnt;
+	char HWErr;
+	char *recPtr;
+	char recCnt;
+};
+
+extern char _rioLock;
+
+struct _rioIntFSMs rioIntFSM;
+
+/*** EndHeader */
+
+//struct _rioIntFSMs rioIntFSM;
+
+char _rioLock;
+
+/*** BeginHeader rioPrepMess */
+
+void rioMstFSMStart();
+void rioPrepMess();
+
+/*** Endheader */
+
+#ifndef RIOLONGRANGE
+#define RIOLONGRANGE 0
+#endif
+
+void rioPrepMess() {
+	auto char *bufPtr;
+	auto unsigned readBack;
+	auto int crc;
+
+	segchain _GLOBAL_INIT {
+	   rioIntFSM.PS = z180baud(sysclock(), ZIO_BAUD_RATE);
+   }
+   
+	bufPtr = _rioOp.outBuf;
+#if RIOLONGRANGE
+	*bufPtr++ = _rioOp.channel.net.node;
+	*bufPtr++ = _rioOp.opCode;
+	*bufPtr++ = _rioOp.channel.net.dev;
+	readBack = 3;
+#else
+	*bufPtr++ = _rioOp.channel.net.node |
+		_rioOp.opCode;
+	*bufPtr++ = _rioOp.channel.net.dev;
+	readBack = 0;
+#endif
+	switch (_rioOp.opCode) {
+		case ZIO_SET_DIGITAL:
+		case ZIO_RESET_DIGITAL:
+			break;
+		case ZIO_SET_ANALOG:
+			*((int*)bufPtr)++ = _rioOp.v.i;
+			break;
+		case ZIO_READ_DIGITAL:
+			readBack += 1;
+			break;
+		case ZIO_READ_ANALOG:
+			readBack += 4;
+			break;
+		case ZIO_CAL_ANALOG:
+			*((struct _calibPak *)bufPtr)++ = _rioOp.v.calib;
+//			*((int*)bufPtr)++ = _rioOp.v.calib.d2;
+//			*((float*)bufPtr)++ = _rioOp.v.calib.v1;
+//			*((float*)bufPtr)++ = _rioOp.v.calib.v2;
+			break;
+	}
+#if RIOLONGRANGE
+	crc =	getcrc(_rioOp.outBuf,bufPtr-_rioOp.outBuf,0);
+	*((int*)bufPtr)++ = crc;
+#else
+	rioIntFSM.sendCnt = bufPtr - _rioOp.outBuf;
+#asm xmemok
+	ld		hl,rioIntFSM+sendCnt
+	ld		b,(hl)				;	b = count
+	ld		c,00000000b			;	c = parity
+	ld		hl,_rioOp+outBuf
+	push	hl						; 	first byte location used later
+ ploop:
+	ld		a,(hl)				;	hl = ptr to byte
+	inc	hl
+	or		a						;	check parity of this byte
+	jp		pe,peven				;	if even doesn't affect current parity
+	;	odd
+	ld		a,c					;	if odd, invert the current parity
+	xor	10000000b
+	ld		c,a
+peven:
+	dec	b						;	decrement count
+	jr		nz,ploop				;	if not zero, do it again
+	pop	hl						;	get first byte location
+	ld		a,(hl)				;	set parity bit
+	or		c
+	ld		(hl),a				;	and store it back
+#endasm
+#endif
+	rioIntFSM.curState = rioMstFSMStart;
+	rioIntFSM.lastSentPtr = 
+	rioIntFSM.recPtr =
+	rioIntFSM.sendPtr = _rioOp.outBuf;
+	rioIntFSM.sendCnt = 
+	rioIntFSM.echoCnt = bufPtr - _rioOp.outBuf;
+	rioIntFSM.HWErr = 0;
+	rioIntFSM.recCnt = readBack;
+	DI();
+	outport(CNTLB1,0xc0|rioIntFSM.PS);	//	MPBT = 1,MP = 1,set speed
+	outport(STAT1,9);							//	TIE = 1, RIE = 1
+	outport(CNTLA1,0x64);					//	MPE = 0,TE = 1,RE = 1,EFR = 0,8N1
+	inport(RDR1);
+#asm xmemok
+l1:
+	in0	a,(STAT1)
+	bit	1,a
+	jr		z,l1
+#endasm
+	on_485();
+	EI();
+	_rioOp.startTime = MS_TIMER;
+}
+
+/*** BeginHeader rioMstSend */
+
+int rioMstSend();
+extern CoData rioMstSendCD;
+
+/*** EndHeader */
+
+//	returns 1 if transaction is finished and okay
+//	returns -1 if transaction is finished, but not okay
+//	returns 0 if the transaction is not finished
+
+CoData rioMstSendCD;
+
+#ifndef RIOLONGRANGE
+#define RIOLONGRANGE 0
+#endif
+
+int rioMstSend() {
+	auto int recSize;
+
+#if RIOLONGRANGE
+	costate rioMstSendCD always_on {
+		_rioOp.opResult = 0;
+		_rioOp.retry = rioRetryCnt;
+		while (!(_rioOp.opResult == 1) && _rioOp.retry) {
+			rioPrepMess();
+			do {
+				if (rioIntFSM.HWErr) {
+					//	some kind of hardware error
+					rioErrorCode |= rioIntFSM.HWErr;
+					_rioOp.opResult = -1;
+				} else if (rioIsMstXactDone()) {
+					//	seems to be done
+					recSize = rioIntFSM.recPtr - _rioOp.outBuf;
+					if (getcrc(_rioOp.outBuf,recSize-2,0) !=
+							*(int*)(_rioOp.outBuf+recSize-2)) {
+						//	checksum error
+						rioErrorCode |= ZIO_BAD_CHKSUM;
+#ifdef RIODEBUG
+						lcd_printf(0,"bad crc");
+#endif
+						_rioOp.opResult = -1;
+					} else if (_rioOp.outBuf[0] != ZIO_ACK) {
+						//	not ACK
+						rioErrorCode |= ZIO_NOT_ACK;
+#ifdef RIODEBUG
+						lcd_printf(0,"not ack");
+#endif
+						_rioOp.opResult = -1;
+					} else {
+						//	everything seems fine
+						rioErrorCode = 0;
+						_rioOp.opResult = 1;
+						memcpy(&_rioOp.v,_rioOp.outBuf+1,recSize-3);
+					}
+				} else if ((unsigned long)MS_TIMER-_rioOp.startTime >
+						rioTOLim) {
+					//	timeout
+					rioErrorCode |= ZIO_TO;
+#ifdef RIODEBUG
+						lcd_printf(0,"timeout");
+#endif
+					_rioOp.opResult = -1;
+				} else {
+					//	not done, no error detected, keep waiting
+					yield;
+				}
+			} while (!_rioOp.opResult);
+			if (_rioOp.opResult != 1) {
+				if (_rioOp.retry) {
+					waitfor((unsigned long)MS_TIMER-_rioOp.startTime >
+						rioTOLim);
+					--_rioOp.retry; 
+					yield;
+				} else {
+					break;
+				}
+			}
+		}
+	}
+#else
+	costate rioMstSendCD always_on {
+		_rioOp.opResult = 0;
+		_rioOp.retry = 1;
+		rioPrepMess();
+		do {
+			if (rioIntFSM.HWErr) {
+				//	some kind of hardware error
+				rioErrorCode |= rioIntFSM.HWErr;
+				_rioOp.opResult = -1;
+			} else if (rioIsMstXactDone()) {
+				recSize = rioIntFSM.recPtr - _rioOp.outBuf;
+				if (recSize) {
+					memcpy(&_rioOp.v,_rioOp.outBuf,recSize);
+				}
+				_rioOp.opResult = 1;
+			} else if ((unsigned long)MS_TIMER-_rioOp.startTime >
+					rioTOLim) {
+				//	timeout
+				rioErrorCode |= ZIO_TO;
+				_rioOp.opResult = -1;
+			} else {
+				//	not done, no error detected, keep waiting
+				yield;
+			}
+		} while (!_rioOp.opResult);
+		_rioOp.retry = 0;
+	}
+#endif
+	if (_rioOp.retry && (_rioOp.opResult == -1)) _rioOp.opResult = 0;
+	return _rioOp.opResult;
+}
+
+/*** BeginHeader rioMstInt, rioMstFSMStart */
+
+void rioPrepMstFSM();
+void rioMstInt();
+extern char _rioPS;
+extern char rioBadEchoByte;
+
+/*** EndHeader */
+
+char rioBadEchoByte;
+
+#INT_VEC SER1_VEC rioMstInt
+#asm
+rioMstInt::	;	max. duration is about 400 states,
+				;	takes 40microsec on a 9MHz clock
+				;	continuous stream of bytes at 19200 takes
+				;	0.040 millisec every 0.520millisec
+				;	7.68% of the CPU process time is allocated
+				;	to this interrupt routine with sustained
+				;	transmission.
+				;	at 57600 bps, 23% is consumed
+				;	for 18MHz s-part, divide all load factors by 2.
+				;	at minimal rate: 2 out, 4 in every 60ms, load is
+				;	0.4%
+	push	af						;	12
+	push	bc						;	12
+	push	hl						;	12
+;	ld		bc,DRV1
+;	ld		a,0x00
+;	out	(c),a
+	in0	b,(STAT1)			;	12
+	ld		a,b					;	3
+	and	01110000b			;	3
+	jr		z,entry0100			;	6/8
+	jp		sRecHWErr			;	9+235
+entry0100:
+	ld		hl,(rioIntFSM+curState)	;	15
+	jp		(hl)					;	3+max(222,302,145)
+rioMstFSMStart::
+sSend1st:
+	;	145 turn on 9th bit
+	bit	1,b					;	7		check for TDRE
+	jr		z,sSend1st0100		;	8+55	if not TDRE, check RDRF
+	ld		hl,rioIntFSM+sendCnt	;	decrement number of bytes to transmit
+	dec	(hl)
+	ld		hl,(rioIntFSM+sendPtr)	;	15	increment send pointer
+	ld		a,(hl)				;	6	
+	inc	hl						;	4
+	ld		(rioIntFSM+sendPtr),hl	;	16
+	out0	(TDR1),a				;	13	send the byte
+	ld		hl,sSendRest		;	9	and set up next state to receive rest
+	jr		sEnd					;	9
+sSend1st0100:
+	bit	7,b					;	RDRF?
+	jr		z,sEnd;				;	if not end
+	in0	a,(RDR1)				;	otherwise, flush (shouldn't be receiving yet!)
+sEnd:		;	55
+;	ld		bc,DRV1
+;	ld		a,0xff
+;	out	(c),a
+	ld		(rioIntFSM+curState),hl	;	16
+	pop	hl						;	9
+	pop	bc						;	9
+	pop	af						;	9
+	ei								;	3
+	ret							;	9
+	;	next state is sSendRest
+sSendRest:	;	302
+	bit	7,b					;	7		check for RDRF
+	jr		z,sSendRest0100	;	6/8+198	if nothing received, jp
+	;	receive something
+
+	in0	a,(CNTLB1)			;	12
+	and	01011111b			;	6	PS=unknown, turn off MPBT
+	ld		hl,rioIntFSM+PS	;	9
+	or		(hl)					;	6	PS
+	out0	(CNTLB1),a			;	13
+	
+	in0	a,(RDR1)				;	12		read RDR1
+	
+	ld		hl,(rioIntFSM+lastSentPtr)	;	15
+	cp		(hl)					;	6		compare with reference
+	jr		z,sSendRest0200	;	6/8+262	matches, okay
+	ld		(rioBadEchoByte),a
+	ld		a,ZIO_BAD_ECHO		;	6		not receiving what I sent
+	jp		sSendHWErr			;	9+235	error condition
+sSendRest0200:	;	262
+	inc	hl						;	4		increment pointer to byte last sent
+	ld		(rioIntFSM+lastSentPtr),hl	;	16	
+	ld		hl,rioIntFSM+echoCnt		;	9		dec count of echo bytes
+	dec	(hl)					;	10
+	jr		nz,sSendRest0100	;	6/8+198	if there is more echo to receive, branch
+	;	end of transmit packet, get ready for receive
+	call	off_485				;	91		turn off 485	otherwise, transmission is done
+;	in0	a,(CNTLA1)			;	12		turn off TE
+;	and	11011111b			;	6
+;	out0	(CNTLA1),a			;	13
+	ld		hl,sGetReply		;	9		next state is get reply
+	jp		sEnd					;	9+55
+sSendRest0100:	;198
+	bit	1,b					;	7		check for TDRE
+	jr		z,sSendRest0300	;	6/8+73	send again?
+	
+	ld		a,(rioIntFSM+sendCnt)	;	any more to transmit?
+	or		a
+	jr		z,sSendRest0300			;	no more to transmit
+	
+	ld		hl,(rioIntFSM+sendPtr)	;	15		out (TDR1,*rioIntFSM.sendPtr++)
+	ld		a,(hl)				;	6
+	inc	hl						;	4
+	ld		(rioIntFSM+sendPtr),hl	;	16
+	out0	(TDR1),a				;	13		transmit the byte
+	ld		hl,rioIntFSM+sendCnt	;	decrement number of bytes to transmit
+	dec	(hl)
+	jr		nz,sSendRest0300		;	no more bytes to transmit (last one sent)
+	in0	a,(STAT1)			;	12		turn off TIE
+	and	11111110b			;	6
+	out0	(STAT1),a			;	13
+sSendRest0300:	;	73
+	ld		hl,sSendRest		;	9
+	jp		sEnd					;	9+55
+	;	compute partial check sum
+sGetReply:	;	222
+	;	get the reply
+	bit	7,b					;	7
+	jr		z,sGetReply0200	;	6/8+73
+	in0	a,(RDR1)				;	12
+	ld		hl,(rioIntFSM+recPtr)	;	16
+	ld		(hl),a				;	7
+	inc	hl						;	3
+	ld		(rioIntFSM+recPtr),hl	;	17
+	ld		hl,rioIntFSM+recCnt		;	9
+	dec	(hl)					;	10
+	jr		nz,sGetReply0200	;	6/8+73
+	res	3,b					;	7
+	out0	(STAT1),b			;	13
+;	in0	a,(CNTLA1)			;	12
+;	and	10111111b			;	6
+;	out0	(CNTLA1),a			;	13
+sGetReply0200:		;	73
+	ld		hl,sGetReply		;	9
+	jp		sEnd					;	9+55
+sSendHWErr:	;	235
+	;	hardware error during send
+sRecHWErr:	;	235
+	;	hardware error during receive
+	push	af
+	in0	a,(CNTLA1)
+	res	3,a
+	out0	(CNTLA1),a
+	pop	af
+	ld		hl,rioIntFSM+HWErr
+	or		(hl)
+	ld		(hl),a
+	call	_rioOff				;	190
+	pop	hl						;	9
+	pop	bc						;	9
+	pop	af						;	9
+	ei								;	3
+	ret							;	9
+#endasm
+
+/*** BeginHeader rioIsMstXactDone */
+
+int rioIsMstXactDone();
+
+/*** EndHeader */
+
+#asm
+rioIsMstXactDone::
+	;	takes about 100 states
+	;	is master transaction done?
+	ld		a,(rioIntFSM+HWErr)	;	12
+	or		a							;	3
+	jr		nz,Done					;	6/8
+	ld		a,(rioIntFSM+echoCnt)	;	12
+	or		a							;	3
+	jr		nz,NotDone				;	6/8+18
+	ld		a,(rioIntFSM+recCnt)	;	12
+	or		a							;	3
+	jr		nz,NotDone				;	6/8+18
+Done:
+	ld		hl,1						;	9
+	ret								;	9
+NotDone:
+	ld		hl,0						;	9
+	ret								;	9
+	
+#endasm
+
+/*** BeginHeader rioSlvCB */
+
+#define RIOSLVCBSIZ 64
+
+struct _rioSlvCBs {
+	char msgCnt;
+	char msgBuffer[RIOSLVCBSIZ];
+	char *msgHead;
+	char *msgTail;
+	char *msgAbort;
+	char parity;
+};
+
+struct _rioSlvCBs rioSlvCB;
+
+/*** EndHeader */
+
+//struct _rioSlvCBs rioSlvCB;
+
+/*** BeginHeader rioSlvSend */
+
+void rioSlvSend(char *src, char srcLen);
+void rioSlvSendStart();
+
+/*** EndHeader */
+
+void rioSlvSend(char *src, char srcLen) {
+	DI();
+	rioIntFSM.lastSentPtr = rioIntFSM.sendPtr = src;
+	rioIntFSM.echoCnt = rioIntFSM.sendCnt = srcLen;
+	rioIntFSM.HWErr = 0;
+#asm xmemok
+	ld		hl,rioSlvSendStart
+	ld		(rioIntFSM+curState),hl
+	in0	a,(CNTLB1)
+	or		01000000b			;	MP = 1
+	and	01111111b			;	MPBT = 0
+	ld		hl,rioIntFSM+PS
+	or		(hl)
+	out0	(CNTLB1),a
+	in0	a,(STAT1)
+	or		00001001b			;	RIE = 1, TIE = 1
+	out0	(STAT1),a
+	in0	a,(CNTLA1)
+	and	01110111b			;	MPE = 0, EFR = 0
+	or		01100000b			;	RE = 1, TE = 1
+	out0	(CNTLA1),a
+#endasm
+	on_485();
+	EI();
+}
+
+/*** BeginHeader rioSlvHasMess */
+
+int rioSlvHasMess();
+
+/*** EndHeader */
+
+#asm
+rioSlvHasMess::
+	ld		a,(rioSlvCB+msgCnt)
+	ld		l,a
+	ld		h,0
+	ret
+#endasm
+
+/*** BeginHeader rioSlvSentMess */
+
+int rioSlvSentMess();
+
+/*** EndHeader */
+
+#asm
+rioSlvSentMess::
+	ld		a,(rioIntFSM+echoCnt)
+	or		a
+	ld		hl,0
+	ret	nz
+	ld		a,(rioIntFSM+HWErr)
+	or		a
+	ret	nz
+	inc	hl
+	ret
+#endasm
+
+/*** Beginheader rioSlvRmMsg */
+
+void rioSlvRmMsg();
+
+/*** EndHeader */
+
+#asm
+rioSlvRmMsg::
+	ld		a,i
+	push	af
+	di
+	ld		a,(rioSlvCB+msgCnt)
+	or		a
+	jr		z,rmNoMsg
+	ld		hl,rioSlvCB+msgCnt
+	dec	(hl)
+rmNoMsg:
+	pop	af
+	jp		po,rmEnd
+	ei
+rmEnd:
+	ret
+#endasm
+
+/*** BeginHeader rioSlvRmByte */
+
+int rioSlvRmByte(char *dest);
+
+/*** EndHeader */
+
+#asm
+rioSlvRmByte::
+	;	about 160 states
+	ld		a,i								;	3
+	push	af									;	12
+	di											;	3
+	ld		a,(rioSlvCB+msgCnt)			;	12
+	or		a									;	4
+	jr		z,rbNothing						;	6/8+36
+	push	hl									;	9
+	ld		hl,(rioSlvCB+msgHead)		;	15
+	ld		b,(hl)							;	6
+	inc	hl									;	4
+	ld		de,rioSlvCB+msgBuffer+RIOSLVCBSIZ
+	xor	a
+	sbc	hl,de
+	jr		c,rbAddBack
+	ld		de,rioSlvCB+msgBuffer
+rbAddBack:
+	add	hl,de
+	ld		(rioSlvCB+msgHead),hl		;	16
+	pop	hl									;	9
+	ld		(hl),b							;	7
+	ld		hl,1								;	9
+	jr		rbResetI							;	8
+rbNothing:	;	36
+	ld		hl,0								;	9
+rbResetI:	;	27
+	pop	af									;	9
+	jp		po,rbEnd							;	6/9+9
+	ei											;	3
+rbEnd:	;	9
+	ret										;	9
+#endasm
+
+/*** BeginHeader rioSlvRec */
+
+void rioSlvRec();
+void rioSlvListen();
+
+/*** EndHeader */
+
+#asm
+rioSlvRec::
+	di
+	call	off_485
+	in0	a,(CNTLA1)
+	and	11110111b			;	TE = 0
+	or		11000000b			;	MPE = 1, RE = 1
+	out0	(CNTLA1),a
+	in0	a,(CNTLB1)
+	or		01000000b			;	MP = 1
+	ld		hl,rioIntFSM+PS
+	or		(hl)
+	out0	(CNTLB1),a
+	in0	a,(STAT1)
+	and	11111110b			;	TIE = 0
+	or		00001000b			;	RIE = 1
+	out0	(STAT1),a
+	ld		hl,rioSlvRecStart
+	ld		(rioIntFSM+curState),hl
+	xor	a
+	ld		(rioIntFSM+HWErr),a
+	ld		(rioSlvCB+msgCnt),a	;	no messages awaiting
+	ld		hl,rioSlvCB+msgBuffer
+	ld		(rioSlvCB+msgHead),hl	;	initialize head
+	ld		(rioSlvCB+msgTail),hl	;	initialize tail
+	ld		a,0xff
+	ld		(rioIntFSM+recCnt),a
+	ei
+	ret
+#endasm
+
+/*** BeginHeader rioCmdLen */
+
+extern char rioCmdLen[8];
+
+/*** EndHeader */
+
+char rioCmdLen[8];
+
+/*** BeginHeader _rioMyAddress */
+
+extern char _rioMyAddress;
+
+/*** EndHeader */
+
+char _rioMyAddress;
+
+/*** BeginHeader rioSlvInt, rioSlvRecStart, rioSlvSendStart */
+
+void rioSlvInt();
+
+/*** EndHeader */
+
+#ifndef RIOLONGRANGE
+#define RIOLONGRANGE 0
+#endif
+
+/*
+
+The short range version needs to use double buffer for receive, and
+single buffer for transmit. The long range version can use double
+buffer (no harm), but there is no need due to fully synchronized
+protocol.
+
+*/
+#INT_VEC SER1_VEC rioSlvInt
+#asm
+rioSlvInt::
+	push	af					;	12
+	push	bc					;	12
+	push	hl					;	12
+	in0	b,(STAT1)		;	12
+	ld		hl,(rioIntFSM+curState)	;	15
+	jp		(hl)					;	3+max(383<send>,306<rec len>,337<rec rest>)
+rioSlvRecStart::
+sGetID:
+	ld		a,b				;	3
+	and	01110000b		;	4
+	jr		z,entry0100		;	6/8+
+	jp		sRecHWErr		;	251
+entry0100:
+	bit	7,b				;	6
+	jp		nz,sGetID0200	;	6/9
+sGetID0800:
+	ld		hl,sGetID		;	9
+	jp		sEnd				;	9+55
+sGetID0200:
+	in0	c,(RDR1)			;	12
+	ld		a,c				;	4
+	and	00001111b		;	4
+	ld		hl,_rioMyAddress	;	9
+	cp		(hl)				;	6
+	jr		nz,sGetID0800	;	6/8
+	;	it's me, it's me!
+	in0	a,(CNTLA1)		;	12
+	and	01110111b		;	4	MPE=0
+	out0	(CNTLA1),a		;	13
+#if RIOLONGRANGE
+	;	long range protocol requires another byte for command
+	ld		hl,sGetCmd		;	9
+	jp		sEnd				;	9+55
+sGetCmd:
+	ld		a,b				;	3
+	and	01110000b		;	4
+	jr		z,entry0200		;	6/8+
+	jp		sRecHWErr		;	251
+entry0200:
+	bit	7,b				;	6
+	jr		nz,sGetCmd0100	;	6/8
+	ld		hl,sGetCmd		;	9
+	jp		sEnd				;	9+55
+sGetCmd0100:
+	in0	c,(RDR1)			;	12
+	ld		a,c				;	4
+	and	10001111b		;	4
+	jr		z,sGetCmd0200	;	6/8
+	ld		a,ZIO_BAD_CMD	;	6	command out of range error
+	jp		sRecHWErr		;	251
+sGetCmd0200:
+	ld		a,c				;	4
+	or		a					;	4
+	jp		sGetCmd9999		;	9
+#else
+	;	short range protocol uses the 4,5,6 bits for command
+	;	store and check parity
+	ld		a,c				;	4	store message parity
+
+	and	10000000b		;	4
+	ld		(rioSlvCB+parity),a	;	13
+
+	;	record parity
+	ld		a,c				;	4
+	and	01111111b		;	4
+	jp		pe,sGetID0400	;	6/9	branch if even, doesn't affect parity
+	ld		a,(rioSlvCB+parity)	;	12
+	xor	10000000b			;	4	otherwise flip parity
+	ld		(rioSlvCB+parity),a	;	13
+
+	;	determine opcode and length
+sGetID0400:
+	ld		a,c			;	4
+	and	01110000b	;	4	7th bit is parity
+#endif
+sGetCmd9999:
+	ld		hl,(rioSlvCB+msgTail)	;	15	remember where to abort to
+	ld		(rioSlvCB+msgAbort),hl	;	16	store in msgAbort field
+	push	af								;	12
+	call	sAddRecByte	;	16+152
+	pop	af				;	9
+	rrca					;	3
+	rrca					;	3
+	rrca					;	3
+	rrca					;	3
+	or		a				;	4
+	jr		nz,sGetID0700	;	6/8
+	ld		hl,sGetVSLen	;	9
+	jp		sEnd					;	9+55
+sGetID0700:
+	push	de				;	12
+	ld		e,a			;	4
+	ld		d,0			;	6
+	ld		hl,rioCmdLen	;	9
+	add	hl,de			;	7
+	pop	de				;	9
+	ld		a,(hl)		;	12
+	ld		(rioIntFSM+recCnt),a	;	13
+	ld		hl,sGetRest	;	9
+	jp		sEnd			;	9+55
+sGetRest:
+	;	337
+	;	get rest of message
+	ld		a,b				;	3
+	and	01110000b		;	4
+	jr		z,entry0300		;	6/8+
+	jp		sRecHWErr		;	251
+entry0300:
+	bit	7,b					;	7
+	jr		nz,sGetRest0300	;	6/8+322
+	ld		hl,sGetRest			;	9
+	jp		sEnd					;	9+55
+sGetRest0300:	;	322
+	in0	c,(RDR1)				;	12
+#if !RIOLONGRANGE
+	ld		a,c					;	4
+	
+	;	if parity is odd, flip the parity count
+	;	parity is for short range only
+	or		a						;	4
+	jp		pe,sGetRest0400	;	6/9
+	ld		a,(rioSlvCB+parity)	;	12
+	xor	10000000b			;	4
+	ld		(rioSlvCB+parity),a	;	13
+sGetRest0400:
+#endif
+	ld		a,c					;	4
+	call	sAddRecByte			;	16+152
+	ld		hl,rioIntFSM+recCnt	;	9	one fewer byte to expect
+	dec	(hl)					;	10
+	jr		nz,sGetRest0500	;	6/8+73	no more byte to expect
+	ld		hl,rioSlvCB+msgCnt	;	9	one more message
+	inc	(hl)					;	10
+
+#if !RIOLONGRANGE
+	;	parity should be zero in either case
+	;	parity checking is for short range only
+	ld		a,(rioSlvCB+parity)	;	12
+	or		a							;	4
+	jr		z,sGetRest0600			;	6/8
+	ld		a,ZIO_BAD_PARITY		;	6
+	jp		sRecHWErr				;	9
+sGetRest0600:
+#endif
+sBackToRec:
+	in0	a,(CNTLA1)
+	and	11110111b
+	or		10000000b
+	out0	(CNTLA1),a
+	in0	a,(CNTLB1)
+	ld		hl,rioIntFSM+PS
+	or		(hl)
+	or		01000000b
+	out0	(CNTLB1),a
+	in0	a,(STAT1)
+	and	11111110b
+	or		00001000b
+	out0	(STAT1),a
+	ld		hl,sGetID			;	9
+	jp		sEnd	;	StateMachine	;	9+55
+	;
+	;	if the slave state machine is to be triggered from interrupt
+	;	trigger it after hl gets sGetID here.
+	;
+	;
+sGetRest0500:
+	ld		hl,sGetRest			;	9
+	jp		sEnd					;	9+55
+sGetVSLen:
+	;	306
+	;	get the variable size length
+	ld		a,b				;	3
+	and	01110000b		;	4
+	jr		z,entry0400		;	6/8+
+	jp		sRecHWErr		;	251
+entry0400:
+	bit	7,b					;	7
+	jr		nz,sGetVSLen0300	;	6/8+291
+	ld		hl,sGetVSLen		;	9
+	jp		sEnd					;	9+55
+sGetVSLen0300:					;	291
+	in0	c,(RDR1)				;	12
+	ld		a,c
+
+	;	if parity is odd, flip the parity count
+	or		a						;	4
+	jp		pe,sGetVSLen0400	;	6/9
+	ld		a,(rioSlvCB+parity)	;	12
+	xor	00000001b			;	4
+	ld		(rioSlvCB+parity),a	;	13
+sGetVSLen0400:
+
+	ld		a,c					;	4
+	ld		(rioIntFSM+recCnt),a		;	13
+	call	sAddRecByte			;	16+152	remember packet length
+	ld		hl,sGetRest			;	9
+	jp		sEnd					;	9+55
+rioSlvSendStart::
+sSend:	;	383
+	ld		a,b				;	3
+	and	01110000b		;	4
+	jr		z,entry0500		;	6/8+
+	jp		sSendHWErr		;	251
+entry0500:
+	bit	7,b				;	7		get stuff to read?
+	jr		z,sSend0200		;	6/8+64	if not, branch
+	in0	a,(RDR1)			;	12		read it
+	ld		hl,(rioIntFSM+lastSentPtr)	;	15	compare with what to send
+	cp		(hl)				;	6		
+	jr		z,sSend0300		;	6/8+242	;	if matches, branch
+	ld		a,ZIO_BAD_ECHO	;	6	not receiving what I sent
+	jp		sSendHWErr		;	251
+sSend0300:	;	242
+	inc	hl					;	4		;	increment send pointer
+	ld		(rioIntFSM+lastSentPtr),hl	;	16
+	ld		hl,rioIntFSM+echoCnt		;	9	decrement listen count
+	dec	(hl)				;	10
+	jr		nz,sSend0200	;	6/8+64	if not listened all, branch
+	call	off_485			;	91		listened all,
+	jp		sBackToRec
+;	in0	a,(CNTLA1)		;	12
+;	and	11011111b		;	4	TE = 0
+;	or		11000000b		;	4	RE = 1, MPE = 1
+;	out0	(CNTLA1),a		;	13
+;	ld		hl,sGetID		;	9
+;	jr		sEnd				;	8+55
+	;	sending packet
+sSend0200:	;	9+55=64
+	bit	1,b							;	7				got stuff to xmit?
+	jr		z,sSend0100					;	6/8+303		branch if not
+	
+	ld		a,(rioIntFSM+sendCnt)	;	12
+	or		a								;	4
+	jr		z,sSend0100					;	6/8
+	
+	ld		hl,(rioIntFSM+sendPtr)	;	15				what to send?
+	ld		a,(hl)						;	6
+	inc	hl								;	4
+	ld		(rioIntFSM+sendPtr),hl	;	16
+	out0	(TDR1),a						;	13				send it out
+	ld		hl,rioIntFSM+sendCnt		;	9			dec sent count
+	dec	(hl)
+	jr		nz,sSend0100				;	6/8	if not 0, branch
+	ld		a,b				;	4		;	turn off xmit interrupt
+	and	11111110b		;	4	TIE = 0
+	out0	(STAT1),a		;	13
+sSend0100:	;303
+	ld		hl,sSend
+sEnd:				;	55
+	ld		(rioIntFSM+curState),hl	;	16
+	pop	hl		;	9
+	pop	bc		;	9
+	pop	af		;	9
+	ei				;	3
+	ret			;	9
+
+sEndStateMachine:
+	ld		(rioIntFSM+curState),hl		;	16
+	pop	hl		;	9
+	pop	bc		;	9
+	pop	af		;	9
+	ei				;	3
+	jp		SlvStateMachine	;	9
+	
+	;	end
+sTxTO:
+	;	transmission timeout
+sRxTO:
+	;	receive timeout
+sRecHWErr:
+	;	hardware error during reception
+	push	af
+	in0	a,(CNTLA1)		;	clear error condition
+	res	3,a			
+	out0	(CNTLA1),a
+	pop	af
+	ld		hl,rioIntFSM+HWErr	;	9
+	or		(hl)			;	6
+	ld		(hl),a		;	7
+	ld		hl,(rioSlvCB+msgAbort)	;	15		abort incoming message, nothing has happened
+	ld		(rioSlvCB+msgTail),hl	;	16
+	ld		hl,rioSlvRecStart			;	9		reset FSM to start state
+	ld		(rioIntFSM+curState),hl	;	16		
+	call	_rioOff		;	190
+	pop	hl				;	9
+	pop	bc				;	9
+	pop	af				;	9
+	ei						;	3
+	ret					;	9
+	
+sSendHWErr:	;	242
+	;	hardware error during transmission
+	push	af
+	in0	a,(CNTLA1)		;	clear error condition
+	res	3,a			
+	out0	(CNTLA1),a
+	pop	af
+	ld		hl,rioIntFSM+HWErr	;	9
+	or		(hl)			;	6
+	ld		(hl),a		;	7
+	ld		hl,rioSlvRecStart			;	9		reset FSM to start state
+	ld		(rioIntFSM+curState),hl	;	16		
+	call	_rioOff		;	190
+	pop	hl				;	9
+	pop	bc				;	9
+	pop	af				;	9
+	ei						;	3
+	ret					;	9
+
+sAddRecByte:
+	;	152 states
+	ld		hl,(rioSlvCB+msgTail)		;	15	put into location
+	ld		(hl),a							;	7
+	inc	hl									;	4	increment tail
+	push	de											;	12	save reg
+	ld		de,rioSlvCB+msgBuffer+RIOSLVCBSIZ	;	9	
+	xor	a									;	4
+	sbc	hl,de								;	10
+	jp		c,sARB0100						;	6/9+97	if in range, jp
+	ld		de,rioSlvCB+msgBuffer		;	9	else -RIOSLVCBSIZ
+sARB0100:	;	97
+	add	hl,de								;	10	in range undo subtraction
+	ld		(rioSlvCB+msgTail),hl		;	16	store new tail
+	ex		de,hl								;	3
+	ld		hl,(rioSlvCB+msgHead)		;	15
+	xor	a									;	4
+	sbc	hl,de								;	10	compare head and tail
+	pop	de									;	9
+	ret	nz									;	6/9	returns if tail != head
+	pop	hl									;	9	pop return address
+	ld		a,00000001						;	6	overflow circbuf
+	jp		sRecHWErr						;	9+307	handle error
+#endasm
+
+/*** BeginHeader lastDur, lastPolled */
+
+extern unsigned long lastDur, lastPolled;
+
+/*** EndHeader */
+
+unsigned long lastDur, lastPolled;
+

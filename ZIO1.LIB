@@ -1,0 +1,37 @@
+//	common call interface to local I/O
+
+/*** BeginHeader */
+
+#ifndef EIODBNC
+#define EIODBNC 0
+#endif
+
+#define EIO_SAFEST 1
+
+#use zionet.lib
+
+#define	EIOUSEPLC	0
+#use ezio.lib
+
+#define zDigIn				eioBrdDI
+#define zDigOut				eioBrdDO
+#define zAnIn		eioBrdAI
+#define zAnOut		eioBrdAO
+#define zAnInCalib			eioBrdACalib
+#define zWakeNode				eioReset
+#define zNodeStatus		eioPing
+#define zSetSafeSt			eioSetSafeSt
+#define zBegDefSafeSt		eioBegDefSafeSt
+#define zEndDefSafeSt		eioEndDefSafeSt
+#define zWakeNodeList		eioWakeUpSlave
+#define rioGetAllAlive		eioGetAllAlive
+#define zInitMaster		eioDefInit
+#define zIOError			eioErrorCode
+#define zNewNodeID		eioAssignNewID
+#define rioChgMyID			eioChgMyID
+#define zDelayMs		DelayMs
+#define zDelaySec		DelaySec
+
+
+/*** EndHeader */
+

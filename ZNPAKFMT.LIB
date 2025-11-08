@@ -1,0 +1,590 @@
+/*** BeginHeader */
+
+#define ZNBUFSIZ 260
+#define ZNTXMASK 0x01
+#define ZNRXMASK 0x02
+#define ZNSIZE 0x2
+#define ZNCONTENT 0x3
+#define ZNCONTENTMAX 250
+#define ZNACTIVE 0x20
+#define ZNMUSTPOLL 0x40
+#define ZNOKAY	0x02
+#define ZNTXTMOUT 0x03
+#define ZNRXTMOUT 0x04
+#define ZNTMOUT 0x05
+#define ZNCHKSUMERR 0x08
+#define ZNEXTRACHAR 0x10
+#define ZNTXERR		0x20
+#define ZNOVFLOW 0x10
+#define ZNSLAVE 0x01
+#define ZN1200 0x0100
+#define ZNADDRMASK 0x1f
+#define ZNLNKERR *((char*)&znError+1)
+
+/*** EndHeader */
+
+/*** BeginHeader znContent */
+
+char *znContent(char *pBuf);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+znContent                    <ZN.LIB>
+
+SYNTAX: char *znContent(char *pBuf)
+
+KEYWORDS:
+
+DESCRIPTION:	Returns the location at which the application program can
+start to place the content of a message.  The driver routine znFormat
+should be called after the content is put to the location pointed to by
+znDefContent.  In other words, the application program needs not worry about
+the actual format of a message, just the content to send.
+
+RETURN VALUE:	The location at which the content of a message should be
+placed.
+
+END DESCRIPTION **********************************************************/
+
+speed nouseix nodebug char *znContent(char *pBuf) {
+	return pBuf+ZNCONTENT;
+	}
+
+/*** BeginHeader znMessageSize */
+
+char znMessageSize(char *pBuf);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+znMessageSize                <ZN.LIB>
+
+SYNTAX: char znMessageSize(char *pBuf)
+
+KEYWORDS:
+
+DESCRIPTION:	Returns the size of the message in the buffer.  Usually
+called after a message arrives and is checked to be valid.  Refer to the
+description of znReceive for the sequence to receive a message.
+
+RETURN VALUE:	Size of the message.
+
+END DESCRIPTION **********************************************************/
+
+nodebug speed nouseix char znMessageSize(char *pBuf) {
+	return *(pBuf+ZNCONTENT-2)-3;
+	}
+
+/*** BeginHeader znFormat */
+
+char znFormat(char *pBuf, char Dest, char Size);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+znFormat                     <ZN.LIB>
+
+SYNTAX: char znFormat(char *pBuf, char Dest, char Size)
+
+KEYWORDS:
+
+DESCRIPTION:	Formats the message partially put into znDefBuffer (the user
+should put the content of the message to the location pointed to by
+znDefContent).  "Dest" specifies the destination of the message, and "Size"
+indicates the size of the actual content.
+
+RETURN VALUE:	Actual size of the message to be sent, including the
+overhead.
+
+END DESCRIPTION **********************************************************/
+
+speed nouseix nodebug char znFormat(char *pBuf, char Dest, char Size) {
+	auto int Crc;
+	pBuf[0] = Dest;
+	pBuf[1] = Size+3;	//	+[SrcID]+[CRCHi]+[CRCLo]
+	pBuf[2] = znID;
+	Crc = getcrc(pBuf,Size+3,0);
+	pBuf[Size+3] = *((char*)&Crc+1);	//	+[Dest]+[Size]+[SrcID]
+	pBuf[Size+4] = (char)Crc;
+	return Size+5;
+	}
+
+/*** BeginHeader znCheck */
+
+int znCheck(char *pBuf);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+znCheck                      <ZN.LIB>
+
+SYNTAX: int znCheck(char *znBuf)
+
+KEYWORDS:
+
+DESCRIPTION:	Checks the validity of the message in znDefBuffer.
+
+RETURN VALUE:	Zero if the CRC checksum is invalid.
+
+END DESCRIPTION **********************************************************/
+
+nodebug speed nouseix int znCheck(char *pBuf) {
+	auto char Size;
+	auto int Crc;
+
+	Size = pBuf[1]-3;
+	Crc = getcrc(pBuf,Size+3,0);
+	return ((char)Crc == pBuf[Size+4]) &&
+			 (*((char*)&Crc+1) == pBuf[Size+3]);
+	}
+
+/*** BeginHeader znHasRxMessage */
+
+int znHasRxMessage();
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+znHasRxMessage               <ZN.LIB>
+
+SYNTAX: int znHasRxMessager(void)
+
+KEYWORDS:
+
+DESCRIPTION:	Checks if a message has arrived since znSend or znReceive
+is called.
+
+RETURN VALUE:	Non-zero if a message has arrived.
+
+END DESCRIPTION **********************************************************/
+
+nouseix speed nodebug int znHasRxMessage() {
+	return znState>=4;
+	}
+
+/*** BeginHeader znSend, znClock */
+
+void znSend(char *pOutBuf, char *pInBuf);
+extern char znClock;
+
+/*** EndHeader */
+
+char znClock;
+
+/* START FUNCTION DESCRIPTION ********************************************
+znSend                       <ZN.LIB>
+
+SYNTAX:		void znSend(char *pOutBuf, char *pInBuf)
+
+KEYWORDS:
+
+DESCRIPTION:	Sets up the driver to send a message (message should be
+set up by znFormat).  Interrupt is turned on after the function call and
+the RS485 driver will be turned-on as well.  To check if the message is
+actually sent, check the variable znState.  If znState is zero, the message
+is still being sent.  The proper sequence to send a message is:
+
+1	use znDefContent to point out where to place the content of a message
+2	use strcpy or memcpy to move the content to the location
+3	use znFormat to format the header and checksum
+4	use znSend to send the message.
+5	check znState to make sure the message is sent.
+6	check znState as well to see if a reply message is in the buffer.
+
+RETURN VALUE:	none.
+
+END DESCRIPTION **********************************************************/
+
+nodebug fast speed nouseix void znSend(char *pOutBuf, char *pInBuf) {
+#asm
+;znSend::
+	ld		(pZnOutPtr),hl
+	ld		(pZnEchoPtr),hl
+	inc	hl				; size byte
+	ld		a,(hl)		;
+	inc	a				; add destination byte
+	inc	a				; add size byte itself
+	ld		(znOutCount),a		; total size to transmit
+	ld		(znListen),a
+	ld		hl,pInBuf+@S
+	add	hl,sp
+	ld		a,(hl)
+	inc	hl
+	ld		h,(hl)
+	ld		l,a
+	ld		(pZnInPtr),hl
+	ld		a,i
+	push	af
+	di
+	in0	a,(CNTLA1)
+	res	7,a			;	take all bytes (listen to myself)
+	set	6,a			;	enable TXter and RXer
+	set	5,a
+	res	3,a
+	out0	(CNTLA1),a
+	in0	a,(CNTLB1)	;	enable MP mode
+	set	7,a			;	and set MP bit to 1
+	set	6,a
+	ld		hl,znClock
+	or		(hl)
+	out0	(CNTLB1),a
+	call	on_485		;	enable 485 driver
+	in0	a,(STAT1)	;	enable RX and TX interrupts
+	set	0,a
+	set	3,a
+	out0	(STAT1),a
+	ld		a,0ffh
+	ld		(znInCount),a	;	indicate not received
+	ld		a,0				;	indicate start of listen state
+	ld		(znState),a		
+	pop	af
+	jp		po,znSend0100
+	ei
+znSend0100:
+#endasm
+	}
+
+/*** BeginHeader znReceive */
+
+void znReceive(char *pRecBuffer);
+
+/*** EndHeader */
+
+/* START FUNCTION DESCRIPTION ********************************************
+znReceive                    <ZN.LIB>
+
+SYNTAX: void znReceive(void);
+
+KEYWORDS:
+
+DESCRIPTION:	Sets up the driver to receive a message.  The receiver is
+turned on and interrupt is enabled after this function.  To check if a
+message has arrived, use znHasRxMessage.  The proper sequence to receive
+a message is:
+
+1	call znReceive to set up the receiver and other variables.
+2	call znHasRxMessage to check if a message has arrived.
+3	call znCheck to check if the validify of the message
+4	call znMessageSize to determine the size of the message
+5	call znDefContent to locate the beginning of the message
+
+RETURN VALUE:	None.
+
+END DESCRIPTION **********************************************************/
+
+#asm
+znReceive::
+	ld		a,i
+	push	af
+	di
+	ld		(pZnInPtr),hl
+	in0	a,(CNTLA1)
+	set	7,a			;	enable MPBE (wake up on 9th bit)
+	set	6,a			;	enable RXer
+;	res	5,a			;	disable TXer
+	res	3,a
+	out0	(CNTLA1),a
+	in0	a,(CNTLB1)	;	enable MP mode
+	res	7,a
+	set	6,a
+	ld		hl,znClock
+	or		(hl)			;
+	out0	(CNTLB1),a
+	call	off_485		;	disable 485 driver
+	in0	a,(STAT1)	;	enable RX and TX interrupts
+	res	0,a			;	disable TIE
+	set	3,a			;	enable RIE
+	out0	(STAT1),a
+	ld		a,0ffh
+	ld		(znInCount),a	;	indicate not received
+	ld		a,1				;	indicate to receive
+	ld		(znState),a
+	xor	a
+	ld		(znOutCount),a	;	# to listen == # to xmit
+	ld		(znListen),a
+	pop	af
+	jp		po,znReceive0100
+	ei
+znReceive0100:
+	ret
+#endasm
+
+/*** BeginHeader znInitZ1 */
+
+void znInitZ1(char baud);
+
+/*** EndHeader */
+
+void znInitZ1(char baud) {
+    op_kill_z1();             // 3-22-95, kill z1 port before init
+    outport(STAT1, 0);       // Reset port
+    outport(CNTLA1, 0x07 | 0x80 | 0x20); // Set mpe, and tx enable
+    znClock = z180baud(sysclock(), baud);
+    
+    // Set baud rate , 0x40 set mp mode
+    // No need to init to zero, as *z1_send_count=0;
+    outport(CNTLB1, znClock | ((0x04 << 1) & 0x10) | 0x40);
+	}
+
+/*** BeginHeader _znInt */
+
+void _znInt();
+extern char znState;
+extern int (*znStateChange)();
+void znDefStateChange();
+
+/*** EndHeader */
+
+#INT_VEC SER1_VEC _znInt		// set interrupt vector
+
+#asm
+znDefStateChange::
+	ret
+#endasm
+
+char znGo;
+char lastaddr;
+char znState;
+int (*znStateChange)();
+	
+#asm fast nodebug
+znOffOut:
+	;	b must have old value of STAT1
+	call	off_485
+	in0	a,(CNTLA1)
+	set	7,a
+;	res	5,a
+	out0	(CNTLA1),a
+	res	0,b
+	out0	(STAT1),b
+	ret
+	
+_znInt::
+	push	ix				;	save registers
+	push	iy
+	push	af
+	push	bc
+	push	de
+	push	hl
+
+	exx
+	push	af
+	push	bc
+	push	de
+	push	hl
+
+	ld		a,0
+	ld		(znGo),a		;	not to run poll functions
+	in0	b,(STAT1)	;	take a look at the status
+	
+	;;;;;;;;;;;;;;;;;;;
+	;	check for error
+	;;;;;;;;;;;;;;;;;;;
+	ld		a,b
+	and	070h			;	mask error bits
+	jr		z,zn0300		;	if there is no error, jump
+	ld		hl,znError	;	shadow error
+	or		(hl)			;	at znError, 0th byte
+	ld		(hl),a		;	store back
+	in0	c,(CNTLA1)	;	clear error
+	res	3,c
+	out0	(CNTLA1),c
+	ld		a,5
+znTxErr:
+	ld		(znState),a
+	ld		(znGo),a
+	call	znOffOut
+	jp		zn9999
+
+zn0300:
+	
+	;;;;;;;;;;;;;;;;;;;
+	;	check for write
+	;;;;;;;;;;;;;;;;;;;
+	bit	1,b
+	jr		z,zn0200			;	transmitter not empty, jump
+	ld		hl,znOutCount
+	ld		a,(hl)
+	or		a
+	jr		nz,zn0110		;	something to transmit, jump
+	;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+	;	is zero, stop TX interrupt
+	;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+	;	we cannot stop 485 here because a character may be
+	;	in the shift register and being transmitted
+	res	0,b				;	nothing else to transmit
+	out0	(STAT1),b
+	jr		zn0200
+	
+zn0110:
+	dec	(hl)				;	decrement output count
+	ld		hl,(pZnOutPtr)	;	get the character to output
+	ld		c,(hl)
+	inc	hl
+	ld		(pZnOutPtr),hl	;	advance output pointer
+	out0	(TDR1),c
+	
+zn0200:
+
+	bit	7,b			;	7th bit indicates read ready
+	jp		z,zn0100		;	nothing to read, jump
+	;;;;;;;;;;;;;;;;;;;;;
+	;	read a character
+	;;;;;;;;;;;;;;;;;;;;;
+	ld		a,(znState)	;	look at the current state
+	cp		0				;	are we still listening to echo?
+	jr		nz,zn0010	;	if not, jump
+	;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+	;	state 0: I am still counting down echo
+	;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+	in0	a,(CNTLB1)	;	turn off MPT bit
+	res	7,a			;	after receiving the first character
+	ld		hl,znClock
+	or		(hl)
+	out0	(CNTLB1),a
+	in0	a,(RDR1)
+	ld		hl,(pZnEchoPtr)
+	cp		(hl)
+	jr		z,zn0250
+	;		not equal, transmission error
+	ld		a,6
+	jr		znTxErr
+zn0250:
+	inc	hl
+	ld		(pZnEchoPtr),hl
+	ld		hl,znListen	;	check and decrement listening count
+	dec	(hl)
+	jp		nz,zn0100	;	not done yet, jump
+	;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+	;	done, prepare for receiving remote now
+	;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+	ld		a,1
+	ld		(znState),a	;	indicate change of state
+	ld		(znGo),a		;	may make poll loop proceed
+	call	znOffOut
+	jp		zn0100
+	
+zn0010:
+	;	register a has the state number
+	cp		1				;	is this state one?
+	jr		nz,zn0020	;	if not, jump again
+	;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+	;	state 1: ready to receive address
+	;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+	in0	c,(RDR1)		;	get the address
+	ld		a,c
+;	ld		(lastaddr),a
+	ld		hl,znID
+	cp		(hl)			;	compare with my own
+	jr		nz,zn0100	;	not to me, jump
+	;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+	;	to me, turn 9-th bit mode off
+	;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+	in0	a,(CNTLA1)	;	receive all bytes
+	res	7,a			;	turn off 9th-bit specific
+	set	3,a			;	don't clear error yet
+	out0	(CNTLA1),a	;	
+	ld		a,2
+	ld		(znState),a	;	advance the state, ready for size
+	ld		(znGo),a
+	jr		zn0050		;	proceed to store the byte
+	
+zn0020:
+	;	a has the current state
+	cp		2				;	are we getting the size now?
+	jr		nz,zn0030	;	if not, jump
+	;;;;;;;;;;;;;;;;;;;;;;;;
+	;	state 2: now getting the size
+	;;;;;;;;;;;;;;;;;;;;;;;;
+	in0	c,(RDR1)		;	this is the size
+	ld		a,c			;	number of bytes yet to come
+;	inc	a
+;	inc	a
+;	inc	a
+	ld		(znInCount),a	;	store the count
+	ld		a,3
+	ld		(znState),a	;	advance the state, ready for content
+	ld		(znGo),a
+	jr		zn0050		;	store the byte
+
+zn0030:
+	cp		3
+	jr		nz,zn0060
+	;	state 3:
+	;	a has the current state
+	;	getting the content now
+	in0	c,(RDR1)			;	getting the input
+	ld		hl,znInCount	;	check the input count
+	ld		a,(hl)
+	or		a
+	jr		nz,zn0040		;	if there is something to receive
+	;;;;;;;;;;;;;;;;;;;;;;;;
+	;	if filled already
+	;	throw away character
+	;;;;;;;;;;;;;;;;;;;;;;;;
+	ld		a,4				;	indicate state change
+	ld		(znState),a
+	ld		(znGo),a			;	execute poll routine
+	in0	a,(CNTLA1)		;	reenable wakeup bit
+	set	7,a
+;	res	5,a				;	turn off transmitter
+;	res	6,a				;	and turn off receiver
+	out0	(CNTLA1),a
+	jp		zn0100
+	
+zn0040:
+	;		okay, put char in buffer
+	dec	(hl)				;	more to come?
+	jr		nz,zn0050		;	if so, jump
+	ld		a,4				;	otherwise indicate state change
+	ld		(znState),a
+	ld		(znGo),a
+zn0050:
+	ld		hl,(pZnInPtr)	;	store the byte now
+	ld		(hl),c
+	inc	hl
+	ld		(pZnInPtr),hl
+	jr		zn9999
+
+zn0060:
+	in0	c,(RDR1)
+	;	really not expecting any characters here!
+	ld		a,(znError+1)
+	or		ZNEXTRACHAR
+	ld		(znError+1),a
+	
+zn0100:
+	
+zn9999:
+	ld		a,(znGo)
+	or		a
+	jr		z,zn10000
+	ld		hl,zn9901
+	push	hl
+	ld		hl,(znStateChange)
+	jp		(hl)
+zn9901:
+
+zn10000:
+;	ld		a,0
+;	ld		bc,DRV1
+;	out	(c),a
+
+	pop	hl
+	pop	de
+	pop	bc
+	pop	af
+
+	exx
+	pop	hl
+	pop	de
+	pop	bc
+	pop	af
+	pop	iy
+	pop	ix
+	ei
+	ret
+	
+#endasm
+

@@ -1,0 +1,258 @@
+/* START LIBRARY DESCRIPTION *********************************************
+ZIO.LIB
+	Copyright (c) 1996, Z-World.
+
+DESCRIPTION:
+	Descriptions for EasyStart C zio routines.
+
+SUPPORT LIB'S: zio1, zio1db, zio2, zio2db, zio3s, zio3l, zionet
+
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+zDigIn
+
+SYNTAX: int zDigIn(unsigned int address);
+
+KEYWORDS: digital
+
+DESCRIPTION: Reads value from "address".
+
+RETURN VALUE: Value at "address".
+
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+zDigOut
+
+SYNTAX: void zDigOut(unsigned int address, unsigned value);
+
+KEYWORDS: digital
+
+DESCRIPTION: Writes "value" to "address".
+
+RETURN VALUE: None.
+
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+zAnIn
+
+SYNTAX: float zAnIn(unsigned int address);
+
+KEYWORDS: analog
+
+DESCRIPTION: Reads value from "address".
+
+RETURN VALUE: Floating point value at "address".
+
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+zAnOut
+
+SYNTAX: char zAnOut(unsigned int address, unsigned int value);
+
+KEYWORDS: analog
+
+DESCRIPTION: Writes floating point "value" to "address".
+
+RETURN VALUE: 0x00ff.
+
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+zAnInCalib
+
+SYNTAX: int zAnInCalib(int address, int digIn1, int digIn2,
+                       float anRef1, float anRef2);
+
+KEYWORDS: analog, calibration, device
+
+DESCRIPTION: Calibrate the analog input at "address" from user supplied
+             analog reference values "anRef1" and "anRef2" corresponding to the
+             raw (uncalibrated) readings from zAnIn() "digIn1" and
+             "digIn2".
+
+             The resulting calibration parameters are stored
+             on the eeprom of the analog input device.
+
+RETURN VALUE: 0 if a network error, -1 if no device at "address", 1 if okay.
+
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+zWakeNode
+
+SYNTAX: int zWakeNode(int address);
+
+KEYWORDS: network
+
+DESCRIPTION: Wakes the slave at "address".
+
+RETURN VALUE: -1 if slave not found, 0 if slave found and okay, flags if
+              slave found but not okay
+
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+zWakeNodeList
+
+SYNTAX: int zWakeNodeList(int node1, ...);
+
+KEYWORDS: network
+
+DESCRIPTION: Wakes the slaves in the list "node1, node2, ..."
+
+RETURN VALUE: 0 if all slaves found and okay, -1 if all slaves are not okay.
+
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+zNodeStatus
+
+SYNTAX: int zNodeStatus(int address);
+
+KEYWORDS: network
+
+DESCRIPTION: Gets the status of the slave at "address".
+
+RETURN VALUE: -1 if slave not found, 0 if slave found and okay, flags if
+              slave found but not okay
+
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+zSetSafeSt
+
+SYNTAX: void zSetSafeSt(int node);
+
+KEYWORDS: network, node
+
+DESCRIPTION: Return a node on the network to its "safe state".
+
+RETURN VALUE: None.
+
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+zBegDefSafeSt
+
+SYNTAX: void zBegDefSafeSt(int node);
+
+KEYWORDS: network, node
+
+DESCRIPTION: Instructs a node on the network to begin safe state definition.
+
+RETURN VALUE: None.
+
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+zEndDefSafeSt
+
+SYNTAX: void zEndDefSafeSt(int node);
+
+KEYWORDS: network, node
+
+DESCRIPTION: Instructs a node on the network to end safe state definition.
+
+RETURN VALUE: None.
+
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+zInitMaster
+
+SYNTAX: void zInitMaster(void)
+
+KEYWORDS: network
+
+DESCRIPTION: Initialize master/slave distributed I/O network.
+
+Initializes Z180 port 1 for RS485 9th bit half duplex communication. Data
+format defaults to 8 bits, no parity, 1 stop bit.
+
+Master Message Protocol:
+
+First Byte:
+
+bits 0-3  	Destination Node (Slave) number
+bits 4-6		Opcode
+bit  7		parity
+
+Opcodes:						 Following Byte(s)		Reply
+Bytes
+
+RIO_SET_DIGITAL	 0x00  1   Channel #		      0
+RIO_RESET_DIGITAL  0x10  1   Channel #				0
+RIO_READ_DIGITAL   0x20  1   Channel #				1 - value (0 or 1) (or status)
+RIO_READ_ANALOG    0x30  1   Channel #				2 - integer value  (or status)
+RIO_RESERVED_CODE	 0x70  ?   len. , 1...len.		0
+
+The slaves send only requested data back. The master does not perform
+parity checking.
+
+Busy wait and costatement paradigm versions are provided for each i/o
+function.
+
+RETURN VALUE: None.
+
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+zInitSlave
+
+SYNTAX: void zInitSlave(int node)
+
+KEYWORDS: network, node
+
+DESCRIPTION: Initialize the slave given by "node".
+
+Initializes Z180 port 1 for RS485 9th bit half duplex communication. Data
+format defaults to 8 bits, no parity, 1 stop bit.
+
+RETURN VALUE: None.
+
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+zNewNodeID
+
+SYNTAX: void zNewNodeID(int oldNodeID, int newNodeID );
+
+KEYWORDS: network, node
+
+DESCRIPTION: Changes the indentification number of a slave node from
+             "oldNodeID" to "newNodeID".
+
+RETURN VALUE: None.
+
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+zDelayMs
+
+SYNTAX: int zDelayMs(int milliseconds)
+
+KEYWORDS: task, control
+
+DESCRIPTION: Performs a task delay for the specified "milliseconds".
+
+RETURN VALUE: 1 if "milliseconds" has elapsed, 0 if not
+
+END DESCRIPTION **********************************************************/
+
+/* START FUNCTION DESCRIPTION ********************************************
+zDelaySec
+
+SYNTAX: int zDelaySec(int seconds)
+
+KEYWORDS: task, control
+
+DESCRIPTION: Performs a task delay for the specified "seconds".
+
+RETURN VALUE: 1 if "seconds" has elapsed, 0 if not
+
+END DESCRIPTION **********************************************************/
+
